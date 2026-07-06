@@ -47,19 +47,38 @@ function usageBarClass(v?: number) {
   if (v >= 70) return "usage-fill-warn";
   return "";
 }
-function fmtWindow(minutes?: number) {
-  if (!minutes) return "";
-  if (minutes % (60 * 24) === 0) return minutes / (60 * 24) + "d";
-  if (minutes % 60 === 0) return minutes / 60 + "h";
-  return minutes + "m";
+function windowLabel(minutes?: number) {
+  if (!minutes) return t("accounts.windowGeneric");
+  if (minutes % (60 * 24) === 0) return t("accounts.windowDays", { n: minutes / (60 * 24) });
+  if (minutes % 60 === 0) return t("accounts.windowHours", { n: minutes / 60 });
+  return t("accounts.windowMinutes", { n: minutes });
+}
+function usageWindows(u: NonNullable<Account["codex_usage"]>) {
+  const wins = [
+    {
+      minutes: u.primary_window_minutes ?? 0,
+      label: windowLabel(u.primary_window_minutes),
+      used: u.primary_used_percent,
+      reset: u.primary_reset_after_seconds,
+    },
+    {
+      minutes: u.secondary_window_minutes ?? 0,
+      label: windowLabel(u.secondary_window_minutes),
+      used: u.secondary_used_percent,
+      reset: u.secondary_reset_after_seconds,
+    },
+  ].filter((w) => w.used != null || w.minutes > 0);
+  return wins.sort((a, b) => a.minutes - b.minutes);
 }
 function fmtReset(seconds?: number) {
   if (seconds == null || seconds <= 0) return "";
-  const h = Math.floor(seconds / 3600);
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
   const m = Math.floor((seconds % 3600) / 60);
-  if (h > 0) return `${h}h${m}m`;
-  if (m > 0) return `${m}m`;
-  return `${seconds}s`;
+  if (d > 0) return t("accounts.durDayHour", { d, h });
+  if (h > 0) return t("accounts.durHourMin", { h, m });
+  if (m > 0) return t("accounts.durMin", { m });
+  return t("accounts.durSec", { s: seconds });
 }
 
 // force-reset flow
@@ -380,34 +399,16 @@ onUnmounted(() => clearInterval(pollTimer));
         </div>
 
         <div v-if="a.codex_usage" class="usage-windows">
-          <div class="usage-window">
+          <div v-for="(w, wi) in usageWindows(a.codex_usage)" :key="wi" class="usage-window">
             <div class="usage-window-head">
-              <span class="faint text-sm">
-                {{ t("accounts.window5h") }}
-                <span v-if="fmtWindow(a.codex_usage.secondary_window_minutes)" class="faint">· {{ fmtWindow(a.codex_usage.secondary_window_minutes) }}</span>
-              </span>
-              <span class="text-sm mono">{{ pctLabel(a.codex_usage.secondary_used_percent) }}</span>
+              <span class="faint text-sm">{{ w.label }}</span>
+              <span class="text-sm mono">{{ pctLabel(w.used) }}</span>
             </div>
             <div class="usage-bar">
-              <div class="usage-fill" :class="usageBarClass(a.codex_usage.secondary_used_percent)" :style="{ width: pct(a.codex_usage.secondary_used_percent) + '%' }"></div>
+              <div class="usage-fill" :class="usageBarClass(w.used)" :style="{ width: pct(w.used) + '%' }"></div>
             </div>
-            <div v-if="fmtReset(a.codex_usage.secondary_reset_after_seconds)" class="faint text-xs" style="margin-top: 3px">
-              {{ t("accounts.resetIn") }} {{ fmtReset(a.codex_usage.secondary_reset_after_seconds) }}
-            </div>
-          </div>
-          <div class="usage-window">
-            <div class="usage-window-head">
-              <span class="faint text-sm">
-                {{ t("accounts.window7d") }}
-                <span v-if="fmtWindow(a.codex_usage.primary_window_minutes)" class="faint">· {{ fmtWindow(a.codex_usage.primary_window_minutes) }}</span>
-              </span>
-              <span class="text-sm mono">{{ pctLabel(a.codex_usage.primary_used_percent) }}</span>
-            </div>
-            <div class="usage-bar">
-              <div class="usage-fill" :class="usageBarClass(a.codex_usage.primary_used_percent)" :style="{ width: pct(a.codex_usage.primary_used_percent) + '%' }"></div>
-            </div>
-            <div v-if="fmtReset(a.codex_usage.primary_reset_after_seconds)" class="faint text-xs" style="margin-top: 3px">
-              {{ t("accounts.resetIn") }} {{ fmtReset(a.codex_usage.primary_reset_after_seconds) }}
+            <div v-if="fmtReset(w.reset)" class="faint text-xs" style="margin-top: 3px">
+              {{ t("accounts.resetIn", { time: fmtReset(w.reset) }) }}
             </div>
           </div>
         </div>
