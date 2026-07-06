@@ -23,12 +23,12 @@ const apiKey = computed(() => app.status?.local_api_key || "");
 
 const todayRequests = computed(() => {
   const today = new Date().toISOString().slice(0, 10);
-  const d = stats.value?.daily.find((x) => x.date === today);
+  const d = stats.value?.daily?.find((x) => x.date === today);
   return d?.requests ?? 0;
 });
 const todayTokens = computed(() => {
   const today = new Date().toISOString().slice(0, 10);
-  const d = stats.value?.daily.find((x) => x.date === today);
+  const d = stats.value?.daily?.find((x) => x.date === today);
   return d?.total_tokens ?? 0;
 });
 
@@ -62,7 +62,7 @@ async function confirmRegen() {
 async function load() {
   try {
     [logs.value, stats.value] = [
-      (await api.logs(8)).logs,
+      (await api.logs(8)).logs || [],
       await api.stats(7),
     ];
   } catch {

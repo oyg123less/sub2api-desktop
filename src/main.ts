@@ -18,6 +18,9 @@ async function boot() {
   }
 
   const app = createApp(App);
+  app.config.errorHandler = (err, _instance, info) => {
+    console.error(`[vue error] ${info}:`, err);
+  };
   app.use(createPinia());
   app.use(router);
   app.use(i18n);
