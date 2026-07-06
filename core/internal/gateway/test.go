@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"sub2api-desktop/core/internal/apicompat"
+	"sub2api-desktop/core/internal/openai"
 	"sub2api-desktop/core/internal/store"
 )
 
@@ -79,7 +80,12 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 		res.Error = "构造请求失败: " + err.Error()
 		return res
 	}
-	applyAntiBan(respReq, testModel, cfg)
+	upstreamModel, effort := openai.MapCodexModel(testModel)
+	respReq.Model = upstreamModel
+	if respReq.Reasoning == nil && effort != "" {
+		respReq.Reasoning = &apicompat.ResponsesReasoning{Effort: effort, Summary: "auto"}
+	}
+	applyAntiBan(respReq, upstreamModel, cfg)
 	upstreamBody, err := json.Marshal(respReq)
 	if err != nil {
 		res.Error = err.Error()
@@ -103,8 +109,10 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 	defer resp.Body.Close()
 	res.Status = resp.StatusCode
 
+	usage := e.captureCodexUsage(acc, resp.Header)
+
 	if resp.StatusCode == http.StatusTooManyRequests {
-		until := time.Now().Add(10 * time.Minute)
+		until := time.Now().Add(rateLimitRetryAfter(resp.Header, usage))
 		_ = e.store.SetRateLimited(acc.ID, until)
 		res.AccountStatus = string(store.AccountRateLimited)
 		res.Error = "账号已限额（429）"

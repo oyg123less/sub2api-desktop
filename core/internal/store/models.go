@@ -12,6 +12,19 @@ const (
 	AccountDisabled      AccountStatus = "disabled"
 )
 
+// CodexUsage captures the Codex rate-limit windows reported by upstream
+// x-codex-* response headers (primary = 7-day window, secondary = 5-hour
+// window). Pointers distinguish "not reported" from zero.
+type CodexUsage struct {
+	PrimaryUsedPercent         *float64  `json:"primary_used_percent,omitempty"`
+	PrimaryResetAfterSeconds   *int      `json:"primary_reset_after_seconds,omitempty"`
+	PrimaryWindowMinutes       *int      `json:"primary_window_minutes,omitempty"`
+	SecondaryUsedPercent       *float64  `json:"secondary_used_percent,omitempty"`
+	SecondaryResetAfterSeconds *int      `json:"secondary_reset_after_seconds,omitempty"`
+	SecondaryWindowMinutes     *int      `json:"secondary_window_minutes,omitempty"`
+	UpdatedAt                  time.Time `json:"updated_at"`
+}
+
 // Account is a single ChatGPT OAuth account. Token fields are stored encrypted
 // at rest and decrypted only in memory.
 type Account struct {
@@ -28,6 +41,7 @@ type Account struct {
 	RateLimitedUntil *time.Time    `json:"rate_limited_until,omitempty"`
 	ProxyID          *int64        `json:"proxy_id,omitempty"`
 	LastUsedAt       *time.Time    `json:"last_used_at,omitempty"`
+	CodexUsage       *CodexUsage   `json:"codex_usage,omitempty"`
 	CreatedAt        time.Time     `json:"created_at"`
 	UpdatedAt        time.Time     `json:"updated_at"`
 }

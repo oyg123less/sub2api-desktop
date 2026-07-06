@@ -92,6 +92,8 @@ func (c *Control) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /control/codex/apply", h(c.codexApply))
 	mux.HandleFunc("POST /control/codex/restore", h(c.codexRestore))
 
+	mux.HandleFunc("GET /control/models", h(c.listModels))
+
 	mux.HandleFunc("GET /control/logs", h(c.logs))
 	mux.HandleFunc("GET /control/stats", h(c.stats))
 }
@@ -501,6 +503,12 @@ func (c *Control) testProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "latency_ms": latency.Milliseconds()})
+}
+
+// listModels returns the model options (incl. reasoning-effort suffixed
+// variants) offered in the connectivity-test / default-model pickers.
+func (c *Control) listModels(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"models": openai.CodexTestModelOptions})
 }
 
 // --- logs / stats ---

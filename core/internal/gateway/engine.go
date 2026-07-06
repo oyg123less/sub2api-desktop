@@ -107,7 +107,11 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		case outcomeSuccess:
 			return
 		case outcomeRateLimited:
-			until := time.Now().Add(10 * time.Minute)
+			retry := result.retryAfter
+			if retry <= 0 {
+				retry = 10 * time.Minute
+			}
+			until := time.Now().Add(retry)
 			_ = e.store.SetRateLimited(acc.ID, until)
 			lastErr = result.errMsg
 			continue // try next account
@@ -148,6 +152,7 @@ type forwardResult struct {
 	status         int
 	errMsg         string
 	headersWritten bool
+	retryAfter     time.Duration
 }
 
 func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq *apicompat.ChatCompletionsRequest, requestedModel string, acc *store.Account, cfg store.Settings) forwardResult {
@@ -176,7 +181,14 @@ func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq
 	if err != nil {
 		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadRequest, errMsg: "request transform failed: " + err.Error()}
 	}
-	applyAntiBan(respReq, chatReq.Model, cfg)
+	// Map the requested model (possibly carrying a reasoning-effort suffix
+	// like gpt-5.4-high) to the canonical upstream model + reasoning.effort.
+	upstreamModel, effort := openai.MapCodexModel(chatReq.Model)
+	respReq.Model = upstreamModel
+	if respReq.Reasoning == nil && effort != "" {
+		respReq.Reasoning = &apicompat.ResponsesReasoning{Effort: effort, Summary: "auto"}
+	}
+	applyAntiBan(respReq, upstreamModel, cfg)
 
 	upstreamBody, err := json.Marshal(respReq)
 	if err != nil {
@@ -198,9 +210,11 @@ func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq
 	}
 	defer resp.Body.Close()
 
+	usage := e.captureCodexUsage(acc, resp.Header)
+
 	if resp.StatusCode == http.StatusTooManyRequests {
 		e.logRequest(acc, requestedModel, resp.StatusCode, 0, 0, time.Since(start), chatReq.Stream, "rate limited (429)")
-		return forwardResult{outcome: outcomeRateLimited, status: resp.StatusCode, errMsg: "账号已限额（429）"}
+		return forwardResult{outcome: outcomeRateLimited, status: resp.StatusCode, errMsg: "账号已限额（429）", retryAfter: rateLimitRetryAfter(resp.Header, usage)}
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		msg := readUpstreamError(resp.Body)

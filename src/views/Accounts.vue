@@ -18,11 +18,49 @@ const loading = ref(true);
 // connectivity test flow
 const testOpen = ref(false);
 const testTarget = ref<Account | null>(null);
-const testModel = ref("gpt-5");
+const testModel = ref("gpt-5.4-high");
 const testRunning = ref(false);
 const testResult = ref<AccountTestResult | null>(null);
 const testError = ref("");
-const modelOptions = ["gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-codex"];
+const modelOptions = ref<string[]>([
+  "gpt-5.5",
+  "gpt-5.4-low",
+  "gpt-5.4-medium",
+  "gpt-5.4-high",
+  "gpt-5.4-xhigh",
+  "gpt-5.3-codex-high",
+  "gpt-5",
+  "gpt-5-codex",
+]);
+
+function pct(v?: number) {
+  if (v == null) return 0;
+  return Math.max(0, Math.min(100, v));
+}
+function pctLabel(v?: number) {
+  if (v == null) return "—";
+  return v.toFixed(1) + "%";
+}
+function usageBarClass(v?: number) {
+  if (v == null) return "";
+  if (v >= 90) return "usage-fill-danger";
+  if (v >= 70) return "usage-fill-warn";
+  return "";
+}
+function fmtWindow(minutes?: number) {
+  if (!minutes) return "";
+  if (minutes % (60 * 24) === 0) return minutes / (60 * 24) + "d";
+  if (minutes % 60 === 0) return minutes / 60 + "h";
+  return minutes + "m";
+}
+function fmtReset(seconds?: number) {
+  if (seconds == null || seconds <= 0) return "";
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (h > 0) return `${h}h${m}m`;
+  if (m > 0) return `${m}m`;
+  return `${seconds}s`;
+}
 
 // force-reset flow
 const resetting = ref<Record<number, boolean>>({});
@@ -253,7 +291,18 @@ function fmtDate(s?: string | null) {
   return new Date(s).toLocaleString();
 }
 
-onMounted(load);
+onMounted(() => {
+  load();
+  api
+    .listModels()
+    .then((r) => {
+      if (r.models?.length) {
+        modelOptions.value = r.models;
+        if (!r.models.includes(testModel.value)) testModel.value = r.models[0];
+      }
+    })
+    .catch(() => {});
+});
 onUnmounted(() => clearInterval(pollTimer));
 </script>
 
@@ -327,6 +376,39 @@ onUnmounted(() => clearInterval(pollTimer));
           <div class="list-row" style="padding: 7px 0">
             <span class="faint text-sm" style="flex: 1">{{ t("accounts.estCost") }}</span>
             <span class="text-sm mono">{{ fmtCost(usage[a.id]?.cost_usd) }}</span>
+          </div>
+        </div>
+
+        <div v-if="a.codex_usage" class="usage-windows">
+          <div class="usage-window">
+            <div class="usage-window-head">
+              <span class="faint text-sm">
+                {{ t("accounts.window5h") }}
+                <span v-if="fmtWindow(a.codex_usage.secondary_window_minutes)" class="faint">· {{ fmtWindow(a.codex_usage.secondary_window_minutes) }}</span>
+              </span>
+              <span class="text-sm mono">{{ pctLabel(a.codex_usage.secondary_used_percent) }}</span>
+            </div>
+            <div class="usage-bar">
+              <div class="usage-fill" :class="usageBarClass(a.codex_usage.secondary_used_percent)" :style="{ width: pct(a.codex_usage.secondary_used_percent) + '%' }"></div>
+            </div>
+            <div v-if="fmtReset(a.codex_usage.secondary_reset_after_seconds)" class="faint text-xs" style="margin-top: 3px">
+              {{ t("accounts.resetIn") }} {{ fmtReset(a.codex_usage.secondary_reset_after_seconds) }}
+            </div>
+          </div>
+          <div class="usage-window">
+            <div class="usage-window-head">
+              <span class="faint text-sm">
+                {{ t("accounts.window7d") }}
+                <span v-if="fmtWindow(a.codex_usage.primary_window_minutes)" class="faint">· {{ fmtWindow(a.codex_usage.primary_window_minutes) }}</span>
+              </span>
+              <span class="text-sm mono">{{ pctLabel(a.codex_usage.primary_used_percent) }}</span>
+            </div>
+            <div class="usage-bar">
+              <div class="usage-fill" :class="usageBarClass(a.codex_usage.primary_used_percent)" :style="{ width: pct(a.codex_usage.primary_used_percent) + '%' }"></div>
+            </div>
+            <div v-if="fmtReset(a.codex_usage.primary_reset_after_seconds)" class="faint text-xs" style="margin-top: 3px">
+              {{ t("accounts.resetIn") }} {{ fmtReset(a.codex_usage.primary_reset_after_seconds) }}
+            </div>
           </div>
         </div>
 

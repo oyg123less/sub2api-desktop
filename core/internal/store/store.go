@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -91,6 +92,15 @@ func (s *Store) migrate() error {
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("migrate: %w", err)
+		}
+	}
+	// Additive column migrations: ignore "duplicate column" on re-run.
+	alters := []string{
+		`ALTER TABLE accounts ADD COLUMN usage_snapshot TEXT NOT NULL DEFAULT ''`,
+	}
+	for _, stmt := range alters {
+		if _, err := s.db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migrate: %w", err)
 		}
 	}

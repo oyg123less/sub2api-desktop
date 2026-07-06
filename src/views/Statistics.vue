@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import BarChart from "../components/BarChart.vue";
+import LineChart from "../components/LineChart.vue";
 import { api, type RequestLog, type StatsResponse } from "../api/control";
 import { useAppStore } from "../store";
 
@@ -91,7 +91,7 @@ onMounted(load);
     <div class="card" style="margin-top: 16px">
       <h3 class="card-title">{{ t("statistics.dailyTrend") }}</h3>
       <div v-if="!hasData" class="empty">{{ t("statistics.noData") }}</div>
-      <BarChart v-else :data="chartData" />
+      <LineChart v-else :data="chartData" />
     </div>
 
     <div class="grid grid-2" style="margin-top: 16px">

@@ -51,6 +51,16 @@ export interface Status {
   account_count: number;
 }
 
+export interface CodexUsage {
+  primary_used_percent?: number;
+  primary_reset_after_seconds?: number;
+  primary_window_minutes?: number;
+  secondary_used_percent?: number;
+  secondary_reset_after_seconds?: number;
+  secondary_window_minutes?: number;
+  updated_at: string;
+}
+
 export interface Account {
   id: number;
   email: string;
@@ -62,6 +72,7 @@ export interface Account {
   rate_limited_until?: string | null;
   proxy_id?: number | null;
   last_used_at?: string | null;
+  codex_usage?: CodexUsage | null;
   created_at: string;
 }
 
@@ -179,6 +190,8 @@ export const api = {
   deleteProxy: (id: number) => req<{ ok: boolean }>("DELETE", `/control/proxies/${id}`),
   testProxy: (id: number) =>
     req<{ ok: boolean; latency_ms?: number; error?: string }>("POST", `/control/proxies/${id}/test`),
+
+  listModels: () => req<{ models: string[] }>("GET", "/control/models"),
 
   logs: (limit = 50) => req<{ logs: RequestLog[] }>("GET", `/control/logs?limit=${limit}`),
   stats: (days = 7) => req<StatsResponse>("GET", `/control/stats?days=${days}`),

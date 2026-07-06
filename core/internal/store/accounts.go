@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"time"
 )
@@ -21,11 +22,18 @@ func (s *Store) scanAccount(row interface {
 		updatedAt  int64
 		proxyID    sql.NullInt64
 		status     string
+		usageJSON  string
 	)
 	if err := row.Scan(&a.ID, &a.Email, &a.ChatGPTAccountID, &a.PlanType,
 		&accessEnc, &refreshEnc, &idTokenEnc, &expiresAt, &status, &a.StatusReason,
-		&rateUntil, &proxyID, &lastUsed, &createdAt, &updatedAt); err != nil {
+		&rateUntil, &proxyID, &lastUsed, &createdAt, &updatedAt, &usageJSON); err != nil {
 		return nil, err
+	}
+	if usageJSON != "" {
+		var u CodexUsage
+		if err := json.Unmarshal([]byte(usageJSON), &u); err == nil {
+			a.CodexUsage = &u
+		}
 	}
 	var err error
 	if a.AccessToken, err = s.cipher.Decrypt(accessEnc); err != nil {
@@ -56,7 +64,7 @@ func (s *Store) scanAccount(row interface {
 	return &a, nil
 }
 
-const accountCols = `id, email, chatgpt_account_id, plan_type, access_token, refresh_token, id_token, expires_at, status, status_reason, rate_limited_until, proxy_id, last_used_at, created_at, updated_at`
+const accountCols = `id, email, chatgpt_account_id, plan_type, access_token, refresh_token, id_token, expires_at, status, status_reason, rate_limited_until, proxy_id, last_used_at, created_at, updated_at, usage_snapshot`
 
 // CreateAccount inserts a new account (tokens encrypted).
 func (s *Store) CreateAccount(a *Account) (*Account, error) {
@@ -77,8 +85,8 @@ func (s *Store) CreateAccount(a *Account) (*Account, error) {
 		a.Status = AccountActive
 	}
 	res, err := s.db.Exec(`INSERT INTO accounts
-		(email, chatgpt_account_id, plan_type, access_token, refresh_token, id_token, expires_at, status, status_reason, rate_limited_until, proxy_id, last_used_at, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		(email, chatgpt_account_id, plan_type, access_token, refresh_token, id_token, expires_at, status, status_reason, rate_limited_until, proxy_id, last_used_at, created_at, updated_at, usage_snapshot)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'')`,
 		a.Email, a.ChatGPTAccountID, a.PlanType, accessEnc, refreshEnc, idTokenEnc,
 		timeToUnix(a.ExpiresAt), string(a.Status), a.StatusReason, int64(0), a.ProxyID, int64(0),
 		now.Unix(), now.Unix())
@@ -163,6 +171,16 @@ func (s *Store) SetRateLimited(id int64, until time.Time) error {
 // TouchAccount records last-used time.
 func (s *Store) TouchAccount(id int64) error {
 	_, err := s.db.Exec(`UPDATE accounts SET last_used_at=? WHERE id=?`, time.Now().Unix(), id)
+	return err
+}
+
+// SetAccountCodexUsage stores the latest Codex rate-limit window snapshot.
+func (s *Store) SetAccountCodexUsage(id int64, u *CodexUsage) error {
+	data, err := json.Marshal(u)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`UPDATE accounts SET usage_snapshot=? WHERE id=?`, string(data), id)
 	return err
 }
 
