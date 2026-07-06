@@ -19,7 +19,8 @@
         "minHeight": 600,
         "resizable": true,
         "center": true,
-        "theme": "Light"
+        "theme": "Light",
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-gpu --disable-gpu-compositing"
       }
     ],
     "security": {
@@ -38,6 +39,11 @@
       "icons/icon.ico"
     ],
     "resources": [],
+    "windows": {
+      "nsis": {
+        "installerHooks": "./windows/hooks.nsh"
+      }
+    },
     "copyright": "Personal use only. Includes components under LGPL v3 (sub2api).",
     "category": "DeveloperTool",
     "shortDescription": "Local OpenAI-compatible API gateway",

@@ -3,10 +3,13 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::{
     menu::{Menu, MenuItem},
-    tray::{TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager, State, WindowEvent,
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Emitter, Manager, RunEvent, State, WindowEvent,
 };
-use tauri_plugin_shell::{process::CommandEvent, ShellExt};
+use tauri_plugin_shell::{
+    process::{CommandChild, CommandEvent},
+    ShellExt,
+};
 
 #[derive(Default, Clone, Serialize)]
 pub struct Connection {
@@ -18,6 +21,15 @@ pub struct Connection {
 struct AppState {
     connection: Mutex<Connection>,
     hint_shown: Mutex<bool>,
+    sidecar: Mutex<Option<CommandChild>>,
+}
+
+fn kill_sidecar(app: &tauri::AppHandle) {
+    if let Some(state) = app.try_state::<AppState>() {
+        if let Some(child) = state.sidecar.lock().unwrap().take() {
+            let _ = child.kill();
+        }
+    }
 }
 
 #[tauri::command]
@@ -65,13 +77,17 @@ fn spawn_sidecar(app: &tauri::AppHandle) {
         }
     };
 
-    let (mut rx, _child) = match sidecar.spawn() {
+    let (mut rx, child) = match sidecar.spawn() {
         Ok(v) => v,
         Err(e) => {
             eprintln!("failed to spawn sidecar: {e}");
             return;
         }
     };
+
+    if let Some(state) = app.try_state::<AppState>() {
+        *state.sidecar.lock().unwrap() = Some(child);
+    }
 
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -118,11 +134,21 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                     let _ = win.set_focus();
                 }
             }
-            "quit" => app.exit(0),
+            "quit" => {
+                kill_sidecar(app);
+                app.exit(0);
+            }
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click { .. } = event {
+            // Only react to left-click releases; grabbing focus on a
+            // right-click would immediately dismiss the context menu.
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
                 let app = tray.app_handle();
                 if let Some(win) = app.get_webview_window("main") {
                     let _ = win.show();
@@ -176,6 +202,11 @@ pub fn run() {
                 }
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app, event| {
+            if let RunEvent::Exit = event {
+                kill_sidecar(app);
+            }
+        });
 }
