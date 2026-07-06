@@ -188,7 +188,7 @@ disable_response_storage = true
 [model_providers.%s]
 name = %q
 base_url = %q
-wire_api = "chat"
+wire_api = "responses"
 requires_openai_auth = true
 `, providerID, model, providerID, providerName, baseURL)
 }

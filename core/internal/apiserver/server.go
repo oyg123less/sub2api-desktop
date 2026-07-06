@@ -29,6 +29,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /health", h.health)
 	mux.HandleFunc("GET /v1/models", h.auth(h.models))
 	mux.HandleFunc("POST /v1/chat/completions", h.auth(h.engine.ChatCompletions))
+	mux.HandleFunc("POST /v1/responses", h.auth(h.engine.Responses))
 }
 
 func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
