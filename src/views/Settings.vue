@@ -6,6 +6,14 @@ import CopyField from "../components/CopyField.vue";
 import ConfirmModal from "../components/ConfirmModal.vue";
 import { api, type Settings } from "../api/control";
 import { useAppStore } from "../store";
+import {
+  isTauri,
+  getDataDir,
+  setDataDir,
+  openDataDir,
+  pickDirectory,
+  type DataDirInfo,
+} from "../tauri";
 
 const { t, locale } = useI18n();
 const app = useAppStore();
@@ -14,6 +22,62 @@ const s = ref<Settings | null>(null);
 const loading = ref(true);
 const saving = ref(false);
 const regenOpen = ref(false);
+
+const inTauri = isTauri();
+const dataDir = ref<DataDirInfo | null>(null);
+const movingDir = ref(false);
+const dirConfirmOpen = ref(false);
+const pendingDir = ref("");
+
+async function loadDataDir() {
+  if (!inTauri) return;
+  try {
+    dataDir.value = await getDataDir();
+  } catch {
+    /* ignore */
+  }
+}
+
+async function chooseDir() {
+  try {
+    const picked = await pickDirectory(dataDir.value?.current);
+    if (!picked || picked === dataDir.value?.current) return;
+    pendingDir.value = picked;
+    dirConfirmOpen.value = true;
+  } catch (e) {
+    app.toast((e as Error).message, "error");
+  }
+}
+
+async function confirmMoveDir() {
+  dirConfirmOpen.value = false;
+  if (!pendingDir.value) return;
+  movingDir.value = true;
+  try {
+    dataDir.value = await setDataDir(pendingDir.value);
+    app.toast(t("settings.dataDirMoved"), "success");
+    await app.refreshStatus();
+  } catch (e) {
+    app.toast((e as Error).message, "error");
+  } finally {
+    movingDir.value = false;
+    pendingDir.value = "";
+  }
+}
+
+function resetDir() {
+  if (!dataDir.value || !dataDir.value.is_custom) return;
+  pendingDir.value = dataDir.value.default;
+  dirConfirmOpen.value = true;
+}
+
+async function openDir() {
+  try {
+    await openDataDir();
+  } catch (e) {
+    app.toast((e as Error).message, "error");
+  }
+}
 
 const models = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark", "gpt-5.2"];
 
@@ -65,7 +129,10 @@ async function confirmRegen() {
   }
 }
 
-onMounted(load);
+onMounted(() => {
+  load();
+  loadDataDir();
+});
 </script>
 
 <template>
@@ -172,6 +239,30 @@ onMounted(load);
           </select>
         </div>
       </div>
+
+      <!-- Data storage -->
+      <div v-if="inTauri" class="card">
+        <h3 class="card-title"><Icon name="database" :size="16" /> {{ t("settings.dataStorage") }}</h3>
+        <p class="faint text-sm" style="margin-top: -6px; margin-bottom: 12px">{{ t("settings.dataDirDesc") }}</p>
+        <div class="datadir-path">{{ dataDir?.current || "—" }}</div>
+        <div class="row-gap mt-16">
+          <button class="btn btn-sm" :disabled="movingDir" @click="chooseDir">
+            <Icon name="folder" :size="14" /> {{ t("settings.changeDataDir") }}
+          </button>
+          <button class="btn btn-sm" @click="openDir">
+            <Icon name="external" :size="14" /> {{ t("settings.openDataDir") }}
+          </button>
+          <button
+            v-if="dataDir?.is_custom"
+            class="btn btn-sm"
+            :disabled="movingDir"
+            @click="resetDir"
+          >
+            <Icon name="refresh" :size="14" /> {{ t("settings.resetDataDir") }}
+          </button>
+        </div>
+        <p v-if="movingDir" class="faint text-sm mt-16">{{ t("settings.dataDirMoving") }}</p>
+      </div>
     </template>
 
     <ConfirmModal
@@ -183,5 +274,30 @@ onMounted(load);
       @confirm="confirmRegen"
       @cancel="regenOpen = false"
     />
+
+    <ConfirmModal
+      :open="dirConfirmOpen"
+      :title="t('settings.dataDirConfirm')"
+      :desc="t('settings.dataDirConfirmDesc', { path: pendingDir })"
+      :confirm-text="t('settings.changeDataDir')"
+      @confirm="confirmMoveDir"
+      @cancel="dirConfirmOpen = false; pendingDir = ''"
+    />
   </div>
 </template>
+
+<style scoped>
+.datadir-path {
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+  padding: 10px 12px;
+  background: var(--surface-2, rgba(0, 0, 0, 0.04));
+  border-radius: 8px;
+  word-break: break-all;
+}
+.row-gap {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+</style>

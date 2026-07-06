@@ -37,6 +37,141 @@ fn get_connection(state: State<AppState>) -> Connection {
     state.connection.lock().unwrap().clone()
 }
 
+/// Returns the directory where the data-dir override pointer file lives. This
+/// location never moves (it is always the app config dir) so the app can always
+/// find where the user relocated their data.
+fn pointer_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
+    app.path()
+        .app_config_dir()
+        .unwrap_or_else(|_| std::env::temp_dir())
+}
+
+fn default_data_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
+    pointer_dir(app).join("data")
+}
+
+/// Resolves the effective data directory: the user override from location.json
+/// if set and non-empty, otherwise the default (app_config_dir/data).
+fn resolve_data_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
+    let pointer = pointer_dir(app).join("location.json");
+    if let Ok(bytes) = std::fs::read(&pointer) {
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            if let Some(dir) = v.get("data_dir").and_then(|d| d.as_str()) {
+                let dir = dir.trim();
+                if !dir.is_empty() {
+                    return std::path::PathBuf::from(dir);
+                }
+            }
+        }
+    }
+    default_data_dir(app)
+}
+
+#[derive(Serialize)]
+struct DataDirInfo {
+    current: String,
+    default: String,
+    is_custom: bool,
+}
+
+#[tauri::command]
+fn get_data_dir(app: tauri::AppHandle) -> DataDirInfo {
+    let current = resolve_data_dir(&app);
+    let default = default_data_dir(&app);
+    DataDirInfo {
+        is_custom: current != default,
+        current: current.to_string_lossy().to_string(),
+        default: default.to_string_lossy().to_string(),
+    }
+}
+
+#[tauri::command]
+async fn open_data_dir(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = resolve_data_dir(&app);
+    let _ = std::fs::create_dir_all(&dir);
+    app.opener()
+        .open_path(dir.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+/// Moves the data files (db + key + sqlite side files) from one dir to another,
+/// retrying briefly to tolerate the sidecar releasing the sqlite file handle.
+fn move_data_files(from: &std::path::Path, to: &std::path::Path) -> Result<(), String> {
+    std::fs::create_dir_all(to).map_err(|e| e.to_string())?;
+    let names = [
+        "sub2api.db",
+        "sub2api.db-wal",
+        "sub2api.db-shm",
+        "key",
+    ];
+    for name in names {
+        let src = from.join(name);
+        if !src.exists() {
+            continue;
+        }
+        let dst = to.join(name);
+        let mut last_err = String::new();
+        let mut moved = false;
+        for _ in 0..20 {
+            match std::fs::rename(&src, &dst) {
+                Ok(()) => {
+                    moved = true;
+                    break;
+                }
+                Err(_) => {
+                    // Cross-device or locked: fall back to copy+remove.
+                    match std::fs::copy(&src, &dst) {
+                        Ok(_) => {
+                            let _ = std::fs::remove_file(&src);
+                            moved = true;
+                            break;
+                        }
+                        Err(e) => {
+                            last_err = e.to_string();
+                            std::thread::sleep(std::time::Duration::from_millis(150));
+                        }
+                    }
+                }
+            }
+        }
+        if !moved {
+            return Err(format!("移动 {name} 失败: {last_err}"));
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_data_dir(app: tauri::AppHandle, path: String) -> Result<DataDirInfo, String> {
+    let new_dir = std::path::PathBuf::from(path.trim());
+    if new_dir.as_os_str().is_empty() {
+        return Err("路径不能为空".to_string());
+    }
+    let old_dir = resolve_data_dir(&app);
+    if new_dir == old_dir {
+        return Ok(get_data_dir(app));
+    }
+    std::fs::create_dir_all(&new_dir).map_err(|e| format!("无法创建目录: {e}"))?;
+
+    // Stop the sidecar so it releases the sqlite file, then migrate the data.
+    kill_sidecar(&app);
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    move_data_files(&old_dir, &new_dir)?;
+
+    // Persist the override pointer (empty when reverting to default).
+    let pointer = pointer_dir(&app).join("location.json");
+    let default = default_data_dir(&app);
+    let stored = if new_dir == default { String::new() } else { new_dir.to_string_lossy().to_string() };
+    let body = serde_json::json!({ "data_dir": stored }).to_string();
+    let _ = std::fs::create_dir_all(pointer_dir(&app));
+    std::fs::write(&pointer, body).map_err(|e| format!("保存配置失败: {e}"))?;
+
+    // Respawn the sidecar against the new location.
+    spawn_sidecar(&app);
+    Ok(get_data_dir(app))
+}
+
 #[tauri::command]
 async fn open_external(app: tauri::AppHandle, url: String) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
@@ -57,11 +192,7 @@ fn parse_handshake(line: &str) -> Option<Connection> {
 }
 
 fn spawn_sidecar(app: &tauri::AppHandle) {
-    let data_dir = app
-        .path()
-        .app_config_dir()
-        .unwrap_or_else(|_| std::env::temp_dir())
-        .join("data");
+    let data_dir = resolve_data_dir(app);
     let _ = std::fs::create_dir_all(&data_dir);
 
     let sidecar = match app.shell().sidecar("sub2api-sidecar") {
@@ -180,8 +311,15 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![get_connection, open_external])
+        .invoke_handler(tauri::generate_handler![
+            get_connection,
+            open_external,
+            get_data_dir,
+            set_data_dir,
+            open_data_dir
+        ])
         .setup(|app| {
             let handle = app.handle();
             build_tray(handle)?;

@@ -14,6 +14,34 @@ export interface Connection {
   control_token: string;
 }
 
+export interface DataDirInfo {
+  current: string;
+  default: string;
+  is_custom: boolean;
+}
+
+export async function getDataDir(): Promise<DataDirInfo | null> {
+  if (!isTauri()) return null;
+  return invoke<DataDirInfo>("get_data_dir");
+}
+
+export async function setDataDir(path: string): Promise<DataDirInfo> {
+  return invoke<DataDirInfo>("set_data_dir", { path });
+}
+
+export async function openDataDir(): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("open_data_dir");
+}
+
+// Opens a native folder picker, returning the chosen path or null if cancelled.
+export async function pickDirectory(defaultPath?: string): Promise<string | null> {
+  if (!isTauri()) return null;
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const result = await open({ directory: true, multiple: false, defaultPath });
+  return typeof result === "string" ? result : null;
+}
+
 // Fetches the sidecar connection info from the Rust shell and stashes it on the
 // window so the (synchronous) control API client can read it.
 export async function bootstrapConnection(): Promise<void> {

@@ -26,9 +26,23 @@ func ChatCompletionsToResponses(req *ChatCompletionsRequest) (*ResponsesRequest,
 		return nil, err
 	}
 
+	// Mirror system prompts into instructions, like upstream sub2api: system
+	// items become developer items in the input, and their text is also
+	// prepended to instructions so the Codex backend treats them as the
+	// top-level prompt. When a system prompt is present, instructions becomes
+	// non-empty and base-instruction injection is skipped (no double prompt).
+	instructions := req.Instructions
+	if sys := collectChatSystemTexts(req.Messages); sys != "" {
+		if strings.TrimSpace(instructions) != "" {
+			instructions = sys + "\n\n" + instructions
+		} else {
+			instructions = sys
+		}
+	}
+
 	out := &ResponsesRequest{
 		Model:        req.Model,
-		Instructions: req.Instructions,
+		Instructions: instructions,
 		Input:        inputJSON,
 		Stream:       true, // upstream always streams
 		Include:      []string{"reasoning.encrypted_content"},
@@ -132,7 +146,38 @@ func chatSystemToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []ResponsesInputItem{{Role: "system", Content: content}}, nil
+	return []ResponsesInputItem{{Role: "developer", Content: content}}, nil
+}
+
+// collectChatSystemTexts joins the plain text of all system messages so it can
+// be mirrored into the Responses instructions field (matching upstream).
+func collectChatSystemTexts(msgs []ChatMessage) string {
+	var texts []string
+	for _, m := range msgs {
+		if m.Role != "system" {
+			continue
+		}
+		parsed, err := parseChatMessageContent(m.Content)
+		if err != nil {
+			continue
+		}
+		if parsed.Text != nil {
+			if t := strings.TrimSpace(*parsed.Text); t != "" {
+				texts = append(texts, t)
+			}
+			continue
+		}
+		var parts []string
+		for _, p := range parsed.Parts {
+			if p.Type == "text" && strings.TrimSpace(p.Text) != "" {
+				parts = append(parts, p.Text)
+			}
+		}
+		if len(parts) > 0 {
+			texts = append(texts, strings.Join(parts, ""))
+		}
+	}
+	return strings.Join(texts, "\n\n")
 }
 
 // chatUserToResponses converts a user message, handling both plain strings and
