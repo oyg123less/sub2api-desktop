@@ -19,7 +19,7 @@ export function isConnected(): boolean {
   return c.port > 0 && c.token.length > 0;
 }
 
-async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function req<T>(method: string, path: string, body?: unknown, rawBody?: string): Promise<T> {
   const c = conn();
   if (!c.port || !c.token) {
     throw new Error("尚未连接到后台服务");
@@ -30,7 +30,7 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
       "Content-Type": "application/json",
       "X-Control-Token": c.token,
     },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body: rawBody !== undefined ? rawBody : body !== undefined ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
   const data = text ? JSON.parse(text) : {};
@@ -134,8 +134,8 @@ export const api = {
   regenerateKey: () => req<{ local_api_key: string }>("POST", "/control/settings/regenerate-key"),
 
   listAccounts: () => req<{ accounts: Account[] }>("GET", "/control/accounts"),
-  importAccounts: (payload: unknown) =>
-    req<ImportResult>("POST", "/control/accounts/import", payload),
+  importAccounts: (rawText: string) =>
+    req<ImportResult>("POST", "/control/accounts/import", undefined, rawText),
   deleteAccount: (id: number) => req<{ ok: boolean }>("DELETE", `/control/accounts/${id}`),
   refreshAccount: (id: number) => req<{ ok: boolean }>("POST", `/control/accounts/${id}/refresh`),
   bindProxy: (id: number, proxyId: number | null) =>

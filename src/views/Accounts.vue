@@ -28,6 +28,8 @@ const deleteTarget = ref<Account | null>(null);
 const importOpen = ref(false);
 const importText = ref("");
 const importing = ref(false);
+const importFileName = ref("");
+const importFileInput = ref<HTMLInputElement | null>(null);
 
 const importExample = `[
   {
@@ -40,7 +42,21 @@ const importExample = `[
 
 function openImport() {
   importText.value = "";
+  importFileName.value = "";
+  if (importFileInput.value) importFileInput.value.value = "";
   importOpen.value = true;
+}
+
+async function onImportFile(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  try {
+    importText.value = await file.text();
+    importFileName.value = file.name;
+  } catch (e) {
+    app.toast((e as Error).message, "error");
+  }
 }
 
 async function submitImport() {
@@ -49,16 +65,9 @@ async function submitImport() {
     app.toast(t("accounts.importEmpty"), "error");
     return;
   }
-  let payload: unknown;
-  try {
-    payload = JSON.parse(raw);
-  } catch {
-    app.toast(t("accounts.importBadJson"), "error");
-    return;
-  }
   importing.value = true;
   try {
-    const r = await api.importAccounts(payload);
+    const r = await api.importAccounts(raw);
     const msg = t("accounts.importResult", {
       imported: r.imported,
       updated: r.updated,
@@ -320,6 +329,19 @@ onUnmounted(() => clearInterval(pollTimer));
         <div class="modal" style="max-width: 560px">
           <h3 class="modal-title">{{ t("accounts.import") }}</h3>
           <p class="modal-desc">{{ t("accounts.importHint") }}</p>
+          <div class="flex items-center gap-8" style="margin-bottom: 10px">
+            <button class="btn btn-ghost btn-sm" @click="importFileInput?.click()">
+              <Icon name="upload" :size="14" /> {{ t("accounts.importChooseFile") }}
+            </button>
+            <span v-if="importFileName" class="faint text-sm">{{ importFileName }}</span>
+            <input
+              ref="importFileInput"
+              type="file"
+              accept="application/json,.json"
+              style="display: none"
+              @change="onImportFile"
+            />
+          </div>
           <textarea
             v-model="importText"
             class="input"

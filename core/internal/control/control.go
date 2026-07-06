@@ -232,25 +232,9 @@ func (c *Control) importAccounts(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	trimmed := strings.TrimSpace(string(raw))
-	var entries []account.ImportEntry
-	if strings.HasPrefix(trimmed, "{") {
-		var wrapper struct {
-			Accounts []account.ImportEntry `json:"accounts"`
-		}
-		if err := json.Unmarshal([]byte(trimmed), &wrapper); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "JSON 解析失败: " + err.Error()})
-			return
-		}
-		entries = wrapper.Accounts
-	} else {
-		if err := json.Unmarshal([]byte(trimmed), &entries); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "JSON 解析失败: " + err.Error()})
-			return
-		}
-	}
-	if len(entries) == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "未找到可导入的账号"})
+	entries, err := account.ParseImportPayload(string(raw))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 	res := c.mgr.Import(entries)

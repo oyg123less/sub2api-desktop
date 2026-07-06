@@ -115,6 +115,9 @@ func parseExpiry(s string) time.Time {
 		return t
 	}
 	if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
+		if n > 1e12 { // unix milliseconds
+			return time.UnixMilli(n)
+		}
 		return time.Unix(n, 0)
 	}
 	return time.Time{}
