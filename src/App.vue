@@ -5,6 +5,7 @@ import { useI18n } from "vue-i18n";
 import Icon from "./components/Icon.vue";
 import Toasts from "./components/Toasts.vue";
 import { useAppStore } from "./store";
+import logoUrl from "./assets/logo.svg";
 
 const route = useRoute();
 const { t } = useI18n();
@@ -33,7 +34,7 @@ onUnmounted(() => clearInterval(timer));
   <div class="app-shell">
     <aside class="sidebar">
       <div class="brand">
-        <div class="brand-logo">A</div>
+        <img class="brand-logo" :src="logoUrl" alt="Amber" />
         <div>
           <div class="brand-name">Amber</div>
           <div class="brand-sub">琥珀 · 本地网关</div>
