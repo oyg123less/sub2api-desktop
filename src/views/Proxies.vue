@@ -15,6 +15,7 @@ const testing = ref<Record<number, boolean>>({});
 
 const addOpen = ref(false);
 const saving = ref(false);
+const editId = ref<number | null>(null);
 const form = reactive({
   name: "",
   type: "http" as Proxy["type"],
@@ -37,7 +38,21 @@ async function load() {
 }
 
 function openAdd() {
+  editId.value = null;
   Object.assign(form, { name: "", type: "http", host: "", port: 1080, username: "", password: "" });
+  addOpen.value = true;
+}
+
+function openEdit(p: Proxy) {
+  editId.value = p.id;
+  Object.assign(form, {
+    name: p.name,
+    type: p.type,
+    host: p.host,
+    port: p.port,
+    username: p.username || "",
+    password: "",
+  });
   addOpen.value = true;
 }
 
@@ -48,14 +63,19 @@ async function save() {
   }
   saving.value = true;
   try {
-    await api.createProxy({
+    const payload = {
       name: form.name || `${form.host}:${form.port}`,
       type: form.type,
       host: form.host,
       port: Number(form.port),
       username: form.username || undefined,
       password: form.password || undefined,
-    });
+    };
+    if (editId.value != null) {
+      await api.updateProxy(editId.value, payload);
+    } else {
+      await api.createProxy(payload);
+    }
     addOpen.value = false;
     await load();
   } catch (e) {
@@ -130,6 +150,9 @@ onMounted(load);
             <Icon name="refresh" :size="14" :class="testing[p.id] ? 'spin' : ''" />
             {{ testing[p.id] ? t("proxies.testing") : t("common.test") }}
           </button>
+          <button class="btn btn-ghost btn-sm" @click="openEdit(p)">
+            <Icon name="edit" :size="14" /> {{ t("common.edit") }}
+          </button>
           <button class="btn btn-danger btn-sm" @click="deleteTarget = p">
             <Icon name="trash" :size="14" />
           </button>
@@ -141,7 +164,7 @@ onMounted(load);
     <Teleport to="body">
       <div v-if="addOpen" class="modal-backdrop" @click.self="addOpen = false">
         <div class="modal">
-          <h3 class="modal-title">{{ t("proxies.add") }}</h3>
+          <h3 class="modal-title">{{ editId != null ? t("proxies.edit") : t("proxies.add") }}</h3>
           <div class="field">
             <label class="field-label">{{ t("proxies.name") }}</label>
             <input v-model="form.name" class="input" :placeholder="t('proxies.namePlaceholder')" />
@@ -171,7 +194,7 @@ onMounted(load);
             </div>
             <div class="field">
               <label class="field-label">{{ t("proxies.password") }}</label>
-              <input v-model="form.password" type="password" class="input" />
+              <input v-model="form.password" type="password" class="input" :placeholder="editId != null ? t('proxies.passwordKeep') : ''" />
             </div>
           </div>
           <div class="modal-actions">

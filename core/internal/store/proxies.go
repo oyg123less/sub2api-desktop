@@ -73,6 +73,23 @@ func (s *Store) ListProxies() ([]*Proxy, error) {
 	return out, rows.Err()
 }
 
+// UpdateProxy updates an existing proxy's fields (password re-encrypted).
+func (s *Store) UpdateProxy(id int64, p *Proxy) (*Proxy, error) {
+	passEnc, err := s.cipher.Encrypt(p.Password)
+	if err != nil {
+		return nil, err
+	}
+	res, err := s.db.Exec(`UPDATE proxies SET name=?, type=?, host=?, port=?, username=?, password=? WHERE id=?`,
+		p.Name, string(p.Type), p.Host, p.Port, p.Username, passEnc, id)
+	if err != nil {
+		return nil, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, ErrNotFound
+	}
+	return s.GetProxy(id)
+}
+
 // DeleteProxy removes a proxy and clears it from any accounts referencing it.
 func (s *Store) DeleteProxy(id int64) error {
 	if _, err := s.db.Exec(`UPDATE accounts SET proxy_id=NULL WHERE proxy_id=?`, id); err != nil {

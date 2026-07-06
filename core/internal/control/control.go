@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"sub2api-desktop/core/internal/account"
+	"sub2api-desktop/core/internal/gateway"
+	"sub2api-desktop/core/internal/openai"
 	"sub2api-desktop/core/internal/store"
 )
 
@@ -39,18 +41,20 @@ type Control struct {
 	oauth    *oauthCoordinator
 	settings SettingsAccess
 	server   ServerController
+	engine   *gateway.Engine
 	token    string
 	version  string
 }
 
 // New builds the control API.
-func New(s *store.Store, mgr *account.Manager, settings SettingsAccess, server ServerController, token, version string) *Control {
+func New(s *store.Store, mgr *account.Manager, settings SettingsAccess, server ServerController, engine *gateway.Engine, token, version string) *Control {
 	return &Control{
 		store:    s,
 		mgr:      mgr,
 		oauth:    newOAuthCoordinator(mgr, s, settings.Get),
 		settings: settings,
 		server:   server,
+		engine:   engine,
 		token:    token,
 		version:  version,
 	}
@@ -72,12 +76,15 @@ func (c *Control) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /control/accounts/{id}", h(c.deleteAccount))
 	mux.HandleFunc("POST /control/accounts/{id}/refresh", h(c.refreshAccount))
 	mux.HandleFunc("POST /control/accounts/{id}/proxy", h(c.bindProxy))
+	mux.HandleFunc("POST /control/accounts/{id}/test", h(c.testAccount))
+	mux.HandleFunc("POST /control/accounts/{id}/status", h(c.setAccountStatus))
 
 	mux.HandleFunc("POST /control/oauth/start", h(c.oauthStart))
 	mux.HandleFunc("GET /control/oauth/poll", h(c.oauthPoll))
 
 	mux.HandleFunc("GET /control/proxies", h(c.listProxies))
 	mux.HandleFunc("POST /control/proxies", h(c.createProxy))
+	mux.HandleFunc("PUT /control/proxies/{id}", h(c.updateProxy))
 	mux.HandleFunc("DELETE /control/proxies/{id}", h(c.deleteProxy))
 	mux.HandleFunc("POST /control/proxies/{id}/test", h(c.testProxy))
 
@@ -215,13 +222,101 @@ func (c *Control) regenKey(w http.ResponseWriter, r *http.Request) {
 
 // --- accounts ---
 
+// accountUsage is the per-account usage + cost roll-up returned alongside the
+// account list.
+type accountUsage struct {
+	AccountID        int64   `json:"account_id"`
+	Requests         int64   `json:"requests"`
+	PromptTokens     int64   `json:"prompt_tokens"`
+	CompletionTokens int64   `json:"completion_tokens"`
+	TotalTokens      int64   `json:"total_tokens"`
+	CostUSD          float64 `json:"cost_usd"`
+}
+
+func (c *Control) usageByAccount() map[int64]*accountUsage {
+	rows, err := c.store.UsageByAccountModel()
+	if err != nil {
+		return nil
+	}
+	out := make(map[int64]*accountUsage)
+	for _, r := range rows {
+		u := out[r.AccountID]
+		if u == nil {
+			u = &accountUsage{AccountID: r.AccountID}
+			out[r.AccountID] = u
+		}
+		u.Requests += r.Requests
+		u.PromptTokens += r.PromptTokens
+		u.CompletionTokens += r.CompletionTokens
+		u.TotalTokens += r.TotalTokens
+		u.CostUSD += openai.CostUSD(r.Model, r.PromptTokens, r.CompletionTokens)
+	}
+	return out
+}
+
 func (c *Control) listAccounts(w http.ResponseWriter, r *http.Request) {
 	accounts, err := c.store.ListAccounts()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"accounts": accounts})
+	usage := c.usageByAccount()
+	writeJSON(w, http.StatusOK, map[string]any{"accounts": accounts, "usage": usage})
+}
+
+// testAccount runs a live connectivity probe through the full anti-ban pipeline
+// and updates the account status based on the result.
+func (c *Control) testAccount(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	acc, err := c.store.GetAccount(id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "account not found"})
+		return
+	}
+	var body struct {
+		Model  string `json:"model"`
+		Prompt string `json:"prompt"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	ctx, cancel := context.WithTimeout(r.Context(), 100*time.Second)
+	defer cancel()
+	res := c.engine.TestAccount(ctx, acc, body.Model, body.Prompt)
+	writeJSON(w, http.StatusOK, res)
+}
+
+// setAccountStatus lets the user force an account's status (e.g. reset a
+// rate-limited/errored account back to active).
+func (c *Control) setAccountStatus(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	status := store.AccountStatus(strings.TrimSpace(body.Status))
+	if status == "" {
+		status = store.AccountActive
+	}
+	switch status {
+	case store.AccountActive, store.AccountDisabled, store.AccountRateLimited, store.AccountRefreshFailed:
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid status"})
+		return
+	}
+	if err := c.store.SetAccountStatus(id, status, ""); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	acc, _ := c.store.GetAccount(id)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "account": acc})
 }
 
 // importAccounts accepts a batch of accounts as JSON. The body may be a bare
@@ -351,6 +446,31 @@ func (c *Control) createProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, created)
+}
+
+func (c *Control) updateProxy(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var p store.Proxy
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if p.Type == "" {
+		p.Type = store.ProxyHTTP
+	}
+	updated, err := c.store.UpdateProxy(id, &p)
+	if err == store.ErrNotFound {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "proxy not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
 }
 
 func (c *Control) deleteProxy(w http.ResponseWriter, r *http.Request) {

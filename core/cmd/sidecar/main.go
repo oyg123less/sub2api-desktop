@@ -84,7 +84,7 @@ func run(dataDir string, controlPort int, controlToken string, logger *slog.Logg
 		controlToken = randomToken()
 	}
 
-	ctrl := control.New(st, mgr, holder, apiManager, controlToken, version)
+	ctrl := control.New(st, mgr, holder, apiManager, engine, controlToken, version)
 
 	// Control API listener (loopback only).
 	controlLn, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", controlPort))

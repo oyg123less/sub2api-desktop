@@ -3,7 +3,7 @@ import { onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import Icon from "../components/Icon.vue";
 import ConfirmModal from "../components/ConfirmModal.vue";
-import { api, type Account, type Proxy } from "../api/control";
+import { api, type Account, type AccountUsage, type AccountTestResult, type Proxy } from "../api/control";
 import { useAppStore } from "../store";
 import { openUrl } from "../platform";
 
@@ -11,8 +11,21 @@ const { t } = useI18n();
 const app = useAppStore();
 
 const accounts = ref<Account[]>([]);
+const usage = ref<Record<string, AccountUsage>>({});
 const proxies = ref<Proxy[]>([]);
 const loading = ref(true);
+
+// connectivity test flow
+const testOpen = ref(false);
+const testTarget = ref<Account | null>(null);
+const testModel = ref("gpt-5");
+const testRunning = ref(false);
+const testResult = ref<AccountTestResult | null>(null);
+const testError = ref("");
+const modelOptions = ["gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-codex"];
+
+// force-reset flow
+const resetting = ref<Record<number, boolean>>({});
 
 // login flow
 const loginOpen = ref(false);
@@ -91,15 +104,61 @@ async function submitImport() {
 
 async function load() {
   try {
-    [accounts.value, proxies.value] = [
-      (await api.listAccounts()).accounts || [],
-      (await api.listProxies()).proxies || [],
-    ];
+    const [acc, prox] = [await api.listAccounts(), await api.listProxies()];
+    accounts.value = acc.accounts || [];
+    usage.value = acc.usage || {};
+    proxies.value = prox.proxies || [];
   } catch (e) {
     app.toast((e as Error).message, "error");
   } finally {
     loading.value = false;
   }
+}
+
+function openTest(a: Account) {
+  testTarget.value = a;
+  testResult.value = null;
+  testError.value = "";
+  testRunning.value = false;
+  testOpen.value = true;
+}
+
+async function runTest() {
+  if (!testTarget.value) return;
+  testRunning.value = true;
+  testResult.value = null;
+  testError.value = "";
+  try {
+    const r = await api.testAccount(testTarget.value.id, testModel.value);
+    testResult.value = r;
+    await load();
+  } catch (e) {
+    testError.value = (e as Error).message;
+  } finally {
+    testRunning.value = false;
+  }
+}
+
+async function forceReset(a: Account) {
+  resetting.value[a.id] = true;
+  try {
+    await api.setAccountStatus(a.id, "active");
+    app.toast(t("accounts.resetOk"), "success");
+    await load();
+    await app.refreshStatus();
+  } catch (e) {
+    app.toast((e as Error).message, "error");
+  } finally {
+    resetting.value[a.id] = false;
+  }
+}
+
+function fmtCost(n?: number) {
+  if (!n) return "$0.0000";
+  return "$" + n.toFixed(4);
+}
+function fmtNum(n?: number) {
+  return (n ?? 0).toLocaleString();
 }
 
 async function startLogin() {
@@ -261,6 +320,14 @@ onUnmounted(() => clearInterval(pollTimer));
             <span class="faint text-sm" style="flex: 1">{{ t("accounts.lastUsed") }}</span>
             <span class="text-sm">{{ fmtDate(a.last_used_at) }}</span>
           </div>
+          <div class="list-row" style="padding: 7px 0">
+            <span class="faint text-sm" style="flex: 1">{{ t("accounts.tokensUsed") }}</span>
+            <span class="text-sm mono">{{ fmtNum(usage[a.id]?.total_tokens) }}</span>
+          </div>
+          <div class="list-row" style="padding: 7px 0">
+            <span class="faint text-sm" style="flex: 1">{{ t("accounts.estCost") }}</span>
+            <span class="text-sm mono">{{ fmtCost(usage[a.id]?.cost_usd) }}</span>
+          </div>
         </div>
 
         <div class="field" style="margin-bottom: 12px">
@@ -275,6 +342,21 @@ onUnmounted(() => clearInterval(pollTimer));
               {{ p.name }} ({{ p.type }})
             </option>
           </select>
+        </div>
+
+        <div class="flex gap-8" style="margin-bottom: 8px">
+          <button class="btn btn-primary btn-sm" style="flex: 1" @click="openTest(a)">
+            <Icon name="bolt" :size="14" /> {{ t("accounts.test") }}
+          </button>
+          <button
+            v-if="a.status !== 'active'"
+            class="btn btn-ghost btn-sm"
+            style="flex: 1"
+            :disabled="resetting[a.id]"
+            @click="forceReset(a)"
+          >
+            <Icon name="check" :size="14" /> {{ t("accounts.forceReset") }}
+          </button>
         </div>
 
         <div class="flex gap-8">
@@ -317,6 +399,63 @@ onUnmounted(() => clearInterval(pollTimer));
             <button class="btn btn-ghost" @click="cancelLogin">{{ t("common.cancel") }}</button>
             <button v-if="loginError" class="btn btn-primary" @click="startLogin">
               {{ t("common.retry") }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Connectivity test modal -->
+    <Teleport to="body">
+      <div v-if="testOpen" class="modal-backdrop" @click.self="testOpen = false">
+        <div class="modal" style="max-width: 520px">
+          <h3 class="modal-title">{{ t("accounts.testTitle") }}</h3>
+          <p class="modal-desc">{{ testTarget?.email }}</p>
+          <div class="field">
+            <label class="field-label">{{ t("accounts.testModel") }}</label>
+            <select v-model="testModel" class="select" :disabled="testRunning">
+              <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
+            </select>
+          </div>
+
+          <div v-if="testRunning" class="flex items-center gap-12" style="margin: 14px 0">
+            <Icon name="refresh" class="spin" :size="18" style="color: var(--primary)" />
+            <span class="muted">{{ t("accounts.testing") }}</span>
+          </div>
+
+          <div v-else-if="testError" class="card" style="margin: 12px 0; border-color: var(--danger)">
+            <div class="text-sm" style="color: var(--danger)">{{ t("accounts.testFailed") }}: {{ testError }}</div>
+          </div>
+
+          <div v-else-if="testResult" class="card" style="margin: 12px 0">
+            <div class="row-between" style="margin-bottom: 8px">
+              <span class="badge" :class="testResult.ok ? 'badge-success' : 'badge-danger'">
+                <span class="badge-dot"></span>
+                {{ testResult.ok ? t("accounts.testPass") : t("accounts.testFailed") }}
+              </span>
+              <span class="faint text-sm">HTTP {{ testResult.status }} · {{ testResult.latency_ms }}ms</span>
+            </div>
+            <div v-if="!testResult.ok && testResult.error" class="text-sm" style="color: var(--danger); margin-bottom: 8px">
+              {{ testResult.error }}
+            </div>
+            <div v-if="testResult.sample" class="code-box" style="margin-bottom: 8px">
+              <span>{{ testResult.sample }}</span>
+            </div>
+            <div class="list-row" style="padding: 5px 0">
+              <span class="faint text-sm" style="flex: 1">{{ t("accounts.tokensUsed") }}</span>
+              <span class="text-sm mono">{{ fmtNum(testResult.total_tokens) }} ({{ fmtNum(testResult.prompt_tokens) }}+{{ fmtNum(testResult.completion_tokens) }})</span>
+            </div>
+            <div class="list-row" style="padding: 5px 0">
+              <span class="faint text-sm" style="flex: 1">{{ t("accounts.statusAfter") }}</span>
+              <span class="text-sm">{{ t("accounts.status." + testResult.account_status) }}</span>
+            </div>
+          </div>
+
+          <div class="modal-actions">
+            <button class="btn btn-ghost" @click="testOpen = false">{{ t("common.close") }}</button>
+            <button class="btn btn-primary" :disabled="testRunning" @click="runTest">
+              <Icon v-if="testRunning" name="refresh" class="spin" :size="14" />
+              {{ t("accounts.runTest") }}
             </button>
           </div>
         </div>

@@ -72,7 +72,30 @@ export interface Proxy {
   host: string;
   port: number;
   username?: string;
+  password?: string;
   created_at: string;
+}
+
+export interface AccountUsage {
+  account_id: number;
+  requests: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+}
+
+export interface AccountTestResult {
+  ok: boolean;
+  status: number;
+  error?: string;
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  latency_ms: number;
+  sample?: string;
+  account_status: string;
 }
 
 export interface RequestLog {
@@ -133,13 +156,17 @@ export const api = {
   saveSettings: (s: Partial<Settings>) => req<Settings>("PUT", "/control/settings", s),
   regenerateKey: () => req<{ local_api_key: string }>("POST", "/control/settings/regenerate-key"),
 
-  listAccounts: () => req<{ accounts: Account[] }>("GET", "/control/accounts"),
+  listAccounts: () => req<{ accounts: Account[]; usage: Record<string, AccountUsage> }>("GET", "/control/accounts"),
   importAccounts: (rawText: string) =>
     req<ImportResult>("POST", "/control/accounts/import", undefined, rawText),
   deleteAccount: (id: number) => req<{ ok: boolean }>("DELETE", `/control/accounts/${id}`),
   refreshAccount: (id: number) => req<{ ok: boolean }>("POST", `/control/accounts/${id}/refresh`),
   bindProxy: (id: number, proxyId: number | null) =>
     req<{ ok: boolean }>("POST", `/control/accounts/${id}/proxy`, { proxy_id: proxyId }),
+  testAccount: (id: number, model?: string, prompt?: string) =>
+    req<AccountTestResult>("POST", `/control/accounts/${id}/test`, { model: model ?? "", prompt: prompt ?? "" }),
+  setAccountStatus: (id: number, status: string) =>
+    req<{ ok: boolean; account: Account }>("POST", `/control/accounts/${id}/status`, { status }),
 
   oauthStart: (proxyId?: number | null) =>
     req<{ auth_url: string; state: string }>("POST", "/control/oauth/start", { proxy_id: proxyId ?? null }),
@@ -148,6 +175,7 @@ export const api = {
 
   listProxies: () => req<{ proxies: Proxy[] }>("GET", "/control/proxies"),
   createProxy: (p: Partial<Proxy> & { password?: string }) => req<Proxy>("POST", "/control/proxies", p),
+  updateProxy: (id: number, p: Partial<Proxy> & { password?: string }) => req<Proxy>("PUT", `/control/proxies/${id}`, p),
   deleteProxy: (id: number) => req<{ ok: boolean }>("DELETE", `/control/proxies/${id}`),
   testProxy: (id: number) =>
     req<{ ok: boolean; latency_ms?: number; error?: string }>("POST", `/control/proxies/${id}/test`),

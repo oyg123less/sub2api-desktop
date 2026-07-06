@@ -122,6 +122,38 @@ func (s *Store) Daily(days int) ([]DailyPoint, error) {
 	return out, rows.Err()
 }
 
+// AccountModelUsage aggregates token usage for one (account, model) pair.
+type AccountModelUsage struct {
+	AccountID        int64  `json:"account_id"`
+	Model            string `json:"model"`
+	Requests         int64  `json:"requests"`
+	PromptTokens     int64  `json:"prompt_tokens"`
+	CompletionTokens int64  `json:"completion_tokens"`
+	TotalTokens      int64  `json:"total_tokens"`
+}
+
+// UsageByAccountModel returns per-account, per-model token aggregates over all
+// logs that carry an account_id. Used to compute per-account usage and cost.
+func (s *Store) UsageByAccountModel() ([]AccountModelUsage, error) {
+	rows, err := s.db.Query(`SELECT account_id, model,
+		COUNT(*), COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0), COALESCE(SUM(total_tokens),0)
+		FROM request_logs WHERE account_id IS NOT NULL
+		GROUP BY account_id, model`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AccountModelUsage
+	for rows.Next() {
+		var u AccountModelUsage
+		if err := rows.Scan(&u.AccountID, &u.Model, &u.Requests, &u.PromptTokens, &u.CompletionTokens, &u.TotalTokens); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
 // ModelPoint aggregates usage per model.
 type ModelPoint struct {
 	Model       string `json:"model"`
