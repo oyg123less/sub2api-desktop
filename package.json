@@ -1,6 +1,6 @@
 {
   "name": "sub2api-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Sub2API Desktop — 本地 OpenAI 兼容 API 网关（个人自用）",
   "type": "module",
   "private": true,
