@@ -36,11 +36,15 @@ func (m *Manager) Running() bool {
 	return m.running
 }
 
-// Port returns the configured/active listen port.
+// Port returns the active listen port while running, otherwise the port
+// currently configured in settings.
 func (m *Manager) Port() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.port
+	if m.running {
+		return m.port
+	}
+	return m.settings().ListenPort
 }
 
 // Start binds and serves the API. It is safe to call when already running.

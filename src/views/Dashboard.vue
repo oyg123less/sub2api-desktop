@@ -16,6 +16,9 @@ const logs = ref<RequestLog[]>([]);
 const stats = ref<StatsResponse | null>(null);
 const busy = ref(false);
 const regenOpen = ref(false);
+const editingUrl = ref(false);
+const urlDraft = ref("");
+const savingUrl = ref(false);
 
 const hasAccount = computed(() => app.accountCount > 0);
 const endpoint = computed(() => app.status?.endpoint || "http://127.0.0.1:8080/v1");
@@ -45,6 +48,45 @@ async function toggleServer() {
     app.toast((e as Error).message, "error");
   } finally {
     busy.value = false;
+  }
+}
+
+function startEditUrl() {
+  urlDraft.value = endpoint.value;
+  editingUrl.value = true;
+}
+
+function parsePort(url: string): number | null {
+  const m = /^http:\/\/127\.0\.0\.1:(\d{1,5})\/v1\/?$/.exec(url.trim());
+  if (!m) return null;
+  const port = Number(m[1]);
+  if (port < 1 || port > 65535) return null;
+  return port;
+}
+
+async function saveUrl() {
+  const port = parsePort(urlDraft.value);
+  if (port === null) {
+    app.toast(t("dashboard.invalidBaseUrl"), "error");
+    return;
+  }
+  savingUrl.value = true;
+  try {
+    const s = await api.getSettings();
+    if (s.listen_port !== port) {
+      await api.saveSettings({ ...s, listen_port: port });
+      if (app.serverRunning) {
+        await api.stopServer();
+        await api.startServer();
+      }
+    }
+    await app.refreshStatus();
+    editingUrl.value = false;
+    app.toast(t("dashboard.baseUrlSaved", { port }), "success");
+  } catch (e) {
+    app.toast((e as Error).message, "error");
+  } finally {
+    savingUrl.value = false;
   }
 }
 
@@ -163,8 +205,29 @@ onUnmounted(() => clearInterval(timer));
       </p>
       <div class="grid grid-2">
         <div>
-          <label class="field-label">{{ t("dashboard.baseUrl") }}</label>
-          <CopyField :value="endpoint" />
+          <div class="row-between" style="margin-bottom: 6px">
+            <label class="field-label" style="margin: 0">{{ t("dashboard.baseUrl") }}</label>
+            <button v-if="!editingUrl" class="btn btn-ghost btn-sm" @click="startEditUrl">
+              <Icon name="edit" :size="13" /> {{ t("dashboard.edit") }}
+            </button>
+            <div v-else class="flex items-center gap-12" style="gap: 6px">
+              <button class="btn btn-primary btn-sm" :disabled="savingUrl" @click="saveUrl">
+                {{ t("dashboard.save") }}
+              </button>
+              <button class="btn btn-ghost btn-sm" :disabled="savingUrl" @click="editingUrl = false">
+                {{ t("dashboard.cancel") }}
+              </button>
+            </div>
+          </div>
+          <CopyField v-if="!editingUrl" :value="endpoint" />
+          <input
+            v-else
+            v-model="urlDraft"
+            class="input mono"
+            placeholder="http://127.0.0.1:8080/v1"
+            @keyup.enter="saveUrl"
+            @keyup.esc="editingUrl = false"
+          />
         </div>
         <div>
           <div class="row-between" style="margin-bottom: 6px">

@@ -134,7 +134,7 @@ export interface Settings {
   language: string;
   auto_start_server: boolean;
   tls_fingerprint: boolean;
-  reject_unknown_model: boolean;
+  codex_model: string;
 }
 
 export interface ImportResult {
@@ -198,8 +198,11 @@ export const api = {
   stats: (days = 7) => req<StatsResponse>("GET", `/control/stats?days=${days}`),
 
   codexStatus: () => req<CodexStatus>("GET", "/control/codex/status"),
-  codexApply: () => req<CodexStatus>("POST", "/control/codex/apply"),
+  codexApply: (model?: string) => req<CodexStatus>("POST", "/control/codex/apply", { model: model ?? "" }),
   codexRestore: () => req<CodexStatus>("POST", "/control/codex/restore"),
+  codexFiles: () => req<CodexFiles>("GET", "/control/codex/files"),
+  saveCodexFiles: (config: string, auth: string) =>
+    req<CodexFiles>("PUT", "/control/codex/files", { config, auth }),
 };
 
 export interface CodexStatus {
@@ -210,6 +213,16 @@ export interface CodexStatus {
   backup_exists: boolean;
   base_url: string;
   model: string;
+  models: string[];
   config_preview: string;
   auth_preview: string;
+}
+
+export interface CodexFiles {
+  config_path: string;
+  auth_path: string;
+  config_content: string;
+  auth_content: string;
+  config_default: string;
+  auth_default: string;
 }

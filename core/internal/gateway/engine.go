@@ -88,12 +88,13 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	cfg := e.settings()
 	requestedModel := chatReq.Model
-	chatReq.Model = normalizeModel(chatReq.Model, cfg.DefaultModel)
-	if cfg.RejectUnknownModel && strings.TrimSpace(requestedModel) != "" && chatReq.Model != requestedModel {
-		writeError(w, http.StatusBadRequest, "unknown model: "+requestedModel+"（已开启“未知模型直接拒绝”，仅支持 gpt-5*/codex 系列）", "invalid_request_error")
+	model, ok := resolveModel(requestedModel, cfg.DefaultModel)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "unknown model: "+requestedModel+"（仅支持 gpt-5*/codex 系列模型）", "invalid_request_error")
 		return
 	}
-	logModel := modelLogLabel(requestedModel, chatReq.Model)
+	chatReq.Model = model
+	logModel := upstreamLogModel(model)
 
 	candidates, err := e.selectAccounts()
 	if err != nil {
@@ -272,28 +273,29 @@ func (e *Engine) selectAccounts() ([]*store.Account, error) {
 	return out, nil
 }
 
-// normalizeModel passes through gpt-5*/codex model names and falls back to the
-// configured default for anything else.
-func normalizeModel(model, def string) string {
+// resolveModel returns the model to forward: the configured default when the
+// request omits a model, or the request's model when it belongs to the
+// gpt-5*/codex families. Anything else is rejected (no silent fallback).
+func resolveModel(model, def string) (string, bool) {
 	m := strings.ToLower(strings.TrimSpace(model))
 	if m == "" {
-		return def
+		return def, true
 	}
 	if strings.HasPrefix(m, "gpt-5") || strings.Contains(m, "codex") {
-		return model
+		return model, true
 	}
-	return def
+	return "", false
 }
 
-// modelLogLabel is the model name stored in request logs. When the requested
-// model fell back to the configured default it shows both, e.g.
-// "claude-sonnet-4-6 → gpt-5.4", so the stats page reflects what was actually
-// forwarded upstream.
-func modelLogLabel(requested, effective string) string {
-	if strings.TrimSpace(requested) == "" || requested == effective {
-		return effective
+// upstreamLogModel is the model name stored in request logs: the canonical
+// upstream model actually called, with any reasoning-effort suffix kept
+// (e.g. gpt-5 → gpt-5.4, gpt-5.3-high → gpt-5.3-codex-high).
+func upstreamLogModel(model string) string {
+	upstream, effort := openai.MapCodexModel(model)
+	if effort != "" {
+		return upstream + "-" + effort
 	}
-	return requested + " → " + effective
+	return upstream
 }
 
 // applyAntiBan injects instructions and forces store=false.

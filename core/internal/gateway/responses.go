@@ -32,12 +32,12 @@ func (e *Engine) Responses(w http.ResponseWriter, r *http.Request) {
 
 	cfg := e.settings()
 	requestedModel, _ := body["model"].(string)
-	model := normalizeModel(requestedModel, cfg.DefaultModel)
-	if cfg.RejectUnknownModel && strings.TrimSpace(requestedModel) != "" && model != requestedModel {
-		writeError(w, http.StatusBadRequest, "unknown model: "+requestedModel+"（已开启“未知模型直接拒绝”，仅支持 gpt-5*/codex 系列）", "invalid_request_error")
+	model, ok := resolveModel(requestedModel, cfg.DefaultModel)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "unknown model: "+requestedModel+"（仅支持 gpt-5*/codex 系列模型）", "invalid_request_error")
 		return
 	}
-	logModel := modelLogLabel(requestedModel, model)
+	logModel := upstreamLogModel(model)
 	upstreamModel, effort := openai.MapCodexModel(model)
 	body["model"] = upstreamModel
 	if effort != "" {

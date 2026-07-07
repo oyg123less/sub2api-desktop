@@ -12,17 +12,17 @@ const DefaultUserAgent = "codex_cli_rs/0.125.0 (Ubuntu 22.4.0; x86_64) xterm-256
 // DefaultSettings returns the built-in defaults (used on first run).
 func DefaultSettings() Settings {
 	return Settings{
-		ListenPort:         8080,
-		AllowLAN:           false,
-		LocalAPIKey:        "",
-		InjectInstr:        true,
-		DefaultModel:       "gpt-5.4",
-		UserAgent:          DefaultUserAgent,
-		Originator:         "codex_cli_rs",
-		Language:           "zh-CN",
-		AutoStartServer:    false,
-		TLSFingerprint:     true,
-		RejectUnknownModel: false,
+		ListenPort:      8080,
+		AllowLAN:        false,
+		LocalAPIKey:     "",
+		InjectInstr:     true,
+		DefaultModel:    "gpt-5.4",
+		UserAgent:       DefaultUserAgent,
+		Originator:      "codex_cli_rs",
+		Language:        "zh-CN",
+		AutoStartServer: false,
+		TLSFingerprint:  true,
+		CodexModel:      "gpt-5.5",
 	}
 }
 
@@ -119,10 +119,10 @@ func (s *Store) LoadSettings() (Settings, error) {
 	} else if v != "" {
 		out.TLSFingerprint = v == "1"
 	}
-	if v, err := get("reject_unknown_model"); err != nil {
+	if v, err := get("codex_model"); err != nil {
 		return out, err
 	} else if v != "" {
-		out.RejectUnknownModel = v == "1"
+		out.CodexModel = v
 	}
 
 	// Seed a local API key on first run.
@@ -144,17 +144,17 @@ func (s *Store) SaveSettings(v Settings) error {
 		return "0"
 	}
 	kv := map[string]string{
-		"listen_port":          strconv.Itoa(v.ListenPort),
-		"allow_lan":            b2s(v.AllowLAN),
-		"local_api_key":        v.LocalAPIKey,
-		"inject_instructions":  b2s(v.InjectInstr),
-		"default_model":        v.DefaultModel,
-		"user_agent":           v.UserAgent,
-		"originator":           v.Originator,
-		"language":             v.Language,
-		"auto_start_server":    b2s(v.AutoStartServer),
-		"tls_fingerprint":      b2s(v.TLSFingerprint),
-		"reject_unknown_model": b2s(v.RejectUnknownModel),
+		"listen_port":         strconv.Itoa(v.ListenPort),
+		"allow_lan":           b2s(v.AllowLAN),
+		"local_api_key":       v.LocalAPIKey,
+		"inject_instructions": b2s(v.InjectInstr),
+		"default_model":       v.DefaultModel,
+		"user_agent":          v.UserAgent,
+		"originator":          v.Originator,
+		"language":            v.Language,
+		"auto_start_server":   b2s(v.AutoStartServer),
+		"tls_fingerprint":     b2s(v.TLSFingerprint),
+		"codex_model":         v.CodexModel,
 	}
 	for k, val := range kv {
 		if err := s.setKV(k, val); err != nil {
