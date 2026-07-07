@@ -36,7 +36,10 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 	start := time.Now()
 	cfg := e.settings()
 
-	testModel := normalizeModel(model, cfg.DefaultModel)
+	testModel, ok := resolveModel(model, cfg.DefaultModel)
+	if !ok {
+		testModel = cfg.DefaultModel
+	}
 	if testModel == "" {
 		testModel = "gpt-5.4"
 	}

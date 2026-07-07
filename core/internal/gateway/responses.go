@@ -32,7 +32,12 @@ func (e *Engine) Responses(w http.ResponseWriter, r *http.Request) {
 
 	cfg := e.settings()
 	requestedModel, _ := body["model"].(string)
-	model := normalizeModel(requestedModel, cfg.DefaultModel)
+	model, ok := resolveModel(requestedModel, cfg.DefaultModel)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "unknown model: "+requestedModel+"（仅支持 gpt-5*/codex 系列模型）", "invalid_request_error")
+		return
+	}
+	logModel := upstreamLogModel(model)
 	upstreamModel, effort := openai.MapCodexModel(model)
 	body["model"] = upstreamModel
 	if effort != "" {
@@ -71,7 +76,7 @@ func (e *Engine) Responses(w http.ResponseWriter, r *http.Request) {
 
 	var lastErr string
 	for _, acc := range candidates {
-		result := e.forwardResponsesOnce(r.Context(), w, upstreamBody, requestedModel, acc, cfg)
+		result := e.forwardResponsesOnce(r.Context(), w, upstreamBody, logModel, acc, cfg)
 		switch result.outcome {
 		case outcomeSuccess:
 			return
@@ -103,7 +108,7 @@ func (e *Engine) Responses(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusServiceUnavailable, lastErr, "all_accounts_unavailable")
 }
 
-func (e *Engine) forwardResponsesOnce(ctx context.Context, w http.ResponseWriter, upstreamBody []byte, requestedModel string, acc *store.Account, cfg store.Settings) forwardResult {
+func (e *Engine) forwardResponsesOnce(ctx context.Context, w http.ResponseWriter, upstreamBody []byte, logModel string, acc *store.Account, cfg store.Settings) forwardResult {
 	start := time.Now()
 
 	var proxy *store.Proxy
@@ -141,23 +146,23 @@ func (e *Engine) forwardResponsesOnce(ctx context.Context, w http.ResponseWriter
 	usage := e.captureCodexUsage(acc, resp.Header)
 
 	if resp.StatusCode == http.StatusTooManyRequests {
-		e.logRequest(acc, requestedModel, resp.StatusCode, 0, 0, time.Since(start), true, "rate limited (429)")
+		e.logRequest(acc, logModel, resp.StatusCode, 0, 0, time.Since(start), true, "rate limited (429)")
 		return forwardResult{outcome: outcomeRateLimited, status: resp.StatusCode, errMsg: "账号已限额（429）", retryAfter: rateLimitRetryAfter(resp.Header, usage)}
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		msg := readUpstreamError(resp.Body)
-		e.logRequest(acc, requestedModel, resp.StatusCode, 0, 0, time.Since(start), true, msg)
+		e.logRequest(acc, logModel, resp.StatusCode, 0, 0, time.Since(start), true, msg)
 		return forwardResult{outcome: outcomeAuthFailed, status: resp.StatusCode, errMsg: "鉴权失败: " + msg}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		msg := readUpstreamError(resp.Body)
-		e.logRequest(acc, requestedModel, resp.StatusCode, 0, 0, time.Since(start), true, msg)
+		e.logRequest(acc, logModel, resp.StatusCode, 0, 0, time.Since(start), true, msg)
 		return forwardResult{outcome: outcomeUpstreamError, status: resp.StatusCode, errMsg: msg}
 	}
 
 	_ = e.store.TouchAccount(acc.ID)
 
-	return e.relayResponsesSSE(w, resp.Body, requestedModel, acc, start)
+	return e.relayResponsesSSE(w, resp.Body, logModel, acc, start)
 }
 
 // relayResponsesSSE copies the upstream Responses SSE stream to the client

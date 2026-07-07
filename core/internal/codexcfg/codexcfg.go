@@ -98,6 +98,45 @@ func (m *Manager) Apply(baseURL, apiKey, model string) error {
 	return os.WriteFile(m.authPath(), auth, 0o600)
 }
 
+// ReadFiles returns the current on-disk contents of config.toml and
+// auth.json (empty strings when a file does not exist).
+func (m *Manager) ReadFiles() (config, auth string, err error) {
+	c, err := os.ReadFile(m.configPath())
+	if err != nil && !os.IsNotExist(err) {
+		return "", "", err
+	}
+	a, err := os.ReadFile(m.authPath())
+	if err != nil && !os.IsNotExist(err) {
+		return "", "", err
+	}
+	return string(c), string(a), nil
+}
+
+// WriteFiles writes user-edited config.toml / auth.json contents, backing up
+// the originals on first write. An empty string leaves that file untouched.
+func (m *Manager) WriteFiles(config, auth string) error {
+	if err := os.MkdirAll(m.dir, 0o700); err != nil {
+		return err
+	}
+	if config != "" {
+		if err := m.backupOnce(m.configPath()); err != nil {
+			return err
+		}
+		if err := os.WriteFile(m.configPath(), []byte(config), 0o600); err != nil {
+			return err
+		}
+	}
+	if auth != "" {
+		if err := m.backupOnce(m.authPath()); err != nil {
+			return err
+		}
+		if err := os.WriteFile(m.authPath(), []byte(auth), 0o600); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Restore reverts config.toml and auth.json to their pre-apply state.
 func (m *Manager) Restore() error {
 	if err := restoreOne(m.configPath()); err != nil {

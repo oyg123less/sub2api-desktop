@@ -22,6 +22,7 @@ func DefaultSettings() Settings {
 		Language:        "zh-CN",
 		AutoStartServer: false,
 		TLSFingerprint:  true,
+		CodexModel:      "gpt-5.5",
 	}
 }
 
@@ -118,6 +119,11 @@ func (s *Store) LoadSettings() (Settings, error) {
 	} else if v != "" {
 		out.TLSFingerprint = v == "1"
 	}
+	if v, err := get("codex_model"); err != nil {
+		return out, err
+	} else if v != "" {
+		out.CodexModel = v
+	}
 
 	// Seed a local API key on first run.
 	if out.LocalAPIKey == "" {
@@ -148,6 +154,7 @@ func (s *Store) SaveSettings(v Settings) error {
 		"language":            v.Language,
 		"auto_start_server":   b2s(v.AutoStartServer),
 		"tls_fingerprint":     b2s(v.TLSFingerprint),
+		"codex_model":         v.CodexModel,
 	}
 	for k, val := range kv {
 		if err := s.setKV(k, val); err != nil {

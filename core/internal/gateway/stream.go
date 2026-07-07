@@ -12,7 +12,7 @@ import (
 
 // streamResponse translates the upstream Responses SSE into Chat Completions
 // SSE and writes it to the client as it arrives.
-func (e *Engine) streamResponse(w http.ResponseWriter, body io.Reader, chatReq *apicompat.ChatCompletionsRequest, model string, acc *store.Account, start time.Time) forwardResult {
+func (e *Engine) streamResponse(w http.ResponseWriter, body io.Reader, chatReq *apicompat.ChatCompletionsRequest, model, logModel string, acc *store.Account, start time.Time) forwardResult {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: "streaming unsupported"}
@@ -62,13 +62,13 @@ func (e *Engine) streamResponse(w http.ResponseWriter, body io.Reader, chatReq *
 	flusher.Flush()
 
 	prompt, completion := usageCounts(state.Usage)
-	e.logRequest(acc, model, http.StatusOK, prompt, completion, time.Since(start), true, "")
+	e.logRequest(acc, logModel, http.StatusOK, prompt, completion, time.Since(start), true, "")
 	return forwardResult{outcome: outcomeSuccess, headersWritten: true}
 }
 
 // aggregateResponse consumes the upstream SSE and assembles a single
 // non-streaming Chat Completions response.
-func (e *Engine) aggregateResponse(w http.ResponseWriter, body io.Reader, chatReq *apicompat.ChatCompletionsRequest, model string, acc *store.Account, start time.Time) forwardResult {
+func (e *Engine) aggregateResponse(w http.ResponseWriter, body io.Reader, chatReq *apicompat.ChatCompletionsRequest, model, logModel string, acc *store.Account, start time.Time) forwardResult {
 	state := apicompat.NewResponsesEventToChatState()
 	state.Model = model
 	state.IncludeUsage = true
@@ -154,7 +154,7 @@ func (e *Engine) aggregateResponse(w http.ResponseWriter, body io.Reader, chatRe
 
 	prompt, completion := usageCounts(state.Usage)
 	writeJSON(w, http.StatusOK, resp)
-	e.logRequest(acc, model, http.StatusOK, prompt, completion, time.Since(start), false, "")
+	e.logRequest(acc, logModel, http.StatusOK, prompt, completion, time.Since(start), false, "")
 	return forwardResult{outcome: outcomeSuccess, headersWritten: true}
 }
 

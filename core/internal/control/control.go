@@ -91,6 +91,8 @@ func (c *Control) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /control/codex/status", h(c.codexStatus))
 	mux.HandleFunc("POST /control/codex/apply", h(c.codexApply))
 	mux.HandleFunc("POST /control/codex/restore", h(c.codexRestore))
+	mux.HandleFunc("GET /control/codex/files", h(c.codexFiles))
+	mux.HandleFunc("PUT /control/codex/files", h(c.codexWriteFiles))
 
 	mux.HandleFunc("GET /control/models", h(c.listModels))
 
@@ -192,6 +194,13 @@ func (c *Control) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.ListenPort == 0 {
 		in.ListenPort = cur.ListenPort
+	}
+	if in.ListenPort < 1 || in.ListenPort > 65535 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "端口无效：必须在 1-65535 之间"})
+		return
+	}
+	if in.CodexModel == "" {
+		in.CodexModel = cur.CodexModel
 	}
 	if in.DefaultModel == "" {
 		in.DefaultModel = cur.DefaultModel

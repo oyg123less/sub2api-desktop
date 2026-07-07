@@ -1,16 +1,34 @@
 package control
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"sub2api-desktop/core/internal/codexcfg"
+	"sub2api-desktop/core/internal/openai"
 )
 
 // codexBaseURL builds the gateway base URL clients should target. Codex always
 // connects over loopback regardless of the LAN listen setting.
 func (c *Control) codexBaseURL() string {
 	return "http://127.0.0.1:" + strconv.Itoa(c.server.Port()) + "/v1"
+}
+
+// codexModel returns the model configured for the Codex CLI integration.
+func (c *Control) codexModel() string {
+	if m := strings.TrimSpace(c.settings.Get().CodexModel); m != "" {
+		return m
+	}
+	return codexcfg.DefaultModel
+}
+
+// validCodexModel reports whether a model name belongs to the gpt-5*/codex
+// families accepted by the gateway.
+func validCodexModel(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(m, "gpt-5") || strings.Contains(m, "codex")
 }
 
 func (c *Control) codexStatus(w http.ResponseWriter, r *http.Request) {
@@ -25,6 +43,7 @@ func (c *Control) codexStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	base := c.codexBaseURL()
+	model := c.codexModel()
 	cfg := c.settings.Get()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"config_path":    st.ConfigPath,
@@ -33,20 +52,40 @@ func (c *Control) codexStatus(w http.ResponseWriter, r *http.Request) {
 		"config_exists":  st.ConfigExists,
 		"backup_exists":  st.BackupExists,
 		"base_url":       base,
-		"model":          codexcfg.DefaultModel,
-		"config_preview": codexcfg.RenderConfig(base, codexcfg.DefaultModel),
+		"model":          model,
+		"models":         openai.CodexTestModelOptions,
+		"config_preview": codexcfg.RenderConfig(base, model),
 		"auth_preview":   codexcfg.RenderAuth(cfg.LocalAPIKey),
 	})
 }
 
 func (c *Control) codexApply(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Model string `json:"model"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	model := strings.TrimSpace(body.Model)
+	if model != "" {
+		if !validCodexModel(model) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "模型名无效：仅支持 gpt-5*/codex 系列（如 gpt-5.5、gpt-5.4-high、gpt-5.3-codex）"})
+			return
+		}
+		cur := c.settings.Get()
+		if cur.CodexModel != model {
+			cur.CodexModel = model
+			if err := c.settings.Save(cur); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+				return
+			}
+		}
+	}
 	mgr, err := codexcfg.New("")
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
 	cfg := c.settings.Get()
-	if err := mgr.Apply(c.codexBaseURL(), cfg.LocalAPIKey, codexcfg.DefaultModel); err != nil {
+	if err := mgr.Apply(c.codexBaseURL(), cfg.LocalAPIKey, c.codexModel()); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
@@ -64,4 +103,69 @@ func (c *Control) codexRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.codexStatus(w, r)
+}
+
+// codexFiles returns the on-disk contents of ~/.codex/config.toml and
+// auth.json alongside the defaults the app would write, so the UI can offer
+// manual editing with a known-good starting point.
+func (c *Control) codexFiles(w http.ResponseWriter, r *http.Request) {
+	mgr, err := codexcfg.New("")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	config, auth, err := mgr.ReadFiles()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	st, _ := mgr.Status()
+	cfg := c.settings.Get()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"config_path":    st.ConfigPath,
+		"auth_path":      st.AuthPath,
+		"config_content": config,
+		"auth_content":   auth,
+		"config_default": codexcfg.RenderConfig(c.codexBaseURL(), c.codexModel()),
+		"auth_default":   codexcfg.RenderAuth(cfg.LocalAPIKey),
+	})
+}
+
+// codexWriteFiles writes user-edited config.toml / auth.json contents after
+// validating them (auth.json must be a JSON object; config.toml must declare
+// a model_provider). Empty fields are left untouched.
+func (c *Control) codexWriteFiles(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Config string `json:"config"`
+		Auth   string `json:"auth"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(body.Config) == "" && strings.TrimSpace(body.Auth) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "config 和 auth 至少需要提供一项"})
+		return
+	}
+	if strings.TrimSpace(body.Auth) != "" {
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(body.Auth), &obj); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "auth.json 不是合法的 JSON 对象: " + err.Error()})
+			return
+		}
+	}
+	if s := strings.TrimSpace(body.Config); s != "" && !strings.Contains(s, "model_provider") {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "config.toml 缺少 model_provider 配置项"})
+		return
+	}
+	mgr, err := codexcfg.New("")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if err := mgr.WriteFiles(body.Config, body.Auth); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	c.codexFiles(w, r)
 }
