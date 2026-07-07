@@ -96,4 +96,7 @@ type Settings struct {
 	Language        string `json:"language"`
 	AutoStartServer bool   `json:"auto_start_server"`
 	TLSFingerprint  bool   `json:"tls_fingerprint"`
+	// RejectUnknownModel returns 400 for model names outside the gpt-5*/codex
+	// families instead of silently falling back to DefaultModel.
+	RejectUnknownModel bool `json:"reject_unknown_model"`
 }

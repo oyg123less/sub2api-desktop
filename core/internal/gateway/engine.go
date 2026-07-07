@@ -89,6 +89,11 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	cfg := e.settings()
 	requestedModel := chatReq.Model
 	chatReq.Model = normalizeModel(chatReq.Model, cfg.DefaultModel)
+	if cfg.RejectUnknownModel && strings.TrimSpace(requestedModel) != "" && chatReq.Model != requestedModel {
+		writeError(w, http.StatusBadRequest, "unknown model: "+requestedModel+"（已开启“未知模型直接拒绝”，仅支持 gpt-5*/codex 系列）", "invalid_request_error")
+		return
+	}
+	logModel := modelLogLabel(requestedModel, chatReq.Model)
 
 	candidates, err := e.selectAccounts()
 	if err != nil {
@@ -102,7 +107,7 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	var lastErr string
 	for _, acc := range candidates {
-		result := e.forwardOnce(r.Context(), w, &chatReq, requestedModel, acc, cfg)
+		result := e.forwardOnce(r.Context(), w, &chatReq, requestedModel, logModel, acc, cfg)
 		switch result.outcome {
 		case outcomeSuccess:
 			return
@@ -155,7 +160,7 @@ type forwardResult struct {
 	retryAfter     time.Duration
 }
 
-func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq *apicompat.ChatCompletionsRequest, requestedModel string, acc *store.Account, cfg store.Settings) forwardResult {
+func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq *apicompat.ChatCompletionsRequest, requestedModel, logModel string, acc *store.Account, cfg store.Settings) forwardResult {
 	start := time.Now()
 
 	// Resolve proxy + client.
@@ -213,17 +218,17 @@ func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq
 	usage := e.captureCodexUsage(acc, resp.Header)
 
 	if resp.StatusCode == http.StatusTooManyRequests {
-		e.logRequest(acc, requestedModel, resp.StatusCode, 0, 0, time.Since(start), chatReq.Stream, "rate limited (429)")
+		e.logRequest(acc, logModel, resp.StatusCode, 0, 0, time.Since(start), chatReq.Stream, "rate limited (429)")
 		return forwardResult{outcome: outcomeRateLimited, status: resp.StatusCode, errMsg: "账号已限额（429）", retryAfter: rateLimitRetryAfter(resp.Header, usage)}
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		msg := readUpstreamError(resp.Body)
-		e.logRequest(acc, requestedModel, resp.StatusCode, 0, 0, time.Since(start), chatReq.Stream, msg)
+		e.logRequest(acc, logModel, resp.StatusCode, 0, 0, time.Since(start), chatReq.Stream, msg)
 		return forwardResult{outcome: outcomeAuthFailed, status: resp.StatusCode, errMsg: "鉴权失败: " + msg}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		msg := readUpstreamError(resp.Body)
-		e.logRequest(acc, requestedModel, resp.StatusCode, 0, 0, time.Since(start), chatReq.Stream, msg)
+		e.logRequest(acc, logModel, resp.StatusCode, 0, 0, time.Since(start), chatReq.Stream, msg)
 		return forwardResult{outcome: outcomeUpstreamError, status: resp.StatusCode, errMsg: msg}
 	}
 
@@ -231,9 +236,9 @@ func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq
 
 	// Stream and translate.
 	if chatReq.Stream {
-		return e.streamResponse(w, resp.Body, chatReq, requestedModel, acc, start)
+		return e.streamResponse(w, resp.Body, chatReq, requestedModel, logModel, acc, start)
 	}
-	return e.aggregateResponse(w, resp.Body, chatReq, requestedModel, acc, start)
+	return e.aggregateResponse(w, resp.Body, chatReq, requestedModel, logModel, acc, start)
 }
 
 func readUpstreamError(body io.Reader) string {
@@ -278,6 +283,17 @@ func normalizeModel(model, def string) string {
 		return model
 	}
 	return def
+}
+
+// modelLogLabel is the model name stored in request logs. When the requested
+// model fell back to the configured default it shows both, e.g.
+// "claude-sonnet-4-6 → gpt-5.4", so the stats page reflects what was actually
+// forwarded upstream.
+func modelLogLabel(requested, effective string) string {
+	if strings.TrimSpace(requested) == "" || requested == effective {
+		return effective
+	}
+	return requested + " → " + effective
 }
 
 // applyAntiBan injects instructions and forces store=false.

@@ -134,6 +134,7 @@ export interface Settings {
   language: string;
   auto_start_server: boolean;
   tls_fingerprint: boolean;
+  reject_unknown_model: boolean;
 }
 
 export interface ImportResult {

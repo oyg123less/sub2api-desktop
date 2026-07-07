@@ -224,6 +224,16 @@ onMounted(() => {
             <option v-for="m in models" :key="m" :value="m">{{ m }}</option>
           </select>
         </div>
+        <div class="setting-row">
+          <div class="setting-info">
+            <h4>{{ t("settings.rejectUnknownModel") }}</h4>
+            <p>{{ t("settings.rejectUnknownModelDesc") }}</p>
+          </div>
+          <label class="switch">
+            <input type="checkbox" v-model="s.reject_unknown_model" />
+            <span class="slider"></span>
+          </label>
+        </div>
       </div>
 
       <!-- Appearance -->
