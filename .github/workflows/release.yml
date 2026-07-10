@@ -39,6 +39,10 @@ jobs:
           $expected = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { '' }
           .\scripts\check-version.ps1 -Expected $expected
 
+      - name: Build Go sidecar
+        shell: pwsh
+        run: .\scripts\build-sidecar.ps1
+
       - name: Quality gate
         shell: pwsh
         run: |
@@ -54,10 +58,6 @@ jobs:
           cargo fmt --manifest-path src-tauri/Cargo.toml --check
           cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
           cargo test --manifest-path src-tauri/Cargo.toml
-
-      - name: Build Go sidecar
-        shell: pwsh
-        run: .\scripts\build-sidecar.ps1
 
       - name: Verify sidecar version
         shell: pwsh

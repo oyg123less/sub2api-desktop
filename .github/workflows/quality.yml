@@ -51,6 +51,9 @@ jobs:
         run: npx playwright install chromium
       - name: Frontend smoke tests
         run: npm run test:e2e
+      - name: Build Go sidecar
+        shell: pwsh
+        run: .\scripts\build-sidecar.ps1
       - name: Rust formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
       - name: Rust lint
