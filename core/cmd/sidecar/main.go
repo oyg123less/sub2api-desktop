@@ -6,6 +6,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -25,12 +26,13 @@ import (
 	"sub2api-desktop/core/internal/config"
 	"sub2api-desktop/core/internal/control"
 	"sub2api-desktop/core/internal/crypto"
+	"sub2api-desktop/core/internal/diagnostics"
 	"sub2api-desktop/core/internal/gateway"
 	"sub2api-desktop/core/internal/store"
 )
 
 // version is overridable at build time via -ldflags.
-var version = "0.1.0-dev"
+var version = "0.2.0-dev"
 
 func main() {
 	var (
@@ -69,6 +71,15 @@ func run(dataDir string, controlPort int, controlToken string, logger *slog.Logg
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer st.Close()
+	// Opening SQLite alone does not exercise encrypted columns. Force a full
+	// credential read before the readiness handshake so data-dir migration can
+	// detect a copied database paired with the wrong key and roll back.
+	if _, err := st.ListAccounts(); err != nil {
+		return fmt.Errorf("validate encrypted accounts: %w", err)
+	}
+	if _, err := st.ListProxies(); err != nil {
+		return fmt.Errorf("validate encrypted proxies: %w", err)
+	}
 
 	holder, err := config.NewHolder(st)
 	if err != nil {
@@ -79,12 +90,16 @@ func run(dataDir string, controlPort int, controlToken string, logger *slog.Logg
 	engine := gateway.New(st, mgr, holder.Get, logger)
 	apiHandler := apiserver.New(engine, holder.Get)
 	apiManager := apiserver.NewManager(apiHandler, holder.Get)
+	diagnosticService := diagnostics.New(st, holder.Get, apiManager, dataDir, version)
+	cleanupCtx, stopCleanup := context.WithCancel(context.Background())
+	defer stopCleanup()
+	go maintainLogs(cleanupCtx, st, holder.Get, logger)
 
 	if controlToken == "" {
 		controlToken = randomToken()
 	}
 
-	ctrl := control.New(st, mgr, holder, apiManager, engine, controlToken, version)
+	ctrl := control.New(st, mgr, holder, apiManager, engine, diagnosticService, controlToken, version)
 
 	// Control API listener (loopback only).
 	controlLn, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", controlPort))
@@ -130,6 +145,29 @@ func run(dataDir string, controlPort int, controlToken string, logger *slog.Logg
 	_ = apiManager.Stop()
 	_ = controlSrv.Close()
 	return nil
+}
+
+func maintainLogs(ctx context.Context, st *store.Store, settings func() store.Settings, logger *slog.Logger) {
+	cleanup := func() {
+		cfg := settings()
+		deleted, err := st.CleanupLogs(cfg.LogRetentionDays, cfg.MaxLogRows)
+		if err != nil {
+			logger.Warn("request log cleanup failed", "error", err)
+		} else if deleted > 0 {
+			logger.Info("request logs cleaned", "deleted", deleted)
+		}
+	}
+	cleanup()
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cleanup()
+		}
+	}
 }
 
 func randomToken() string {

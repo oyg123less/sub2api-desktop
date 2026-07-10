@@ -1,40 +1,38 @@
-use std::sync::Mutex;
+mod supervisor;
+
+use std::{io::Write, sync::Mutex, time::Duration};
 
 use serde::Serialize;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager, RunEvent, State, WindowEvent,
+    Emitter, Manager, RunEvent, WindowEvent,
 };
-use tauri_plugin_shell::{
-    process::{CommandChild, CommandEvent},
-    ShellExt,
-};
-
-#[derive(Default, Clone, Serialize)]
-pub struct Connection {
-    pub control_port: u16,
-    pub control_token: String,
-}
 
 #[derive(Default)]
-struct AppState {
-    connection: Mutex<Connection>,
+pub(crate) struct AppState {
+    supervisor: supervisor::Supervisor,
     hint_shown: Mutex<bool>,
-    sidecar: Mutex<Option<CommandChild>>,
 }
 
 fn kill_sidecar(app: &tauri::AppHandle) {
-    if let Some(state) = app.try_state::<AppState>() {
-        if let Some(child) = state.sidecar.lock().unwrap().take() {
-            let _ = child.kill();
-        }
-    }
+    supervisor::stop(app, supervisor::StopIntent::Exit);
 }
 
 #[tauri::command]
-fn get_connection(state: State<AppState>) -> Connection {
-    state.connection.lock().unwrap().clone()
+fn get_connection(app: tauri::AppHandle) -> supervisor::Connection {
+    supervisor::connection(&app)
+}
+
+#[tauri::command]
+fn get_backend_state(app: tauri::AppHandle) -> supervisor::BackendState {
+    supervisor::backend_state(&app)
+}
+
+#[tauri::command]
+fn restart_backend(app: tauri::AppHandle) -> supervisor::BackendState {
+    supervisor::manual_restart(&app);
+    supervisor::backend_state(&app)
 }
 
 /// Returns the directory where the data-dir override pointer file lives. This
@@ -95,51 +93,107 @@ async fn open_data_dir(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// Moves the data files (db + key + sqlite side files) from one dir to another,
-/// retrying briefly to tolerate the sidecar releasing the sqlite file handle.
-fn move_data_files(from: &std::path::Path, to: &std::path::Path) -> Result<(), String> {
+const DATA_FILES: [&str; 4] = ["sub2api.db", "sub2api.db-wal", "sub2api.db-shm", "key"];
+
+fn copy_data_files(from: &std::path::Path, to: &std::path::Path) -> Result<(), String> {
     std::fs::create_dir_all(to).map_err(|e| e.to_string())?;
-    let names = [
-        "sub2api.db",
-        "sub2api.db-wal",
-        "sub2api.db-shm",
-        "key",
-    ];
-    for name in names {
-        let src = from.join(name);
-        if !src.exists() {
-            continue;
-        }
-        let dst = to.join(name);
-        let mut last_err = String::new();
-        let mut moved = false;
-        for _ in 0..20 {
-            match std::fs::rename(&src, &dst) {
-                Ok(()) => {
-                    moved = true;
-                    break;
-                }
-                Err(_) => {
-                    // Cross-device or locked: fall back to copy+remove.
-                    match std::fs::copy(&src, &dst) {
-                        Ok(_) => {
-                            let _ = std::fs::remove_file(&src);
-                            moved = true;
-                            break;
-                        }
-                        Err(e) => {
-                            last_err = e.to_string();
-                            std::thread::sleep(std::time::Duration::from_millis(150));
-                        }
-                    }
-                }
-            }
-        }
-        if !moved {
-            return Err(format!("移动 {name} 失败: {last_err}"));
+    for name in DATA_FILES {
+        let source = from.join(name);
+        if source.exists() {
+            std::fs::copy(&source, to.join(name)).map_err(|e| format!("copy {name}: {e}"))?;
         }
     }
     Ok(())
+}
+
+fn validate_migration_copy(dir: &std::path::Path) -> Result<(), String> {
+    let database = dir.join("sub2api.db");
+    let key = dir.join("key");
+    if !database.is_file() || !key.is_file() {
+        return Err("migration copy is missing sub2api.db or key".to_string());
+    }
+    let bytes = std::fs::read(&database).map_err(|e| format!("read copied database: {e}"))?;
+    if !bytes.starts_with(b"SQLite format 3\0") {
+        return Err("copied database has an invalid SQLite header".to_string());
+    }
+    let key_text = std::fs::read_to_string(&key).map_err(|e| format!("read copied key: {e}"))?;
+    if key_text.trim().len() < 40 {
+        return Err("copied encryption key is invalid".to_string());
+    }
+    Ok(())
+}
+
+fn atomic_replace(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    let temporary = path.with_extension("json.tmp");
+    let mut file =
+        std::fs::File::create(&temporary).map_err(|e| format!("create temporary pointer: {e}"))?;
+    file.write_all(bytes)
+        .map_err(|e| format!("write temporary pointer: {e}"))?;
+    file.sync_all()
+        .map_err(|e| format!("sync temporary pointer: {e}"))?;
+    drop(file);
+    replace_file(&temporary, path).map_err(|e| format!("replace location pointer: {e}"))
+}
+
+#[cfg(not(windows))]
+fn replace_file(source: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+    std::fs::rename(source, target)
+}
+
+#[cfg(windows)]
+fn replace_file(source: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+    let source: Vec<u16> = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let target: Vec<u16> = target
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+fn write_location_pointer(app: &tauri::AppHandle, data_dir: &str) -> Result<(), String> {
+    let dir = pointer_dir(app);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create pointer directory: {e}"))?;
+    let pointer = dir.join("location.json");
+    let body = serde_json::json!({ "data_dir": data_dir }).to_string();
+    atomic_replace(&pointer, body.as_bytes())
+}
+
+fn restore_location_pointer(app: &tauri::AppHandle, previous: Option<&[u8]>) -> Result<(), String> {
+    let pointer = pointer_dir(app).join("location.json");
+    match previous {
+        Some(bytes) => atomic_replace(&pointer, bytes),
+        None => match std::fs::remove_file(pointer) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.to_string()),
+        },
+    }
+}
+
+fn cleanup_migrated_files(dir: &std::path::Path) {
+    for name in DATA_FILES {
+        let _ = std::fs::remove_file(dir.join(name));
+    }
 }
 
 #[tauri::command]
@@ -152,23 +206,93 @@ async fn set_data_dir(app: tauri::AppHandle, path: String) -> Result<DataDirInfo
     if new_dir == old_dir {
         return Ok(get_data_dir(app));
     }
-    std::fs::create_dir_all(&new_dir).map_err(|e| format!("无法创建目录: {e}"))?;
+    if new_dir.starts_with(&old_dir) || old_dir.starts_with(&new_dir) {
+        return Err(
+            "the new data directory cannot contain or be contained by the current directory"
+                .to_string(),
+        );
+    }
+    if new_dir.join("sub2api.db").exists() || new_dir.join("key").exists() {
+        return Err("the target already contains Amber data".to_string());
+    }
+    std::fs::create_dir_all(&new_dir).map_err(|e| format!("unable to create directory: {e}"))?;
+    let probe = new_dir.join(".amber-write-test");
+    std::fs::write(&probe, b"ok").map_err(|e| format!("target directory is not writable: {e}"))?;
+    std::fs::remove_file(&probe).map_err(|e| format!("target directory cleanup failed: {e}"))?;
 
-    // Stop the sidecar so it releases the sqlite file, then migrate the data.
-    kill_sidecar(&app);
-    std::thread::sleep(std::time::Duration::from_millis(400));
-    move_data_files(&old_dir, &new_dir)?;
+    let previous_pointer = std::fs::read(pointer_dir(&app).join("location.json")).ok();
+    let previous_generation = supervisor::backend_state(&app).generation;
+    supervisor::set_migrating(&app);
+    supervisor::stop(&app, supervisor::StopIntent::Migration);
+    if !supervisor::wait_stopped(&app, Duration::from_secs(5)).await {
+        supervisor::spawn(&app, supervisor::BackendPhase::Starting);
+        return Err("timed out while stopping the backend".to_string());
+    }
 
-    // Persist the override pointer (empty when reverting to default).
-    let pointer = pointer_dir(&app).join("location.json");
+    let migration_id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let temporary = new_dir.join(format!(".amber-migration-{migration_id}"));
+    if let Err(error) =
+        copy_data_files(&old_dir, &temporary).and_then(|_| validate_migration_copy(&temporary))
+    {
+        let _ = std::fs::remove_dir_all(&temporary);
+        supervisor::spawn(&app, supervisor::BackendPhase::Starting);
+        return Err(error);
+    }
+    for name in DATA_FILES {
+        let source = temporary.join(name);
+        if source.exists() {
+            if let Err(error) = std::fs::rename(&source, new_dir.join(name)) {
+                cleanup_migrated_files(&new_dir);
+                let _ = std::fs::remove_dir_all(&temporary);
+                supervisor::spawn(&app, supervisor::BackendPhase::Starting);
+                return Err(format!("commit migrated {name}: {error}"));
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&temporary);
+
     let default = default_data_dir(&app);
-    let stored = if new_dir == default { String::new() } else { new_dir.to_string_lossy().to_string() };
-    let body = serde_json::json!({ "data_dir": stored }).to_string();
-    let _ = std::fs::create_dir_all(pointer_dir(&app));
-    std::fs::write(&pointer, body).map_err(|e| format!("保存配置失败: {e}"))?;
+    let stored = if new_dir == default {
+        String::new()
+    } else {
+        new_dir.to_string_lossy().to_string()
+    };
+    if let Err(error) = write_location_pointer(&app, &stored) {
+        cleanup_migrated_files(&new_dir);
+        supervisor::spawn(&app, supervisor::BackendPhase::Starting);
+        return Err(error);
+    }
 
-    // Respawn the sidecar against the new location.
-    spawn_sidecar(&app);
+    supervisor::spawn(&app, supervisor::BackendPhase::Starting);
+    if !supervisor::wait_ready(&app, previous_generation, Duration::from_secs(15)).await {
+        supervisor::stop(&app, supervisor::StopIntent::Migration);
+        let _ = supervisor::wait_stopped(&app, Duration::from_secs(5)).await;
+        let restore_error = restore_location_pointer(&app, previous_pointer.as_deref()).err();
+        cleanup_migrated_files(&new_dir);
+        supervisor::spawn(&app, supervisor::BackendPhase::Starting);
+        return Err(match restore_error {
+            Some(error) => {
+                format!("new backend did not become ready and pointer rollback failed: {error}")
+            }
+            None => "new backend did not become ready; the previous data directory was restored"
+                .to_string(),
+        });
+    }
+
+    let backup_name = format!(
+        "{}.pre-v0.2.0-{}.bak",
+        old_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("amber-data"),
+        migration_id
+    );
+    if let Some(parent) = old_dir.parent() {
+        let _ = std::fs::rename(&old_dir, parent.join(backup_name));
+    }
     Ok(get_data_dir(app))
 }
 
@@ -178,74 +302,6 @@ async fn open_external(app: tauri::AppHandle, url: String) -> Result<(), String>
     app.opener()
         .open_url(url, None::<&str>)
         .map_err(|e| e.to_string())
-}
-
-/// Parses the "SUB2API_READY {json}" handshake line emitted by the sidecar.
-fn parse_handshake(line: &str) -> Option<Connection> {
-    let trimmed = line.trim();
-    let rest = trimmed.strip_prefix("SUB2API_READY ")?;
-    let v: serde_json::Value = serde_json::from_str(rest).ok()?;
-    Some(Connection {
-        control_port: v.get("control_port")?.as_u64()? as u16,
-        control_token: v.get("control_token")?.as_str()?.to_string(),
-    })
-}
-
-fn spawn_sidecar(app: &tauri::AppHandle) {
-    let data_dir = resolve_data_dir(app);
-    let _ = std::fs::create_dir_all(&data_dir);
-
-    let sidecar = match app.shell().sidecar("sub2api-sidecar") {
-        Ok(cmd) => cmd.args([
-            "--data-dir".to_string(),
-            data_dir.to_string_lossy().to_string(),
-            "--control-port".to_string(),
-            "0".to_string(),
-        ]),
-        Err(e) => {
-            eprintln!("failed to resolve sidecar: {e}");
-            return;
-        }
-    };
-
-    let (mut rx, child) = match sidecar.spawn() {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("failed to spawn sidecar: {e}");
-            return;
-        }
-    };
-
-    if let Some(state) = app.try_state::<AppState>() {
-        *state.sidecar.lock().unwrap() = Some(child);
-    }
-
-    let app_handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            match event {
-                CommandEvent::Stdout(bytes) => {
-                    let line = String::from_utf8_lossy(&bytes);
-                    for l in line.lines() {
-                        if let Some(conn) = parse_handshake(l) {
-                            if let Some(state) = app_handle.try_state::<AppState>() {
-                                *state.connection.lock().unwrap() = conn.clone();
-                            }
-                            let _ = app_handle.emit("sidecar-ready", conn);
-                        }
-                    }
-                }
-                CommandEvent::Stderr(bytes) => {
-                    eprint!("[sidecar] {}", String::from_utf8_lossy(&bytes));
-                }
-                CommandEvent::Terminated(payload) => {
-                    eprintln!("[sidecar] terminated: {:?}", payload.code);
-                    break;
-                }
-                _ => {}
-            }
-        }
-    });
 }
 
 fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
@@ -297,8 +353,7 @@ pub fn run() {
     // content area stops painting (goes blank) shortly after render.
     #[cfg(target_os = "windows")]
     {
-        let mut args = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS")
-            .unwrap_or_default();
+        let mut args = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
         if !args.contains("--disable-gpu") {
             if !args.is_empty() {
                 args.push(' ');
@@ -324,6 +379,8 @@ pub fn run() {
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             get_connection,
+            get_backend_state,
+            restart_backend,
             open_external,
             get_data_dir,
             set_data_dir,
@@ -332,7 +389,7 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle();
             build_tray(handle)?;
-            spawn_sidecar(handle);
+            supervisor::spawn(handle, supervisor::BackendPhase::Starting);
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -356,4 +413,34 @@ pub fn run() {
                 kill_sidecar(app);
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migration_copy_requires_sqlite_and_key() {
+        let root =
+            std::env::temp_dir().join(format!("amber-migration-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("sub2api.db"), b"SQLite format 3\0payload").unwrap();
+        assert!(validate_migration_copy(&root).is_err());
+        std::fs::write(root.join("key"), "A".repeat(44)).unwrap();
+        assert!(validate_migration_copy(&root).is_ok());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn atomic_pointer_write_replaces_existing_file() {
+        let root = std::env::temp_dir().join(format!("amber-pointer-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let pointer = root.join("location.json");
+        std::fs::write(&pointer, b"old").unwrap();
+        atomic_replace(&pointer, b"new").unwrap();
+        assert_eq!(std::fs::read(&pointer).unwrap(), b"new");
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

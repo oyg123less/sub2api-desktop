@@ -44,6 +44,9 @@ func (c *Control) codexStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	base := c.codexBaseURL()
 	model := c.codexModel()
+	if st.Applied && validCodexModel(st.Model) {
+		model = strings.TrimSpace(st.Model)
+	}
 	cfg := c.settings.Get()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"config_path":    st.ConfigPath,
@@ -51,9 +54,11 @@ func (c *Control) codexStatus(w http.ResponseWriter, r *http.Request) {
 		"applied":        st.Applied,
 		"config_exists":  st.ConfigExists,
 		"backup_exists":  st.BackupExists,
+		"backup_at":      st.BackupAt,
+		"backup_source":  st.BackupSource,
 		"base_url":       base,
 		"model":          model,
-		"models":         openai.CodexTestModelOptions,
+		"models":         openai.ModelOptions(),
 		"config_preview": codexcfg.RenderConfig(base, model),
 		"auth_preview":   codexcfg.RenderAuth(cfg.LocalAPIKey),
 	})
@@ -67,7 +72,7 @@ func (c *Control) codexApply(w http.ResponseWriter, r *http.Request) {
 	model := strings.TrimSpace(body.Model)
 	if model != "" {
 		if !validCodexModel(model) {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "模型名无效：仅支持 gpt-5*/codex 系列（如 gpt-5.5、gpt-5.4-high、gpt-5.3-codex）"})
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "模型名无效：仅支持 gpt-5*/codex 系列（如 gpt-5.6-sol、gpt-5.4-high、gpt-5.3-codex）"})
 			return
 		}
 		cur := c.settings.Get()
@@ -148,15 +153,16 @@ func (c *Control) codexWriteFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.TrimSpace(body.Auth) != "" {
-		var obj map[string]any
-		if err := json.Unmarshal([]byte(body.Auth), &obj); err != nil {
+		if err := codexcfg.ValidateAuth(body.Auth); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "auth.json 不是合法的 JSON 对象: " + err.Error()})
 			return
 		}
 	}
-	if s := strings.TrimSpace(body.Config); s != "" && !strings.Contains(s, "model_provider") {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "config.toml 缺少 model_provider 配置项"})
-		return
+	if strings.TrimSpace(body.Config) != "" {
+		if err := codexcfg.ValidateConfig(body.Config); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
 	}
 	mgr, err := codexcfg.New("")
 	if err != nil {

@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"strconv"
+
+	"sub2api-desktop/core/internal/openai"
 )
 
 // DefaultUserAgent mimics the official Codex CLI client.
@@ -12,17 +14,22 @@ const DefaultUserAgent = "codex_cli_rs/0.125.0 (Ubuntu 22.4.0; x86_64) xterm-256
 // DefaultSettings returns the built-in defaults (used on first run).
 func DefaultSettings() Settings {
 	return Settings{
-		ListenPort:      8080,
-		AllowLAN:        false,
-		LocalAPIKey:     "",
-		InjectInstr:     true,
-		DefaultModel:    "gpt-5.4",
-		UserAgent:       DefaultUserAgent,
-		Originator:      "codex_cli_rs",
-		Language:        "zh-CN",
-		AutoStartServer: false,
-		TLSFingerprint:  true,
-		CodexModel:      "gpt-5.5",
+		ListenPort:       8080,
+		AllowLAN:         false,
+		LocalAPIKey:      "",
+		InjectInstr:      true,
+		DefaultModel:     openai.DefaultGatewayModel,
+		UserAgent:        DefaultUserAgent,
+		Originator:       "codex_cli_rs",
+		Language:         "zh-CN",
+		AutoStartServer:  false,
+		TLSFingerprint:   false,
+		CodexModel:       openai.DefaultCodexModel,
+		AccountStrategy:  "quota_aware",
+		LogRetentionDays: 30,
+		MaxLogRows:       100000,
+		AutoRecovery:     true,
+		CompatProfile:    "standard",
 	}
 }
 
@@ -124,6 +131,35 @@ func (s *Store) LoadSettings() (Settings, error) {
 	} else if v != "" {
 		out.CodexModel = v
 	}
+	if v, err := get("account_strategy"); err != nil {
+		return out, err
+	} else if v != "" {
+		out.AccountStrategy = v
+	}
+	if v, err := get("log_retention_days"); err != nil {
+		return out, err
+	} else if v != "" {
+		if n, e := strconv.Atoi(v); e == nil {
+			out.LogRetentionDays = n
+		}
+	}
+	if v, err := get("max_log_rows"); err != nil {
+		return out, err
+	} else if v != "" {
+		if n, e := strconv.Atoi(v); e == nil {
+			out.MaxLogRows = n
+		}
+	}
+	if v, err := get("auto_recovery"); err != nil {
+		return out, err
+	} else if v != "" {
+		out.AutoRecovery = v == "1"
+	}
+	if v, err := get("compatibility_profile"); err != nil {
+		return out, err
+	} else if v != "" {
+		out.CompatProfile = v
+	}
 
 	// Seed a local API key on first run.
 	if out.LocalAPIKey == "" {
@@ -144,17 +180,22 @@ func (s *Store) SaveSettings(v Settings) error {
 		return "0"
 	}
 	kv := map[string]string{
-		"listen_port":         strconv.Itoa(v.ListenPort),
-		"allow_lan":           b2s(v.AllowLAN),
-		"local_api_key":       v.LocalAPIKey,
-		"inject_instructions": b2s(v.InjectInstr),
-		"default_model":       v.DefaultModel,
-		"user_agent":          v.UserAgent,
-		"originator":          v.Originator,
-		"language":            v.Language,
-		"auto_start_server":   b2s(v.AutoStartServer),
-		"tls_fingerprint":     b2s(v.TLSFingerprint),
-		"codex_model":         v.CodexModel,
+		"listen_port":           strconv.Itoa(v.ListenPort),
+		"allow_lan":             b2s(v.AllowLAN),
+		"local_api_key":         v.LocalAPIKey,
+		"inject_instructions":   b2s(v.InjectInstr),
+		"default_model":         v.DefaultModel,
+		"user_agent":            v.UserAgent,
+		"originator":            v.Originator,
+		"language":              v.Language,
+		"auto_start_server":     b2s(v.AutoStartServer),
+		"tls_fingerprint":       b2s(v.TLSFingerprint),
+		"codex_model":           v.CodexModel,
+		"account_strategy":      v.AccountStrategy,
+		"log_retention_days":    strconv.Itoa(v.LogRetentionDays),
+		"max_log_rows":          strconv.Itoa(v.MaxLogRows),
+		"auto_recovery":         b2s(v.AutoRecovery),
+		"compatibility_profile": v.CompatProfile,
 	}
 	for k, val := range kv {
 		if err := s.setKV(k, val); err != nil {

@@ -74,7 +74,7 @@ func NormalizeReasoningEffort(raw string) string {
 	value := strings.ToLower(strings.TrimSpace(raw))
 	value = strings.NewReplacer("-", "", "_", "", " ", "").Replace(value)
 	switch value {
-	case "low", "medium", "high":
+	case "none", "minimal", "low", "medium", "high":
 		return value
 	case "xhigh", "extrahigh", "max":
 		return "xhigh"
@@ -136,24 +136,4 @@ func MapCodexModel(model string) (upstream string, effort string) {
 		}
 	}
 	return model, effort
-}
-
-// CodexTestModelOptions is the model list offered in the account connectivity
-// test UI (friendly names incl. reasoning-effort suffixed variants).
-var CodexTestModelOptions = []string{
-	"gpt-5.5",
-	"gpt-5.4-low",
-	"gpt-5.4-medium",
-	"gpt-5.4-high",
-	"gpt-5.4-xhigh",
-	"gpt-5.4-mini",
-	"gpt-5.3-codex-low",
-	"gpt-5.3-codex-medium",
-	"gpt-5.3-codex-high",
-	"gpt-5.3-codex-xhigh",
-	"gpt-5.3-codex-spark",
-	"gpt-5.2-medium",
-	"gpt-5.2-high",
-	"gpt-5",
-	"gpt-5-codex",
 }

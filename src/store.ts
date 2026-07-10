@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { api, type Status } from "./api/control";
+import type { BackendState } from "./tauri";
 
 export interface Toast {
   id: number;
@@ -15,10 +16,12 @@ export const useAppStore = defineStore("app", {
     statusError: "" as string,
     toasts: [] as Toast[],
     ready: false,
+    backend: null as BackendState | null,
   }),
   getters: {
     serverRunning: (s) => s.status?.server_running ?? false,
     accountCount: (s) => s.status?.account_count ?? 0,
+    backendReady: (s) => s.backend?.phase === "ready",
   },
   actions: {
     async refreshStatus() {
@@ -28,6 +31,12 @@ export const useAppStore = defineStore("app", {
         this.ready = true;
       } catch (e) {
         this.statusError = (e as Error).message;
+      }
+    },
+    setBackendState(state: BackendState) {
+      this.backend = state;
+      if (state.phase !== "ready") {
+        this.statusError = state.last_error || "";
       }
     },
     toast(message: string, type: Toast["type"] = "info") {

@@ -138,10 +138,10 @@ const steps = computed<Step[]>(() =>
           body: [
             "监听端口：本地 API 服务的端口，改动后需重启服务。",
             "本地 API 密钥：客户端连接使用的密钥，可随时「重新生成」（旧密钥立即失效）。",
-            "反封号：建议保持「注入 Codex 指令」和「TLS 指纹伪装」开启，可降低账号被识别/封禁的风险。",
+						"客户端兼容模式：Standard 为默认；Codex profile 仅用于实验性协议兼容，不能保证规避平台风控。",
             "默认模型：当客户端请求的模型不是 gpt-5* 系列时使用的回退模型。语言可在此切换中文 / English。",
           ],
-          shots: [{ src: imgSettings, caption: "设置页：端口 / 密钥 / 反封号" }],
+					shots: [{ src: imgSettings, caption: "设置页：端口 / 密钥 / 客户端兼容模式" }],
         },
       ]
     : [
@@ -232,7 +232,7 @@ const steps = computed<Step[]>(() =>
             "Anti-ban: keep \"Inject Codex instructions\" and \"TLS fingerprint\" on to reduce the risk of detection/bans.",
             "Default model: fallback used when a client requests a non gpt-5* model. Language (Chinese / English) is switched here too.",
           ],
-          shots: [{ src: imgSettings, caption: "Settings: port / key / anti-ban" }],
+					shots: [{ src: imgSettings, caption: "Settings: port / key / client compatibility" }],
         },
       ],
 );
@@ -283,8 +283,8 @@ const steps = computed<Step[]>(() =>
       </div>
       <p class="doc-line" style="margin: 0">
         {{ zh
-          ? "本工具仅供个人自用，请勿分发或商用。使用第三方转发存在账号被 OpenAI 限制的风险，任何“反封号”措施都不能保证绝对安全，请自行评估。"
-          : "This tool is for personal use only — do not distribute or use commercially. Forwarding through a proxy carries a risk of account restrictions by OpenAI; no anti-ban measure can guarantee safety, so use at your own discretion." }}
+			? "使用非官方转发存在账号被 OpenAI 限制的风险，客户端兼容措施不能保证账号安全。AES 密钥与数据库位于同一数据目录，不等同于 Windows DPAPI。"
+			: "Unofficial forwarding can lead to account restrictions, and client compatibility measures cannot guarantee account safety. The AES key shares the data directory with the database and is not equivalent to Windows DPAPI." }}
       </p>
     </div>
   </div>

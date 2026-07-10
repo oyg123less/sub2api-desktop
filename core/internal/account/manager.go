@@ -18,7 +18,8 @@ import (
 
 // Manager coordinates token refresh across concurrent requests.
 type Manager struct {
-	store *store.Store
+	store            *store.Store
+	identityVerifier IdentityVerifier
 
 	mu    sync.Mutex
 	locks map[int64]*sync.Mutex
@@ -26,7 +27,11 @@ type Manager struct {
 
 // NewManager creates an account manager.
 func NewManager(s *store.Store) *Manager {
-	return &Manager{store: s, locks: make(map[int64]*sync.Mutex)}
+	return &Manager{
+		store:            s,
+		identityVerifier: NewJWTIdentityVerifier(nil, ""),
+		locks:            make(map[int64]*sync.Mutex),
+	}
 }
 
 func (m *Manager) lockFor(id int64) *sync.Mutex {

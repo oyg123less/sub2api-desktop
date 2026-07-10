@@ -1,0 +1,59 @@
+name: Quality
+
+on:
+  pull_request:
+  push:
+    branches: [main, "v*-development"]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.4"
+          cache-dependency-path: core/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Verify versions
+        shell: pwsh
+        run: .\scripts\check-version.ps1
+      - name: Go formatting
+        shell: pwsh
+        run: |
+          $bad = gofmt -l .\core
+          if ($bad) { throw "gofmt required:`n$bad" }
+      - name: Go vet
+        working-directory: core
+        run: go vet ./...
+      - name: Go race tests
+        working-directory: core
+        run: go test -race ./...
+      - name: Frontend install
+        run: npm ci
+      - name: Frontend build
+        run: npm run build
+      - name: Frontend unit tests
+        run: npm test
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium
+      - name: Frontend smoke tests
+        run: npm run test:e2e
+      - name: Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+      - name: Rust lint
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml

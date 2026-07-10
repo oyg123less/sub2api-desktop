@@ -18,26 +18,87 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.26.4"
+          cache-dependency-path: core/go.sum
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
+      - name: Verify versions
+        shell: pwsh
+        run: |
+          $expected = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { '' }
+          .\scripts\check-version.ps1 -Expected $expected
+
+      - name: Quality gate
+        shell: pwsh
+        run: |
+          $bad = gofmt -l .\core
+          if ($bad) { throw "gofmt required:`n$bad" }
+          Push-Location core
+          go vet ./...
+          go test -race ./...
+          Pop-Location
+          npm ci
+          npm run build
+          npm test
+          cargo fmt --manifest-path src-tauri/Cargo.toml --check
+          cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+          cargo test --manifest-path src-tauri/Cargo.toml
+
       - name: Build Go sidecar
         shell: pwsh
         run: .\scripts\build-sidecar.ps1
 
-      - name: Install frontend dependencies
-        run: npm ci
+      - name: Verify sidecar version
+        shell: pwsh
+        run: |
+          $expected = (Get-Content -Raw package.json | ConvertFrom-Json).version
+          $actual = & .\src-tauri\binaries\sub2api-sidecar-x86_64-pc-windows-msvc.exe --version
+          if ($actual.Trim() -ne $expected) { throw "Sidecar version '$actual' != '$expected'" }
 
       - name: Build Tauri app
         run: npm run tauri build
+
+      - name: Smoke test clean data directory
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'amber-smoke'
+          $stdout = Join-Path $env:RUNNER_TEMP 'amber-smoke.out'
+          $stderr = Join-Path $env:RUNNER_TEMP 'amber-smoke.err'
+          $process = Start-Process .\src-tauri\binaries\sub2api-sidecar-x86_64-pc-windows-msvc.exe -ArgumentList @('--data-dir', $dir, '--control-port', '0') -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -WindowStyle Hidden
+          try {
+            $ready = $false
+            foreach ($attempt in 1..50) {
+              Start-Sleep -Milliseconds 200
+              if ((Get-Content $stdout -Raw -ErrorAction SilentlyContinue) -match 'SUB2API_READY') {
+                $ready = $true
+                break
+              }
+            }
+            if (-not $ready) { throw "Sidecar smoke test did not become ready: $(Get-Content $stderr -Raw)" }
+          }
+          finally {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Generate SHA-256 checksums
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem src-tauri\target\release\bundle -Recurse -File | Where-Object { $_.Extension -in '.exe', '.msi' }
+          $lines = foreach ($file in $files) {
+            "$(Get-FileHash $file.FullName -Algorithm SHA256 | Select-Object -ExpandProperty Hash)  $($file.Name)"
+          }
+          $lines | Set-Content -Encoding ascii src-tauri\target\release\bundle\SHA256SUMS.txt
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -46,6 +107,7 @@ jobs:
           path: |
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/SHA256SUMS.txt
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -54,3 +116,4 @@ jobs:
           files: |
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/SHA256SUMS.txt

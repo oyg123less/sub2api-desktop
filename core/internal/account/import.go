@@ -1,19 +1,24 @@
 package account
 
 import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	"sub2api-desktop/core/internal/openai"
+	"sub2api-desktop/core/internal/redact"
 	"sub2api-desktop/core/internal/store"
 )
 
-// ImportEntry is a single account record accepted by batch import. Only the
-// token fields are required; identity fields (email / chatgpt_account_id /
-// plan_type) are best-effort derived from id_token when present and otherwise
-// taken from the entry.
 type ImportEntry struct {
 	Email            string `json:"email"`
 	AccessToken      string `json:"access_token"`
@@ -24,7 +29,369 @@ type ImportEntry struct {
 	ExpiresAt        string `json:"expires_at"`
 }
 
-// ImportResult summarizes the outcome of a batch import.
+type ImportAction string
+
+const (
+	ImportCreate   ImportAction = "create"
+	ImportUpdate   ImportAction = "update"
+	ImportSkip     ImportAction = "skip"
+	ImportError    ImportAction = "error"
+	ImportConflict ImportAction = "conflict"
+)
+
+type ImportPreviewSummary struct {
+	Total    int `json:"total"`
+	Create   int `json:"create"`
+	Update   int `json:"update"`
+	Skip     int `json:"skip"`
+	Error    int `json:"error"`
+	Conflict int `json:"conflict"`
+}
+
+type ImportPreviewRow struct {
+	Index                  int           `json:"index"`
+	Action                 ImportAction  `json:"action"`
+	MatchedAccountID       int64         `json:"matched_account_id,omitempty"`
+	EmailMasked            string        `json:"email_masked,omitempty"`
+	ChatGPTAccountIDMasked string        `json:"chatgpt_account_id_masked,omitempty"`
+	HasAccessToken         bool          `json:"has_access_token"`
+	HasRefreshToken        bool          `json:"has_refresh_token"`
+	HasIDToken             bool          `json:"has_id_token"`
+	IdentityLevel          IdentityLevel `json:"identity_level"`
+	IdentityVerified       bool          `json:"identity_verified"`
+	Warnings               []string      `json:"warnings"`
+	ErrorCode              string        `json:"error_code,omitempty"`
+	ErrorMessage           string        `json:"error_message,omitempty"`
+}
+
+type ImportPreview struct {
+	ContentSHA256 string               `json:"content_sha256"`
+	Summary       ImportPreviewSummary `json:"summary"`
+	Rows          []ImportPreviewRow   `json:"rows"`
+	plan          []store.AccountImportMutation
+}
+
+type ImportCommitResult struct {
+	ContentSHA256 string               `json:"content_sha256"`
+	Imported      int                  `json:"imported"`
+	Updated       int                  `json:"updated"`
+	Skipped       int                  `json:"skipped"`
+	Failed        int                  `json:"failed"`
+	Validated     int                  `json:"validated"`
+	Warnings      []string             `json:"warnings,omitempty"`
+	Rows          []ImportPreviewRow   `json:"rows"`
+	Summary       ImportPreviewSummary `json:"summary"`
+}
+
+type ImportServiceError struct {
+	Code      string
+	Message   string
+	Retryable bool
+	Details   map[string]any
+}
+
+func (e *ImportServiceError) Error() string { return e.Message }
+
+func contentHash(raw []byte) string {
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+func (m *Manager) PreviewImport(ctx context.Context, raw []byte) (*ImportPreview, error) {
+	parsed, err := ParseImportDocument(raw)
+	if err != nil {
+		return nil, &ImportServiceError{Code: "import_parse_failed", Message: err.Error()}
+	}
+	preview := &ImportPreview{ContentSHA256: contentHash(raw), Rows: make([]ImportPreviewRow, 0, len(parsed))}
+	preview.Summary.Total = len(parsed)
+	seenIdentity := map[string]struct {
+		fingerprint string
+		index       int
+	}{}
+	seenFingerprint := map[string]int{}
+
+	for _, parsedEntry := range parsed {
+		entry := parsedEntry.Entry
+		entry.AccessToken = strings.TrimSpace(entry.AccessToken)
+		entry.RefreshToken = strings.TrimSpace(entry.RefreshToken)
+		entry.IDToken = strings.TrimSpace(entry.IDToken)
+		row := ImportPreviewRow{
+			Index: parsedEntry.Index, HasAccessToken: entry.AccessToken != "", HasRefreshToken: entry.RefreshToken != "",
+			HasIDToken: entry.IDToken != "", IdentityLevel: IdentityUnparsed,
+			Warnings: append([]string(nil), parsedEntry.Warnings...),
+		}
+		if parsedEntry.Err != nil {
+			row.Action, row.ErrorCode, row.ErrorMessage = ImportError, "import_invalid_row", parsedEntry.Err.Error()
+			preview.addRow(row)
+			continue
+		}
+
+		identity, identityWarnings := m.resolveImportIdentity(ctx, entry)
+		row.Warnings = append(row.Warnings, identityWarnings...)
+		row.IdentityLevel = identity.Level
+		row.IdentityVerified = identity.Level == IdentitySigned
+		displayEmail, displayID := entry.Email, entry.ChatGPTAccountID
+		if identity.Email != "" {
+			displayEmail = identity.Email
+		}
+		if identity.ChatGPTAccountID != "" {
+			displayID = identity.ChatGPTAccountID
+		}
+		row.EmailMasked = redact.MaskEmail(displayEmail)
+		if displayEmail == "" {
+			row.EmailMasked = ""
+		}
+		row.ChatGPTAccountIDMasked = maskAccountID(displayID)
+
+		fingerprint := store.CredentialFingerprint(entry.AccessToken, entry.RefreshToken)
+		if firstIndex, duplicate := seenFingerprint[fingerprint]; duplicate && fingerprint != "" {
+			row.Action = ImportSkip
+			row.Warnings = append(row.Warnings, fmt.Sprintf("exact credential duplicate of row %d", firstIndex))
+			preview.addRow(row)
+			continue
+		}
+
+		verifiedID := ""
+		if row.IdentityVerified {
+			verifiedID = identity.ChatGPTAccountID
+			entry.ChatGPTAccountID = verifiedID
+			if identity.Email != "" {
+				entry.Email = identity.Email
+			}
+			if identity.PlanType != "" {
+				entry.PlanType = identity.PlanType
+			}
+		} else {
+			if displayID != "" {
+				row.Warnings = append(row.Warnings, "unverified account identity will not be used for matching")
+			}
+			entry.ChatGPTAccountID = ""
+		}
+
+		if previous, duplicate := seenIdentity[verifiedID]; duplicate && verifiedID != "" {
+			if previous.fingerprint == fingerprint {
+				row.Action = ImportSkip
+				row.Warnings = append(row.Warnings, fmt.Sprintf("same verified identity and credentials as row %d", previous.index))
+			} else {
+				row.Action, row.ErrorCode = ImportConflict, "import_duplicate_conflict"
+				row.ErrorMessage = fmt.Sprintf("verified identity conflicts with different credentials in row %d", previous.index)
+			}
+			preview.addRow(row)
+			continue
+		}
+
+		matched, matchErr := m.matchImportAccount(verifiedID, fingerprint)
+		if matchErr != nil {
+			row.Action, row.ErrorCode, row.ErrorMessage = ImportError, "import_match_failed", matchErr.Error()
+			preview.addRow(row)
+			continue
+		}
+		if matched != nil && verifiedID != "" && matched.ChatGPTAccountID != "" && matched.ChatGPTAccountID != verifiedID {
+			row.Action, row.ErrorCode, row.ErrorMessage = ImportConflict, "import_duplicate_conflict", "credential fingerprint belongs to a different verified identity"
+			preview.addRow(row)
+			continue
+		}
+
+		mutation := store.AccountImportMutation{
+			Index: parsedEntry.Index, Email: entry.Email, ChatGPTAccountID: entry.ChatGPTAccountID, PlanType: entry.PlanType,
+			AccessToken: entry.AccessToken, RefreshToken: entry.RefreshToken, IDToken: entry.IDToken,
+			ExpiresAt: parseExpiry(entry.ExpiresAt), IdentityVerified: row.IdentityVerified,
+		}
+		if matched != nil {
+			mutation.ExistingID = matched.ID
+			row.Action = ImportUpdate
+			row.MatchedAccountID = matched.ID
+		} else {
+			row.Action = ImportCreate
+		}
+		preview.plan = append(preview.plan, mutation)
+		if fingerprint != "" {
+			seenFingerprint[fingerprint] = parsedEntry.Index
+		}
+		if verifiedID != "" {
+			seenIdentity[verifiedID] = struct {
+				fingerprint string
+				index       int
+			}{fingerprint: fingerprint, index: parsedEntry.Index}
+		}
+		preview.addRow(row)
+	}
+	return preview, nil
+}
+
+func (p *ImportPreview) addRow(row ImportPreviewRow) {
+	p.Rows = append(p.Rows, row)
+	switch row.Action {
+	case ImportCreate:
+		p.Summary.Create++
+	case ImportUpdate:
+		p.Summary.Update++
+	case ImportSkip:
+		p.Summary.Skip++
+	case ImportConflict:
+		p.Summary.Conflict++
+	case ImportError:
+		p.Summary.Error++
+	}
+}
+
+func (m *Manager) resolveImportIdentity(ctx context.Context, entry ImportEntry) (VerifiedIdentity, []string) {
+	warnings := []string{}
+	if entry.IDToken != "" {
+		identity, err := m.identityVerifier.VerifyIDToken(ctx, entry.IDToken)
+		if err == nil {
+			if identity.Expired {
+				warnings = append(warnings, "verified ID token is expired")
+			}
+			return identity, warnings
+		}
+		identity = decodeIdentity(entry.IDToken)
+		warnings = append(warnings, "ID token signature or claims could not be verified")
+		if identity.Expired {
+			warnings = append(warnings, "ID token is expired")
+		}
+		return identity, warnings
+	}
+	if entry.AccessToken != "" {
+		identity := decodeIdentity(entry.AccessToken)
+		if identity.Level == IdentityDecoded {
+			warnings = append(warnings, "access token identity is decoded but unverified")
+		}
+		return identity, warnings
+	}
+	return VerifiedIdentity{Level: IdentityUnparsed}, warnings
+}
+
+func (m *Manager) matchImportAccount(verifiedID, fingerprint string) (*store.Account, error) {
+	var byIdentity, byFingerprint *store.Account
+	var err error
+	if verifiedID != "" {
+		byIdentity, err = m.store.GetAccountByChatGPTID(verifiedID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return nil, err
+		}
+	}
+	if fingerprint != "" {
+		byFingerprint, err = m.store.GetAccountByFingerprint(fingerprint)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return nil, err
+		}
+	}
+	if byIdentity != nil && byFingerprint != nil && byIdentity.ID != byFingerprint.ID {
+		return nil, &ImportServiceError{Code: "import_duplicate_conflict", Message: "identity and credential fingerprint match different accounts"}
+	}
+	if byIdentity != nil {
+		return byIdentity, nil
+	}
+	return byFingerprint, nil
+}
+
+func (m *Manager) CommitImport(ctx context.Context, raw []byte, expectedSHA string, validate bool) (*ImportCommitResult, error) {
+	actualSHA := contentHash(raw)
+	if !strings.EqualFold(strings.TrimSpace(expectedSHA), actualSHA) {
+		return nil, &ImportServiceError{
+			Code: "import_preview_mismatch", Message: "import content differs from the preview", Details: map[string]any{
+				"expected_sha256": strings.TrimSpace(expectedSHA), "actual_sha256": actualSHA,
+			},
+		}
+	}
+	preview, err := m.PreviewImport(ctx, raw)
+	if err != nil {
+		return nil, err
+	}
+	if preview.Summary.Conflict > 0 {
+		return nil, &ImportServiceError{Code: "import_duplicate_conflict", Message: "import contains conflicting credentials for the same verified identity", Details: map[string]any{"conflicts": preview.Summary.Conflict}}
+	}
+	applied, err := m.store.ApplyAccountImports(preview.plan)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, &ImportServiceError{Code: "import_account_not_found", Message: err.Error()}
+		}
+		return nil, &ImportServiceError{Code: "import_commit_failed", Message: err.Error()}
+	}
+	result := &ImportCommitResult{
+		ContentSHA256: actualSHA, Imported: preview.Summary.Create, Updated: preview.Summary.Update,
+		Skipped: preview.Summary.Skip, Failed: preview.Summary.Error, Rows: preview.Rows, Summary: preview.Summary,
+	}
+	if validate {
+		result.Validated, result.Warnings = m.validateImportedAccounts(ctx, applied)
+	}
+	return result, nil
+}
+
+func (m *Manager) validateImportedAccounts(ctx context.Context, applied []store.AppliedAccountImport) (int, []string) {
+	overallCtx, cancelOverall := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancelOverall()
+	type validationWarning struct {
+		index   int
+		message string
+	}
+	jobs := make(chan store.AppliedAccountImport)
+	var wait sync.WaitGroup
+	var mu sync.Mutex
+	validated := 0
+	warningRows := []validationWarning{}
+	addWarning := func(index int, message string) {
+		mu.Lock()
+		warningRows = append(warningRows, validationWarning{index: index, message: message})
+		mu.Unlock()
+	}
+	worker := func() {
+		defer wait.Done()
+		for item := range jobs {
+			if overallCtx.Err() != nil {
+				addWarning(item.Index, fmt.Sprintf("row %d validation skipped: overall timeout", item.Index))
+				continue
+			}
+			account, err := m.store.GetAccount(item.AccountID)
+			if err != nil {
+				addWarning(item.Index, fmt.Sprintf("row %d validation: %v", item.Index, err))
+				continue
+			}
+			if account.RefreshToken == "" {
+				addWarning(item.Index, fmt.Sprintf("row %d validation skipped: no refresh token", item.Index))
+				continue
+			}
+			if account.ProxyID != nil {
+				addWarning(item.Index, fmt.Sprintf("row %d validation deferred: account uses a proxy", item.Index))
+				continue
+			}
+			validationCtx, cancel := context.WithTimeout(overallCtx, 30*time.Second)
+			err = m.Refresh(validationCtx, &http.Client{Timeout: 30 * time.Second}, item.AccountID)
+			cancel()
+			if err != nil {
+				addWarning(item.Index, fmt.Sprintf("row %d validation failed: %s", item.Index, redact.Sanitize(err.Error())))
+				continue
+			}
+			_ = m.store.RecordAccountSuccess(item.AccountID)
+			mu.Lock()
+			validated++
+			mu.Unlock()
+		}
+	}
+	for i := 0; i < 2; i++ {
+		wait.Add(1)
+		go worker()
+	}
+	for _, item := range applied {
+		select {
+		case jobs <- item:
+		case <-overallCtx.Done():
+			addWarning(item.Index, fmt.Sprintf("row %d validation skipped: overall timeout", item.Index))
+		}
+	}
+	close(jobs)
+	wait.Wait()
+	sort.Slice(warningRows, func(i, j int) bool { return warningRows[i].index < warningRows[j].index })
+	warnings := make([]string, 0, len(warningRows))
+	for _, warning := range warningRows {
+		warnings = append(warnings, warning.message)
+	}
+	return validated, warnings
+}
+
+// ImportResult and Import preserve the v0.1.x control endpoint while routing
+// the operation through the same preview and transactional commit path.
 type ImportResult struct {
 	Imported int      `json:"imported"`
 	Updated  int      `json:"updated"`
@@ -32,93 +399,42 @@ type ImportResult struct {
 	Errors   []string `json:"errors,omitempty"`
 }
 
-// Import upserts a batch of accounts from raw token data (e.g. exported from
-// another tool). Accounts are matched by chatgpt_account_id; a match updates
-// the existing tokens instead of creating a duplicate. Entries lacking both an
-// access token and a refresh token are skipped.
 func (m *Manager) Import(entries []ImportEntry) ImportResult {
-	var res ImportResult
-	for i, e := range entries {
-		e.AccessToken = strings.TrimSpace(e.AccessToken)
-		e.RefreshToken = strings.TrimSpace(e.RefreshToken)
-		e.IDToken = strings.TrimSpace(e.IDToken)
-		if e.AccessToken == "" && e.RefreshToken == "" {
-			res.Skipped++
-			res.Errors = append(res.Errors, fmt.Sprintf("第 %d 条: 缺少 access_token 和 refresh_token", i+1))
-			continue
-		}
-
-		email, cid, plan := e.Email, e.ChatGPTAccountID, e.PlanType
-		if e.IDToken != "" {
-			if claims, err := openai.DecodeIDToken(e.IDToken); err == nil {
-				info := claims.GetUserInfo()
-				if info.Email != "" {
-					email = info.Email
-				}
-				if info.ChatGPTAccountID != "" {
-					cid = info.ChatGPTAccountID
-				}
-				if info.PlanType != "" {
-					plan = info.PlanType
-				}
-			}
-		}
-
-		expiresAt := parseExpiry(e.ExpiresAt)
-
-		if cid != "" {
-			if existing, err := m.store.GetAccountByChatGPTID(cid); err == nil {
-				access := e.AccessToken
-				refresh := e.RefreshToken
-				if refresh == "" {
-					refresh = existing.RefreshToken
-				}
-				if err := m.store.UpdateTokens(existing.ID, access, refresh, e.IDToken, expiresAt); err != nil {
-					res.Errors = append(res.Errors, fmt.Sprintf("第 %d 条: 更新失败: %v", i+1, err))
-					res.Skipped++
-					continue
-				}
-				res.Updated++
-				continue
-			}
-		}
-
-		acc := &store.Account{
-			Email:            email,
-			ChatGPTAccountID: cid,
-			PlanType:         plan,
-			AccessToken:      e.AccessToken,
-			RefreshToken:     e.RefreshToken,
-			IDToken:          e.IDToken,
-			ExpiresAt:        expiresAt,
-			Status:           store.AccountActive,
-		}
-		if _, err := m.store.CreateAccount(acc); err != nil {
-			res.Errors = append(res.Errors, fmt.Sprintf("第 %d 条: 创建失败: %v", i+1, err))
-			res.Skipped++
-			continue
-		}
-		res.Imported++
+	raw, err := json.Marshal(entries)
+	if err != nil {
+		return ImportResult{Skipped: len(entries), Errors: []string{err.Error()}}
 	}
-	return res
+	result, err := m.CommitImport(context.Background(), raw, contentHash(raw), false)
+	if err != nil {
+		return ImportResult{Skipped: len(entries), Errors: []string{err.Error()}}
+	}
+	return ImportResult{Imported: result.Imported, Updated: result.Updated, Skipped: result.Skipped + result.Failed}
 }
 
-// parseExpiry accepts an RFC3339 timestamp or a unix-seconds string. A zero
-// value is returned when empty/unparseable so the token is refreshed on first
-// use (when a refresh token is present).
-func parseExpiry(s string) time.Time {
-	s = strings.TrimSpace(s)
-	if s == "" {
+func parseExpiry(value string) time.Time {
+	value = strings.TrimSpace(value)
+	if value == "" {
 		return time.Time{}
 	}
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return parsed
 	}
-	if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
-		if n > 1e12 { // unix milliseconds
-			return time.UnixMilli(n)
+	if unix, err := strconv.ParseInt(value, 10, 64); err == nil && unix > 0 {
+		if unix > 1e12 {
+			return time.UnixMilli(unix)
 		}
-		return time.Unix(n, 0)
+		return time.Unix(unix, 0)
 	}
 	return time.Time{}
+}
+
+func maskAccountID(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= 10 {
+		if value == "" {
+			return ""
+		}
+		return value[:min(2, len(value))] + "***"
+	}
+	return value[:6] + "..." + value[len(value)-4:]
 }

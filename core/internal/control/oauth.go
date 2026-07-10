@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"sub2api-desktop/core/internal/account"
-	"sub2api-desktop/core/internal/gateway"
 	"sub2api-desktop/core/internal/store"
+	apptransport "sub2api-desktop/core/internal/transport"
 )
 
 // oauthState tracks a single in-progress login.
@@ -140,7 +140,9 @@ func (c *oauthCoordinator) finish(state, _ string, acc *store.Account, errMsg st
 }
 
 func newAuthHTTPClient(proxy *store.Proxy) *http.Client {
-	client, err := gateway.NewAuthClient(proxy)
+	client, err := apptransport.NewClient(apptransport.Options{
+		Proxy: proxy, Purpose: apptransport.PurposeOAuth, FingerprintProfile: "standard", Timeout: 60 * time.Second,
+	})
 	if err != nil || client == nil {
 		return &http.Client{Timeout: 60 * time.Second}
 	}

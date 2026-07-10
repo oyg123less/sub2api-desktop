@@ -10,7 +10,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"time"
+
+	"github.com/pelletier/go-toml/v2"
+
+	"sub2api-desktop/core/internal/openai"
 )
 
 const (
@@ -21,8 +27,10 @@ const (
 	providerID   = "sub2api"
 	providerName = "Amber"
 	// DefaultModel is the Codex model used when applying the config.
-	DefaultModel = "gpt-5.5"
+	DefaultModel = openai.DefaultCodexModel
 )
+
+var reasoningEffortAssignment = regexp.MustCompile(`(?m)^([ \t]*model_reasoning_effort[ \t]*=[ \t]*)(?:"[^"\r\n]*"|'[^'\r\n]*')`)
 
 // Manager applies and restores Codex configuration under a base directory.
 type Manager struct {
@@ -51,7 +59,10 @@ type Status struct {
 	AuthPath     string `json:"auth_path"`
 	Applied      bool   `json:"applied"`
 	ConfigExists bool   `json:"config_exists"`
+	Model        string `json:"model,omitempty"`
 	BackupExists bool   `json:"backup_exists"`
+	BackupAt     string `json:"backup_at,omitempty"`
+	BackupSource string `json:"backup_source,omitempty"`
 }
 
 func (m *Manager) configPath() string { return filepath.Join(m.dir, configName) }
@@ -64,12 +75,27 @@ func (m *Manager) Status() (Status, error) {
 	switch {
 	case err == nil:
 		st.ConfigExists = true
-		st.Applied = strings.Contains(string(data), `model_provider = "`+providerID+`"`)
+		var config map[string]any
+		if toml.Unmarshal(data, &config) == nil {
+			provider, _ := config["model_provider"].(string)
+			st.Applied = provider == providerID
+			st.Model, _ = config["model"].(string)
+		}
 	case os.IsNotExist(err):
 	default:
 		return st, err
 	}
 	st.BackupExists = fileExists(m.configPath()+backupSuffix) || fileExists(m.configPath()+absentSuffix)
+	if st.BackupExists {
+		path := m.configPath() + backupSuffix
+		if !fileExists(path) {
+			path = m.configPath() + absentSuffix
+		}
+		if info, infoErr := os.Stat(path); infoErr == nil {
+			st.BackupAt = info.ModTime().UTC().Format(time.RFC3339)
+			st.BackupSource = "configuration before Amber integration"
+		}
+	}
 	return st, nil
 }
 
@@ -88,14 +114,14 @@ func (m *Manager) Apply(baseURL, apiKey, model string) error {
 	if err := m.backupOnce(m.authPath()); err != nil {
 		return err
 	}
-	if err := os.WriteFile(m.configPath(), []byte(renderConfig(baseURL, model)), 0o600); err != nil {
+	if err := atomicWriteFile(m.configPath(), []byte(renderConfig(baseURL, model)), 0o600); err != nil {
 		return err
 	}
 	auth, err := m.mergedAuth(apiKey)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(m.authPath(), auth, 0o600)
+	return atomicWriteFile(m.authPath(), auth, 0o600)
 }
 
 // ReadFiles returns the current on-disk contents of config.toml and
@@ -119,18 +145,25 @@ func (m *Manager) WriteFiles(config, auth string) error {
 		return err
 	}
 	if config != "" {
+		normalizedConfig, err := NormalizeConfig(config)
+		if err != nil {
+			return err
+		}
 		if err := m.backupOnce(m.configPath()); err != nil {
 			return err
 		}
-		if err := os.WriteFile(m.configPath(), []byte(config), 0o600); err != nil {
+		if err := atomicWriteFile(m.configPath(), []byte(normalizedConfig), 0o600); err != nil {
 			return err
 		}
 	}
 	if auth != "" {
+		if err := ValidateAuth(auth); err != nil {
+			return err
+		}
 		if err := m.backupOnce(m.authPath()); err != nil {
 			return err
 		}
-		if err := os.WriteFile(m.authPath(), []byte(auth), 0o600); err != nil {
+		if err := atomicWriteFile(m.authPath(), []byte(auth), 0o600); err != nil {
 			return err
 		}
 	}
@@ -139,6 +172,12 @@ func (m *Manager) WriteFiles(config, auth string) error {
 
 // Restore reverts config.toml and auth.json to their pre-apply state.
 func (m *Manager) Restore() error {
+	if err := snapshotBeforeRestore(m.configPath()); err != nil {
+		return err
+	}
+	if err := snapshotBeforeRestore(m.authPath()); err != nil {
+		return err
+	}
 	if err := restoreOne(m.configPath()); err != nil {
 		return err
 	}
@@ -153,12 +192,12 @@ func (m *Manager) backupOnce(path string) error {
 	}
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return os.WriteFile(path+absentSuffix, []byte{}, 0o600)
+		return atomicWriteFile(path+absentSuffix, []byte{}, 0o600)
 	}
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path+backupSuffix, data, 0o600)
+	return atomicWriteFile(path+backupSuffix, data, 0o600)
 }
 
 func restoreOne(path string) error {
@@ -170,7 +209,7 @@ func restoreOne(path string) error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(path, data, 0o600); err != nil {
+		if err := atomicWriteFile(path, data, 0o600); err != nil {
 			return err
 		}
 		return os.Remove(bak)
@@ -189,7 +228,12 @@ func restoreOne(path string) error {
 func (m *Manager) mergedAuth(apiKey string) ([]byte, error) {
 	obj := map[string]any{}
 	if data, err := os.ReadFile(m.authPath()); err == nil {
-		_ = json.Unmarshal(data, &obj)
+		if err := json.Unmarshal(data, &obj); err != nil {
+			return nil, fmt.Errorf("existing auth.json is invalid: %w", err)
+		}
+		if obj == nil {
+			return nil, fmt.Errorf("existing auth.json must be a JSON object")
+		}
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
@@ -199,6 +243,101 @@ func (m *Manager) mergedAuth(apiKey string) ([]byte, error) {
 		return nil, err
 	}
 	return append(out, '\n'), nil
+}
+
+// ValidateConfig parses TOML and verifies the fields required for a usable
+// Codex model provider configuration.
+func ValidateConfig(config string) error {
+	var value map[string]any
+	if err := toml.Unmarshal([]byte(config), &value); err != nil {
+		return fmt.Errorf("config.toml is invalid: %w", err)
+	}
+	provider, ok := value["model_provider"].(string)
+	if !ok || strings.TrimSpace(provider) == "" {
+		return fmt.Errorf("config.toml must define a non-empty model_provider")
+	}
+	if effortValue, exists := value["model_reasoning_effort"]; exists {
+		effort, ok := effortValue.(string)
+		if !ok || !validReasoningEffort(effort) {
+			return fmt.Errorf("model_reasoning_effort must be one of none, minimal, low, medium, high, xhigh")
+		}
+	}
+	providers, ok := value["model_providers"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("config.toml must define [model_providers.%s]", provider)
+	}
+	entry, ok := providers[provider].(map[string]any)
+	if !ok {
+		return fmt.Errorf("config.toml is missing [model_providers.%s]", provider)
+	}
+	for _, field := range []string{"base_url", "wire_api"} {
+		if text, ok := entry[field].(string); !ok || strings.TrimSpace(text) == "" {
+			return fmt.Errorf("model provider %s must define %s", provider, field)
+		}
+	}
+	return nil
+}
+
+// NormalizeConfig converts accepted aliases to values understood by Codex,
+// then validates the exact content that will be written.
+func NormalizeConfig(config string) (string, error) {
+	var value map[string]any
+	if err := toml.Unmarshal([]byte(config), &value); err != nil {
+		return "", fmt.Errorf("config.toml is invalid: %w", err)
+	}
+	if rawValue, exists := value["model_reasoning_effort"]; exists {
+		raw, ok := rawValue.(string)
+		if !ok {
+			return "", fmt.Errorf("model_reasoning_effort must be a string")
+		}
+		normalized := openai.NormalizeReasoningEffort(raw)
+		if normalized == "" {
+			return "", fmt.Errorf("model_reasoning_effort must be one of none, minimal, low, medium, high, xhigh")
+		}
+		if normalized != raw {
+			location := reasoningEffortAssignment.FindStringSubmatchIndex(config)
+			if location == nil {
+				return "", fmt.Errorf("unable to normalize model_reasoning_effort assignment")
+			}
+			config = config[:location[3]] + `"` + normalized + `"` + config[location[1]:]
+		}
+	}
+	if err := ValidateConfig(config); err != nil {
+		return "", err
+	}
+	return config, nil
+}
+
+func validReasoningEffort(raw string) bool {
+	switch raw {
+	case "none", "minimal", "low", "medium", "high", "xhigh":
+		return true
+	default:
+		return false
+	}
+}
+
+func ValidateAuth(auth string) error {
+	var value map[string]any
+	if err := json.Unmarshal([]byte(auth), &value); err != nil {
+		return fmt.Errorf("auth.json is invalid: %w", err)
+	}
+	if value == nil {
+		return fmt.Errorf("auth.json must be a JSON object")
+	}
+	return nil
+}
+
+func snapshotBeforeRestore(path string) error {
+	if !fileExists(path) || (!fileExists(path+backupSuffix) && !fileExists(path+absentSuffix)) {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	snapshot := fmt.Sprintf("%s.sub2api-pre-restore-%s.bak", path, time.Now().UTC().Format("20060102T150405.000000000Z"))
+	return atomicWriteFile(snapshot, data, 0o600)
 }
 
 // RenderConfig returns the config.toml content the tool writes for the given

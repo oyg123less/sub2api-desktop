@@ -66,8 +66,9 @@ func extractBearer(h string) string {
 }
 
 func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
-	data := make([]map[string]any, 0, len(openai.DefaultModels))
-	for _, m := range openai.DefaultModels {
+	models := openai.GatewayModels()
+	data := make([]map[string]any, 0, len(models))
+	for _, m := range models {
 		if strings.HasPrefix(m.ID, "gpt-image") {
 			continue // image models not supported by this gateway
 		}

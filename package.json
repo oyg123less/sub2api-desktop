@@ -1,12 +1,14 @@
 {
   "name": "sub2api-desktop",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Sub2API Desktop — 本地 OpenAI 兼容 API 网关（个人自用）",
   "type": "module",
   "private": true,
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
     "preview": "vite preview",
     "tauri": "tauri"
   },
@@ -20,10 +22,14 @@
     "vue-router": "^4.5.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.54.1",
     "@tauri-apps/cli": "^2.1.0",
     "@vitejs/plugin-vue": "^5.2.1",
+    "@vue/test-utils": "^2.4.6",
+    "jsdom": "^26.1.0",
     "typescript": "^5.7.2",
     "vite": "^6.0.3",
+    "vitest": "^3.2.4",
     "vue-tsc": "^2.1.10"
   }
 }

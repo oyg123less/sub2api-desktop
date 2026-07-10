@@ -22,6 +22,8 @@ const s = ref<Settings | null>(null);
 const loading = ref(true);
 const saving = ref(false);
 const regenOpen = ref(false);
+const lanConfirmOpen = ref(false);
+const initialAllowLAN = ref(false);
 
 const inTauri = isTauri();
 const dataDir = ref<DataDirInfo | null>(null);
@@ -79,12 +81,26 @@ async function openDir() {
   }
 }
 
-const models = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark", "gpt-5.2"];
+const models = ref<string[]>([]);
+
+async function loadModels(current: string) {
+  try {
+    const result = await api.listModels();
+    models.value = result.models || [];
+  } catch {
+    models.value = [];
+  }
+  if (current && !models.value.includes(current)) {
+    models.value.unshift(current);
+  }
+}
 
 async function load() {
   try {
     s.value = await api.getSettings();
+		initialAllowLAN.value = s.value.allow_lan;
     s.value.language = normLang(s.value.language || locale.value);
+    await loadModels(s.value.default_model);
   } catch (e) {
     app.toast((e as Error).message, "error");
   } finally {
@@ -92,11 +108,16 @@ async function load() {
   }
 }
 
-async function save() {
+async function save(forceLAN = false) {
   if (!s.value) return;
+	if (s.value.allow_lan && !initialAllowLAN.value && !forceLAN) {
+		lanConfirmOpen.value = true;
+		return;
+	}
   saving.value = true;
   try {
     s.value = await api.saveSettings(s.value);
+		initialAllowLAN.value = s.value.allow_lan;
     applyLanguage(s.value.language);
     app.toast(t("settings.saved"), "success");
     await app.refreshStatus();
@@ -105,6 +126,16 @@ async function save() {
   } finally {
     saving.value = false;
   }
+}
+
+function cancelLAN() {
+	lanConfirmOpen.value = false;
+	if (s.value) s.value.allow_lan = false;
+}
+
+async function confirmLAN() {
+	lanConfirmOpen.value = false;
+	await save(true);
 }
 
 function normLang(lang: string): string {
@@ -142,7 +173,7 @@ onMounted(() => {
         <h1 class="page-title">{{ t("settings.title") }}</h1>
         <p class="page-desc">{{ t("settings.desc") }}</p>
       </div>
-      <button class="btn btn-primary" :disabled="saving || !s" @click="save">
+      <button class="btn btn-primary" :disabled="saving || !s" @click="save()">
         <Icon name="check" :size="16" /> {{ t("common.save") }}
       </button>
     </div>
@@ -182,6 +213,39 @@ onMounted(() => {
         </div>
       </div>
 
+			<div class="card">
+				<h3 class="card-title"><Icon name="activity" :size="16" /> {{ t("settings.reliability") }}</h3>
+				<div class="setting-row">
+					<div class="setting-info"><h4>{{ t("settings.accountStrategy") }}</h4><p>{{ t("settings.accountStrategyDesc") }}</p></div>
+					<select v-model="s.account_strategy" class="select" style="width: 190px">
+						<option value="quota_aware">{{ t("settings.strategyQuota") }}</option>
+						<option value="round_robin">{{ t("settings.strategyRoundRobin") }}</option>
+						<option value="failover">{{ t("settings.strategyFailover") }}</option>
+					</select>
+				</div>
+				<div class="setting-row">
+					<div class="setting-info"><h4>{{ t("settings.autoRecovery") }}</h4><p>{{ t("settings.autoRecoveryDesc") }}</p></div>
+					<label class="switch"><input v-model="s.auto_recovery" type="checkbox" /><span class="slider"></span></label>
+				</div>
+				<div class="setting-row">
+					<div class="setting-info"><h4>{{ t("settings.logRetention") }}</h4><p>{{ t("settings.logRetentionDesc") }}</p></div>
+					<select v-model.number="s.log_retention_days" class="select" style="width: 150px">
+						<option :value="7">7 {{ t("settings.days") }}</option><option :value="30">30 {{ t("settings.days") }}</option>
+						<option :value="90">90 {{ t("settings.days") }}</option><option :value="0">{{ t("settings.forever") }}</option>
+					</select>
+				</div>
+				<div class="setting-row">
+					<div class="setting-info"><h4>{{ t("settings.maxLogRows") }}</h4><p>{{ t("settings.maxLogRowsDesc") }}</p></div>
+					<input v-model.number="s.max_log_rows" type="number" min="1000" max="1000000" step="1000" class="input" style="width: 150px" />
+				</div>
+				<div class="setting-row">
+					<div class="setting-info"><h4>{{ t("settings.compatProfile") }}</h4><p>{{ t("settings.compatProfileDesc") }}</p></div>
+					<select v-model="s.compatibility_profile" class="select" style="width: 160px">
+						<option value="standard">Standard</option><option value="codex">Codex</option>
+					</select>
+				</div>
+			</div>
+
       <!-- API key -->
       <div class="card">
         <h3 class="card-title"><Icon name="key" :size="16" /> {{ t("settings.apiKey") }}</h3>
@@ -202,16 +266,6 @@ onMounted(() => {
           </div>
           <label class="switch">
             <input type="checkbox" v-model="s.inject_instructions" />
-            <span class="slider"></span>
-          </label>
-        </div>
-        <div class="setting-row">
-          <div class="setting-info">
-            <h4>{{ t("settings.tlsFingerprint") }}</h4>
-            <p>{{ t("settings.tlsFingerprintDesc") }}</p>
-          </div>
-          <label class="switch">
-            <input type="checkbox" v-model="s.tls_fingerprint" />
             <span class="slider"></span>
           </label>
         </div>
@@ -265,7 +319,7 @@ onMounted(() => {
       </div>
     </template>
 
-    <ConfirmModal
+      <ConfirmModal
       :open="regenOpen"
       :title="t('settings.regenKeyConfirm')"
       :desc="t('settings.regenKeyDesc')"
@@ -273,7 +327,15 @@ onMounted(() => {
       :confirm-text="t('settings.regenerate')"
       @confirm="confirmRegen"
       @cancel="regenOpen = false"
-    />
+      />
+			<ConfirmModal
+				:open="lanConfirmOpen"
+				:title="t('settings.lanConfirm')"
+				:desc="t('settings.lanConfirmDesc')"
+				danger
+				@confirm="confirmLAN"
+				@cancel="cancelLAN"
+			/>
 
     <ConfirmModal
       :open="dirConfirmOpen"

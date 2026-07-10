@@ -41,7 +41,7 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 		testModel = cfg.DefaultModel
 	}
 	if testModel == "" {
-		testModel = "gpt-5.4"
+		testModel = openai.DefaultTestModel
 	}
 	testPrompt := strings.TrimSpace(prompt)
 	if testPrompt == "" {
@@ -56,12 +56,12 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 			proxy = p
 		}
 	}
-	client, err := newHTTPClient(proxy, cfg.TLSFingerprint, 90*time.Second)
+	client, err := newHTTPClient(proxy, cfg.CompatProfile, 90*time.Second)
 	if err != nil {
 		res.Error = err.Error()
 		return res
 	}
-	authClient, _ := newHTTPClient(proxy, false, 60*time.Second)
+	authClient, _ := newHTTPClient(proxy, "standard", 60*time.Second)
 
 	token, err := e.accounts.ValidAccessToken(ctx, authClient, acc)
 	if err != nil {
@@ -146,11 +146,16 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 	state.Model = testModel
 	state.IncludeUsage = true
 	var sample strings.Builder
+	terminal := &sseTerminal{}
 	sc := scanSSE(resp.Body)
 	for sc.Scan() {
 		evt, ok := parseSSEEvent(sc.Text())
 		if !ok {
 			continue
+		}
+		terminal.observe(evt)
+		if terminal.errorKind != "" {
+			break
 		}
 		for _, chunk := range apicompat.ResponsesEventToChatChunks(evt, state) {
 			for _, ch := range chunk.Choices {
@@ -160,17 +165,17 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 			}
 		}
 	}
-	for _, chunk := range apicompat.FinalizeResponsesChatStream(state) {
-		for _, ch := range chunk.Choices {
-			if ch.Delta.Content != nil && sample.Len() < 400 {
-				sample.WriteString(*ch.Delta.Content)
-			}
-		}
+	if err := terminal.finish(sc.Err()); err != nil {
+		res.Status = terminal.status
+		res.Error = terminal.message
+		res.LatencyMS = time.Since(start).Milliseconds()
+		e.logRequestWithDetails(acc, requestLogDetails{ResolvedModel: testModel, Status: terminal.status, Latency: time.Since(start), Stream: true, Error: terminal.message, ErrorKind: terminal.errorKind, TerminalEvent: terminal.event})
+		return res
 	}
 
 	prompt2, completion := usageCounts(state.Usage)
 	_ = e.store.TouchAccount(acc.ID)
-	_ = e.store.SetAccountStatus(acc.ID, store.AccountActive, "")
+	_ = e.store.RecordAccountSuccess(acc.ID)
 	res.OK = true
 	res.AccountStatus = string(store.AccountActive)
 	res.PromptTokens = prompt2

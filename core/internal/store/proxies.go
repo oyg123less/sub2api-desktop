@@ -90,6 +90,46 @@ func (s *Store) UpdateProxy(id int64, p *Proxy) (*Proxy, error) {
 	return s.GetProxy(id)
 }
 
+type ProxyPatch struct {
+	Name          *string
+	Type          *ProxyType
+	Host          *string
+	Port          *int
+	Username      *string
+	Password      *string
+	ClearPassword bool
+}
+
+// UpdateProxyPatch preserves the encrypted password unless the caller sends a
+// non-empty replacement or explicitly requests clearing it.
+func (s *Store) UpdateProxyPatch(id int64, patch ProxyPatch) (*Proxy, error) {
+	existing, err := s.GetProxy(id)
+	if err != nil {
+		return nil, err
+	}
+	if patch.Name != nil {
+		existing.Name = *patch.Name
+	}
+	if patch.Type != nil {
+		existing.Type = *patch.Type
+	}
+	if patch.Host != nil {
+		existing.Host = *patch.Host
+	}
+	if patch.Port != nil {
+		existing.Port = *patch.Port
+	}
+	if patch.Username != nil {
+		existing.Username = *patch.Username
+	}
+	if patch.ClearPassword {
+		existing.Password = ""
+	} else if patch.Password != nil && *patch.Password != "" {
+		existing.Password = *patch.Password
+	}
+	return s.UpdateProxy(id, existing)
+}
+
 // DeleteProxy removes a proxy and clears it from any accounts referencing it.
 func (s *Store) DeleteProxy(id int64) error {
 	if _, err := s.db.Exec(`UPDATE accounts SET proxy_id=NULL WHERE proxy_id=?`, id); err != nil {

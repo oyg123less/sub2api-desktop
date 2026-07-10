@@ -39,10 +39,11 @@ func UpstreamURL() string {
 
 // Engine holds the dependencies for request forwarding.
 type Engine struct {
-	store    *store.Store
-	accounts *account.Manager
-	settings func() store.Settings
-	logger   *slog.Logger
+	store     *store.Store
+	accounts  *account.Manager
+	settings  func() store.Settings
+	logger    *slog.Logger
+	scheduler *Scheduler
 }
 
 // New constructs a gateway engine.
@@ -50,7 +51,7 @@ func New(s *store.Store, mgr *account.Manager, settings func() store.Settings, l
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Engine{store: s, accounts: mgr, settings: settings, logger: logger}
+	return &Engine{store: s, accounts: mgr, settings: settings, logger: logger, scheduler: NewScheduler()}
 }
 
 // apiError is the OpenAI-style error envelope.
@@ -64,9 +65,13 @@ type apiErrorBody struct {
 }
 
 func writeError(w http.ResponseWriter, status int, msg, typ string) {
+	writeErrorCode(w, status, msg, typ, "")
+}
+
+func writeErrorCode(w http.ResponseWriter, status int, msg, typ, code string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(apiError{Error: apiErrorBody{Message: msg, Type: typ}})
+	_ = json.NewEncoder(w).Encode(apiError{Error: apiErrorBody{Message: msg, Type: typ, Code: code}})
 }
 
 // ChatCompletions handles POST /v1/chat/completions.
@@ -75,6 +80,13 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "failed to read request body", "invalid_request_error")
 		return
+	}
+	var rawRequest map[string]json.RawMessage
+	if err := json.Unmarshal(bodyBytes, &rawRequest); err == nil {
+		if parameter, unsupported := unsupportedParameter(rawRequest); unsupported {
+			writeErrorCode(w, http.StatusBadRequest, "parameter is not supported by the upstream: "+parameter, "invalid_request_error", "unsupported_parameter")
+			return
+		}
 	}
 	var chatReq apicompat.ChatCompletionsRequest
 	if err := json.Unmarshal(bodyBytes, &chatReq); err != nil {
@@ -88,6 +100,10 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	cfg := e.settings()
 	requestedModel := chatReq.Model
+	requestID := strings.TrimSpace(r.Header.Get("X-Request-ID"))
+	if requestID == "" {
+		requestID = uuid.NewString()
+	}
 	model, ok := resolveModel(requestedModel, cfg.DefaultModel)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "unknown model: "+requestedModel+"（仅支持 gpt-5*/codex 系列模型）", "invalid_request_error")
@@ -96,7 +112,7 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	chatReq.Model = model
 	logModel := upstreamLogModel(model)
 
-	candidates, err := e.selectAccounts()
+	candidates, releaseFirst, err := e.selectAccounts()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account lookup failed: "+err.Error(), "internal_error")
 		return
@@ -107,10 +123,29 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var lastErr string
-	for _, acc := range candidates {
-		result := e.forwardOnce(r.Context(), w, &chatReq, requestedModel, logModel, acc, cfg)
+	attempt := 0
+	for index, acc := range candidates {
+		release := releaseFirst
+		if index > 0 {
+			release = e.scheduler.Acquire(acc.ID)
+		}
+		attempt++
+		meta := forwardMeta{RequestID: requestID, RequestedModel: requestedModel, ResolvedModel: logModel, Attempt: attempt, Stream: chatReq.Stream}
+		result := e.forwardOnce(r.Context(), w, &chatReq, acc, cfg, meta)
+		if result.outcome == outcomeAuthFailed && acc.RefreshToken != "" {
+			if refreshed, err := e.forceRefreshAccount(r.Context(), acc, cfg); err == nil {
+				acc = refreshed
+				attempt++
+				meta.Attempt = attempt
+				result = e.forwardOnce(r.Context(), w, &chatReq, acc, cfg, meta)
+			} else {
+				result.errMsg = "token refresh failed: " + err.Error()
+			}
+		}
+		release()
 		switch result.outcome {
 		case outcomeSuccess:
+			_ = e.store.RecordAccountSuccess(acc.ID)
 			return
 		case outcomeRateLimited:
 			retry := result.retryAfter
@@ -122,7 +157,7 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			lastErr = result.errMsg
 			continue // try next account
 		case outcomeAuthFailed:
-			_ = e.store.SetAccountStatus(acc.ID, store.AccountRefreshFailed, result.errMsg)
+			_ = e.store.RecordAccountFailure(acc.ID, result.errMsg)
 			lastErr = result.errMsg
 			continue
 		case outcomeClientClosed:
@@ -161,7 +196,13 @@ type forwardResult struct {
 	retryAfter     time.Duration
 }
 
-func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq *apicompat.ChatCompletionsRequest, requestedModel, logModel string, acc *store.Account, cfg store.Settings) forwardResult {
+type forwardMeta struct {
+	RequestID, RequestedModel, ResolvedModel string
+	Attempt                                  int
+	Stream                                   bool
+}
+
+func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq *apicompat.ChatCompletionsRequest, acc *store.Account, cfg store.Settings, meta forwardMeta) forwardResult {
 	start := time.Now()
 
 	// Resolve proxy + client.
@@ -171,11 +212,11 @@ func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq
 			proxy = p
 		}
 	}
-	client, err := newHTTPClient(proxy, cfg.TLSFingerprint, 10*time.Minute)
+	client, err := newHTTPClient(proxy, cfg.CompatProfile, 10*time.Minute)
 	if err != nil {
 		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: err.Error()}
 	}
-	authClient, _ := newHTTPClient(proxy, false, 60*time.Second)
+	authClient, _ := newHTTPClient(proxy, "standard", 60*time.Second)
 
 	token, err := e.accounts.ValidAccessToken(ctx, authClient, acc)
 	if err != nil {
@@ -210,6 +251,7 @@ func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq
 	resp, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
+			e.logForward(acc, meta, 499, 0, 0, time.Since(start), "client cancelled request", "client_cancelled", "request_cancelled")
 			return forwardResult{outcome: outcomeClientClosed}
 		}
 		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadGateway, errMsg: "upstream request failed: " + err.Error()}
@@ -219,17 +261,17 @@ func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq
 	usage := e.captureCodexUsage(acc, resp.Header)
 
 	if resp.StatusCode == http.StatusTooManyRequests {
-		e.logRequest(acc, logModel, resp.StatusCode, 0, 0, time.Since(start), chatReq.Stream, "rate limited (429)")
+		e.logForward(acc, meta, resp.StatusCode, 0, 0, time.Since(start), "rate limited (429)", "account_rate_limited", "http_429")
 		return forwardResult{outcome: outcomeRateLimited, status: resp.StatusCode, errMsg: "账号已限额（429）", retryAfter: rateLimitRetryAfter(resp.Header, usage)}
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		msg := readUpstreamError(resp.Body)
-		e.logRequest(acc, logModel, resp.StatusCode, 0, 0, time.Since(start), chatReq.Stream, msg)
+		e.logForward(acc, meta, resp.StatusCode, 0, 0, time.Since(start), msg, "account_unauthorized", "http_auth_error")
 		return forwardResult{outcome: outcomeAuthFailed, status: resp.StatusCode, errMsg: "鉴权失败: " + msg}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		msg := readUpstreamError(resp.Body)
-		e.logRequest(acc, logModel, resp.StatusCode, 0, 0, time.Since(start), chatReq.Stream, msg)
+		e.logForward(acc, meta, resp.StatusCode, 0, 0, time.Since(start), msg, "upstream_http_error", "http_error")
 		return forwardResult{outcome: outcomeUpstreamError, status: resp.StatusCode, errMsg: msg}
 	}
 
@@ -237,9 +279,52 @@ func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq
 
 	// Stream and translate.
 	if chatReq.Stream {
-		return e.streamResponse(w, resp.Body, chatReq, requestedModel, logModel, acc, start)
+		return e.streamResponse(w, resp.Body, chatReq, acc, start, meta)
 	}
-	return e.aggregateResponse(w, resp.Body, chatReq, requestedModel, logModel, acc, start)
+	return e.aggregateResponse(w, resp.Body, chatReq, acc, start, meta)
+}
+
+func unsupportedParameter(request map[string]json.RawMessage) (string, bool) {
+	for _, key := range []string{"stop", "n", "logprobs", "top_logprobs", "audio", "modalities"} {
+		value, exists := request[key]
+		if !exists || string(value) == "null" {
+			continue
+		}
+		if key == "n" && (string(value) == "1" || string(value) == "0") {
+			continue
+		}
+		if key == "logprobs" && string(value) == "false" {
+			continue
+		}
+		return key, true
+	}
+	return "", false
+}
+
+func (e *Engine) forceRefreshAccount(ctx context.Context, acc *store.Account, cfg store.Settings) (*store.Account, error) {
+	_ = cfg
+	var proxy *store.Proxy
+	if acc.ProxyID != nil {
+		if p, err := e.store.GetProxy(*acc.ProxyID); err == nil {
+			proxy = p
+		}
+	}
+	client, err := newHTTPClient(proxy, "standard", 60*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if err := e.accounts.Refresh(ctx, client, acc.ID); err != nil {
+		return nil, err
+	}
+	return e.store.GetAccount(acc.ID)
+}
+
+func (e *Engine) logForward(acc *store.Account, meta forwardMeta, status, prompt, completion int, latency time.Duration, message, kind, terminal string) {
+	e.logRequestWithDetails(acc, requestLogDetails{
+		RequestID: meta.RequestID, RequestedModel: meta.RequestedModel, ResolvedModel: meta.ResolvedModel,
+		Status: status, Prompt: prompt, Completion: completion, Attempts: meta.Attempt,
+		Latency: latency, Stream: meta.Stream, Error: message, ErrorKind: kind, TerminalEvent: terminal,
+	})
 }
 
 func readUpstreamError(body io.Reader) string {
@@ -254,10 +339,14 @@ func readUpstreamError(body io.Reader) string {
 	return s
 }
 
-func (e *Engine) selectAccounts() ([]*store.Account, error) {
+func (e *Engine) selectAccounts() ([]*store.Account, func(), error) {
+	cfg := e.settings()
+	if cfg.AutoRecovery {
+		_ = e.store.RecoverExpiredRateLimits(time.Now())
+	}
 	all, err := e.store.ListAccounts()
 	if err != nil {
-		return nil, err
+		return nil, func() {}, err
 	}
 	now := time.Now()
 	var out []*store.Account
@@ -268,9 +357,16 @@ func (e *Engine) selectAccounts() ([]*store.Account, error) {
 		if a.Status == store.AccountRateLimited && a.RateLimitedUntil != nil && now.Before(*a.RateLimitedUntil) {
 			continue
 		}
+		if a.Status == store.AccountRefreshFailed && a.NextRetryAt != nil && now.Before(*a.NextRetryAt) {
+			continue
+		}
+		if strings.TrimSpace(a.AccessToken) == "" && strings.TrimSpace(a.RefreshToken) == "" {
+			continue
+		}
 		out = append(out, a)
 	}
-	return out, nil
+	ordered, release := e.scheduler.OrderAndAcquire(out, cfg.AccountStrategy)
+	return ordered, release, nil
 }
 
 // resolveModel returns the model to forward: the configured default when the
@@ -331,6 +427,18 @@ func setCodexHeaders(req *http.Request, token string, acc *store.Account, cfg st
 }
 
 func (e *Engine) logRequest(acc *store.Account, model string, status, prompt, completion int, latency time.Duration, stream bool, errMsg string) {
+	e.logRequestWithDetails(acc, requestLogDetails{ResolvedModel: model, Status: status, Prompt: prompt, Completion: completion, Latency: latency, Stream: stream, Error: errMsg})
+}
+
+type requestLogDetails struct {
+	RequestID, RequestedModel, ResolvedModel string
+	Status, Prompt, Completion, Attempts     int
+	Latency                                  time.Duration
+	Stream                                   bool
+	Error, ErrorKind, TerminalEvent          string
+}
+
+func (e *Engine) logRequestWithDetails(acc *store.Account, detail requestLogDetails) {
 	var accID *int64
 	email := ""
 	if acc != nil {
@@ -340,14 +448,20 @@ func (e *Engine) logRequest(acc *store.Account, model string, status, prompt, co
 	_ = e.store.InsertLog(&store.RequestLog{
 		AccountID:        accID,
 		AccountEmail:     email,
-		Model:            model,
-		StatusCode:       status,
-		PromptTokens:     prompt,
-		CompletionTokens: completion,
-		TotalTokens:      prompt + completion,
-		LatencyMS:        latency.Milliseconds(),
-		Stream:           stream,
-		Error:            errMsg,
+		Model:            detail.ResolvedModel,
+		StatusCode:       detail.Status,
+		PromptTokens:     detail.Prompt,
+		CompletionTokens: detail.Completion,
+		TotalTokens:      detail.Prompt + detail.Completion,
+		LatencyMS:        detail.Latency.Milliseconds(),
+		Stream:           detail.Stream,
+		Error:            detail.Error,
+		RequestID:        detail.RequestID,
+		RequestedModel:   detail.RequestedModel,
+		ResolvedModel:    detail.ResolvedModel,
+		ErrorKind:        detail.ErrorKind,
+		AttemptCount:     detail.Attempts,
+		TerminalEvent:    detail.TerminalEvent,
 	})
 }
 

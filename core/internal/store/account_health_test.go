@@ -1,0 +1,76 @@
+package store
+
+import (
+	"path/filepath"
+	"testing"
+	"time"
+
+	appcrypto "sub2api-desktop/core/internal/crypto"
+)
+
+func TestAccountFailureBackoffAndSuccessRecovery(t *testing.T) {
+	dir := t.TempDir()
+	cipher, err := appcrypto.LoadOrCreate(filepath.Join(dir, "key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(filepath.Join(dir, "sub2api.db"), cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	account, err := s.CreateAccount(&Account{AccessToken: "token", Status: AccountActive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordAccountFailure(account.ID, "refresh failed"); err != nil {
+		t.Fatal(err)
+	}
+	failed, _ := s.GetAccount(account.ID)
+	if failed.Status != AccountRefreshFailed || failed.ConsecutiveFailures != 1 || failed.NextRetryAt == nil {
+		t.Fatalf("unexpected failed state: %+v", failed)
+	}
+	if failed.NextRetryAt.Before(time.Now().Add(50 * time.Second)) {
+		t.Fatalf("retry backoff too short: %v", failed.NextRetryAt)
+	}
+	if err := s.RecordAccountSuccess(account.ID); err != nil {
+		t.Fatal(err)
+	}
+	recovered, _ := s.GetAccount(account.ID)
+	if recovered.Status != AccountActive || recovered.ConsecutiveFailures != 0 || recovered.NextRetryAt != nil || recovered.LastSuccessAt == nil {
+		t.Fatalf("unexpected recovered state: %+v", recovered)
+	}
+}
+
+func TestCleanupLogsUsesBatchesAndRowCap(t *testing.T) {
+	dir := t.TempDir()
+	cipher, err := appcrypto.LoadOrCreate(filepath.Join(dir, "key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(filepath.Join(dir, "sub2api.db"), cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for i := 0; i < 2505; i++ {
+		if err := s.InsertLog(&RequestLog{Model: "gpt-5.4", StatusCode: 200}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deleted, err := s.CleanupLogs(0, 100)
+	if err != nil || deleted != 2405 {
+		t.Fatalf("deleted=%d err=%v", deleted, err)
+	}
+	health, _ := s.LogHealth()
+	if health.Rows != 100 {
+		t.Fatalf("rows=%d", health.Rows)
+	}
+	if _, err := s.db.Exec(`UPDATE request_logs SET created_at=?`, time.Now().AddDate(0, 0, -8).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err = s.CleanupLogs(7, 100000)
+	if err != nil || deleted != 100 {
+		t.Fatalf("retention deleted=%d err=%v", deleted, err)
+	}
+}

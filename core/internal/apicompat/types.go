@@ -411,8 +411,9 @@ type ResponsesStreamEvent struct {
 	Part *ResponsesContentPart `json:"part,omitempty"`
 
 	// error event fields
-	Code  string `json:"code,omitempty"`
-	Param string `json:"param,omitempty"`
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+	Param   string `json:"param,omitempty"`
 
 	// Sequence number for ordering events
 	SequenceNumber int `json:"sequence_number,omitempty"`

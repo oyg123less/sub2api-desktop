@@ -10,6 +10,7 @@ const (
 	AccountRefreshFailed AccountStatus = "refresh_failed"
 	AccountRateLimited   AccountStatus = "rate_limited"
 	AccountDisabled      AccountStatus = "disabled"
+	AccountPending       AccountStatus = "pending_validation"
 )
 
 // CodexUsage captures the Codex rate-limit windows reported by upstream
@@ -28,22 +29,26 @@ type CodexUsage struct {
 // Account is a single ChatGPT OAuth account. Token fields are stored encrypted
 // at rest and decrypted only in memory.
 type Account struct {
-	ID               int64         `json:"id"`
-	Email            string        `json:"email"`
-	ChatGPTAccountID string        `json:"chatgpt_account_id"`
-	PlanType         string        `json:"plan_type"`
-	AccessToken      string        `json:"-"`
-	RefreshToken     string        `json:"-"`
-	IDToken          string        `json:"-"`
-	ExpiresAt        time.Time     `json:"expires_at"`
-	Status           AccountStatus `json:"status"`
-	StatusReason     string        `json:"status_reason,omitempty"`
-	RateLimitedUntil *time.Time    `json:"rate_limited_until,omitempty"`
-	ProxyID          *int64        `json:"proxy_id,omitempty"`
-	LastUsedAt       *time.Time    `json:"last_used_at,omitempty"`
-	CodexUsage       *CodexUsage   `json:"codex_usage,omitempty"`
-	CreatedAt        time.Time     `json:"created_at"`
-	UpdatedAt        time.Time     `json:"updated_at"`
+	ID                    int64         `json:"id"`
+	Email                 string        `json:"email"`
+	ChatGPTAccountID      string        `json:"chatgpt_account_id"`
+	PlanType              string        `json:"plan_type"`
+	AccessToken           string        `json:"-"`
+	RefreshToken          string        `json:"-"`
+	IDToken               string        `json:"-"`
+	ExpiresAt             time.Time     `json:"expires_at"`
+	Status                AccountStatus `json:"status"`
+	StatusReason          string        `json:"status_reason,omitempty"`
+	RateLimitedUntil      *time.Time    `json:"rate_limited_until,omitempty"`
+	ProxyID               *int64        `json:"proxy_id,omitempty"`
+	LastUsedAt            *time.Time    `json:"last_used_at,omitempty"`
+	CodexUsage            *CodexUsage   `json:"codex_usage,omitempty"`
+	CredentialFingerprint string        `json:"-"`
+	LastSuccessAt         *time.Time    `json:"last_success_at,omitempty"`
+	ConsecutiveFailures   int           `json:"consecutive_failures"`
+	NextRetryAt           *time.Time    `json:"next_retry_at,omitempty"`
+	CreatedAt             time.Time     `json:"created_at"`
+	UpdatedAt             time.Time     `json:"updated_at"`
 }
 
 // ProxyType enumerates supported proxy protocols.
@@ -81,6 +86,12 @@ type RequestLog struct {
 	LatencyMS        int64     `json:"latency_ms"`
 	Stream           bool      `json:"stream"`
 	Error            string    `json:"error,omitempty"`
+	RequestID        string    `json:"request_id,omitempty"`
+	RequestedModel   string    `json:"requested_model,omitempty"`
+	ResolvedModel    string    `json:"resolved_model,omitempty"`
+	ErrorKind        string    `json:"error_kind,omitempty"`
+	AttemptCount     int       `json:"attempt_count"`
+	TerminalEvent    string    `json:"terminal_event,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
 }
 
@@ -99,4 +110,11 @@ type Settings struct {
 	// CodexModel is the model written into ~/.codex/config.toml when applying
 	// the Codex CLI integration.
 	CodexModel string `json:"codex_model"`
+	// AccountStrategy controls gateway account ordering: failover,
+	// round_robin, or quota_aware.
+	AccountStrategy  string `json:"account_strategy"`
+	LogRetentionDays int    `json:"log_retention_days"`
+	MaxLogRows       int    `json:"max_log_rows"`
+	AutoRecovery     bool   `json:"auto_recovery"`
+	CompatProfile    string `json:"compatibility_profile"`
 }

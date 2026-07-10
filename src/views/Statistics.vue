@@ -2,6 +2,8 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import LineChart from "../components/LineChart.vue";
+import Icon from "../components/Icon.vue";
+import ConfirmModal from "../components/ConfirmModal.vue";
 import { api, type RequestLog, type StatsResponse } from "../api/control";
 import { useAppStore } from "../store";
 
@@ -12,6 +14,8 @@ const days = ref(7);
 const stats = ref<StatsResponse | null>(null);
 const logs = ref<RequestLog[]>([]);
 const loading = ref(true);
+const clearOpen = ref(false);
+const clearing = ref(false);
 
 const successRate = computed(() => {
   const s = stats.value?.summary;
@@ -52,6 +56,34 @@ function statusClass(code: number) {
   return code >= 200 && code < 300 ? "badge-success" : "badge-danger";
 }
 
+async function exportLogs(format: "json" | "csv") {
+	try {
+		const blob = await api.exportLogs(format, days.value);
+		const href = URL.createObjectURL(blob);
+		const anchor = document.createElement("a");
+		anchor.href = href;
+		anchor.download = `amber-logs-${new Date().toISOString().slice(0, 10)}.${format}`;
+		anchor.click();
+		URL.revokeObjectURL(href);
+	} catch (e) {
+		app.toast((e as Error).message, "error");
+	}
+}
+
+async function clearLogs() {
+	clearing.value = true;
+	try {
+		const result = await api.clearLogs();
+		clearOpen.value = false;
+		app.toast(t("logs.cleared", { count: result.deleted }), "success");
+		await load();
+	} catch (e) {
+		app.toast((e as Error).message, "error");
+	} finally {
+		clearing.value = false;
+	}
+}
+
 watch(days, load);
 onMounted(load);
 </script>
@@ -63,10 +95,15 @@ onMounted(load);
         <h1 class="page-title">{{ t("statistics.title") }}</h1>
         <p class="page-desc">{{ t("statistics.desc") }}</p>
       </div>
-      <select v-model.number="days" class="select" style="width: 140px">
-        <option :value="7">{{ t("statistics.days7") }}</option>
-        <option :value="30">{{ t("statistics.days30") }}</option>
-      </select>
+		<div class="row-gap">
+			<button class="btn btn-sm" @click="exportLogs('json')"><Icon name="download" :size="14" /> JSON</button>
+			<button class="btn btn-sm" @click="exportLogs('csv')"><Icon name="download" :size="14" /> CSV</button>
+			<button class="btn btn-danger btn-sm" @click="clearOpen = true"><Icon name="trash" :size="14" /> {{ t("logs.clear") }}</button>
+			<select v-model.number="days" class="select" style="width: 140px">
+				<option :value="7">{{ t("statistics.days7") }}</option>
+				<option :value="30">{{ t("statistics.days30") }}</option>
+			</select>
+		</div>
     </div>
 
     <div class="grid grid-4">
@@ -93,6 +130,9 @@ onMounted(load);
       <div v-if="!hasData" class="empty">{{ t("statistics.noData") }}</div>
       <LineChart v-else :data="chartData" />
     </div>
+		<p class="faint text-sm" style="margin-top: 10px">
+			{{ t("logs.retentionScope", { rows: fmtNum(stats?.retention.retained_rows), days: stats?.retention.days === 0 ? t("logs.forever") : stats?.retention.days }) }}
+		</p>
 
     <div class="grid grid-2" style="margin-top: 16px">
       <div class="card">
@@ -115,12 +155,25 @@ onMounted(load);
             <span class="badge" :class="statusClass(l.status_code)" style="min-width: 48px; justify-content: center">
               {{ l.status_code }}
             </span>
-            <span class="mono text-sm" style="flex: 1">{{ l.model }}</span>
+					<div style="flex: 1; min-width: 0">
+						<div class="mono text-sm">{{ l.resolved_model || l.model }}</div>
+						<div v-if="l.error_kind" class="faint text-xs">{{ l.error_kind }} · {{ t("logs.attempts", { count: l.attempt_count }) }}</div>
+					</div>
             <span class="faint text-sm" style="width: 58px; text-align: right">{{ l.latency_ms }}ms</span>
             <span class="faint text-sm" style="width: 130px; text-align: right">{{ fmtTime(l.created_at) }}</span>
           </div>
         </div>
       </div>
     </div>
+
+		<ConfirmModal
+			:open="clearOpen"
+			:title="t('logs.clearConfirm')"
+			:desc="t('logs.clearDesc')"
+			danger
+			:loading="clearing"
+			@confirm="clearLogs"
+			@cancel="clearOpen = false"
+		/>
   </div>
 </template>

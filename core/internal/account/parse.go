@@ -1,180 +1,353 @@
 package account
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
+	"unicode/utf16"
+	"unicode/utf8"
 )
 
-// ParseImportPayload converts raw pasted/imported text into ImportEntry values.
-// It accepts the same shapes as the upstream sub2api importer:
-//   - a bare array of entries, or an object with an "accounts" array
-//     (including sub2api-data backup exports where token fields live in a
-//     "credentials" object);
-//   - a single account object, including Codex CLI auth.json where tokens are
-//     nested under "tokens";
-//   - snake_case and camelCase key variants;
-//   - a JSON stream / one JSON document or bare access token per line.
-func ParseImportPayload(raw string) ([]ImportEntry, error) {
-	trimmed := strings.TrimSpace(raw)
+const MaxImportBytes = 10 << 20
+
+type ParsedImportEntry struct {
+	Index    int
+	Entry    ImportEntry
+	Source   string
+	Warnings []string
+	Err      error
+}
+
+// ParseImportDocument normalizes text encoding and parses all supported import
+// shapes without silently treating malformed JSON as an access token.
+func ParseImportDocument(raw []byte) ([]ParsedImportEntry, error) {
+	if len(raw) > MaxImportBytes {
+		return nil, fmt.Errorf("import exceeds %d bytes", MaxImportBytes)
+	}
+	content, encodingName, err := decodeImportText(raw)
+	if err != nil {
+		return nil, err
+	}
+	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {
-		return nil, errors.New("空内容")
+		return nil, errors.New("empty import content")
 	}
 
-	var values []any
+	values := []any{}
 	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
-		vs, err := decodeJSONStream(trimmed)
+		values, err = decodeJSONStream(trimmed)
 		if err != nil {
-			if lineValues, lineErr := parseLines(trimmed); lineErr == nil && len(lineValues) > 0 {
-				values = lineValues
-			} else {
-				return nil, fmt.Errorf("JSON 解析失败: %w", err)
-			}
-		} else {
-			values = vs
+			return nil, fmt.Errorf("invalid JSON import: %w", err)
 		}
 	} else {
-		vs, err := parseLines(trimmed)
+		values, err = parseImportLines(trimmed)
 		if err != nil {
 			return nil, err
 		}
-		values = vs
 	}
 
-	var entries []ImportEntry
-	collectImportValues(values, &entries)
+	entries := []ParsedImportEntry{}
+	collectImportValues(values, "document", &entries)
 	if len(entries) == 0 {
-		return nil, errors.New("未找到可导入的账号")
+		return nil, errors.New("no importable accounts found")
+	}
+	if encodingName != "utf-8" {
+		for index := range entries {
+			entries[index].Warnings = append(entries[index].Warnings, "input converted from "+encodingName)
+		}
+	}
+	for index := range entries {
+		entries[index].Index = index + 1
+		if entries[index].Err == nil {
+			entry := entries[index].Entry
+			if strings.TrimSpace(entry.AccessToken) == "" && strings.TrimSpace(entry.RefreshToken) == "" {
+				entries[index].Err = errors.New("missing access_token and refresh_token")
+			} else if entry.AccessToken != "" && !validBareToken(entry.AccessToken) {
+				entries[index].Err = errors.New("access_token has an invalid format")
+			} else if entry.RefreshToken != "" && !validOpaqueToken(entry.RefreshToken) {
+				entries[index].Err = errors.New("refresh_token has an invalid format")
+			} else if entry.IDToken != "" && !validJWT(entry.IDToken) {
+				entries[index].Err = errors.New("id_token has an invalid JWT format")
+			}
+		}
 	}
 	return entries, nil
 }
 
+// ParseImportPayload keeps the v0.1.x parser entry point for compatibility.
+// New code should use ParseImportDocument so row-level errors remain visible.
+func ParseImportPayload(raw string) ([]ImportEntry, error) {
+	parsed, err := ParseImportDocument([]byte(raw))
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]ImportEntry, 0, len(parsed))
+	for _, item := range parsed {
+		if item.Err != nil {
+			return nil, fmt.Errorf("row %d: %w", item.Index, item.Err)
+		}
+		entries = append(entries, item.Entry)
+	}
+	return entries, nil
+}
+
+func decodeImportText(raw []byte) (string, string, error) {
+	switch {
+	case bytes.HasPrefix(raw, []byte{0xef, 0xbb, 0xbf}):
+		raw = raw[3:]
+		if !utf8.Valid(raw) {
+			return "", "", errors.New("invalid UTF-8 import")
+		}
+		return string(raw), "utf-8", nil
+	case bytes.HasPrefix(raw, []byte{0xff, 0xfe}):
+		text, err := decodeUTF16(raw[2:], false)
+		return text, "utf-16le", err
+	case bytes.HasPrefix(raw, []byte{0xfe, 0xff}):
+		text, err := decodeUTF16(raw[2:], true)
+		return text, "utf-16be", err
+	case utf8.Valid(raw):
+		return string(raw), "utf-8", nil
+	case looksUTF16(raw, false):
+		text, err := decodeUTF16(raw, false)
+		return text, "utf-16le", err
+	case looksUTF16(raw, true):
+		text, err := decodeUTF16(raw, true)
+		return text, "utf-16be", err
+	default:
+		return "", "", errors.New("unsupported import encoding; use UTF-8 or UTF-16")
+	}
+}
+
+func looksUTF16(raw []byte, bigEndian bool) bool {
+	if len(raw) < 4 || len(raw)%2 != 0 {
+		return false
+	}
+	zeros := 0
+	for index := 0; index < len(raw); index += 2 {
+		position := index + 1
+		if bigEndian {
+			position = index
+		}
+		if raw[position] == 0 {
+			zeros++
+		}
+	}
+	return zeros*4 >= len(raw)
+}
+
+func decodeUTF16(raw []byte, bigEndian bool) (string, error) {
+	if len(raw)%2 != 0 {
+		return "", errors.New("invalid UTF-16 byte length")
+	}
+	units := make([]uint16, len(raw)/2)
+	for index := range units {
+		first, second := raw[index*2], raw[index*2+1]
+		if bigEndian {
+			units[index] = uint16(first)<<8 | uint16(second)
+		} else {
+			units[index] = uint16(second)<<8 | uint16(first)
+		}
+	}
+	return string(utf16.Decode(units)), nil
+}
+
 func decodeJSONStream(content string) ([]any, error) {
-	dec := json.NewDecoder(strings.NewReader(content))
-	dec.UseNumber()
-	var values []any
+	decoder := json.NewDecoder(strings.NewReader(content))
+	decoder.UseNumber()
+	values := []any{}
 	for {
-		var v any
-		err := dec.Decode(&v)
+		var value any
+		err := decoder.Decode(&value)
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
 			return nil, err
 		}
-		values = append(values, v)
+		values = append(values, value)
 	}
 	if len(values) == 0 {
-		return nil, errors.New("空 JSON 内容")
+		return nil, errors.New("empty JSON content")
 	}
 	return values, nil
 }
 
-func parseLines(content string) ([]any, error) {
-	var values []any
-	for _, line := range strings.Split(content, "\n") {
+func parseImportLines(content string) ([]any, error) {
+	values := []any{}
+	for lineNumber, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
 		if strings.HasPrefix(line, "{") || strings.HasPrefix(line, "[") {
-			vs, err := decodeJSONStream(line)
+			decoded, err := decodeJSONStream(line)
 			if err != nil {
-				return nil, fmt.Errorf("第 %d 行 JSON 解析失败: %w", len(values)+1, err)
+				return nil, fmt.Errorf("line %d contains invalid JSON: %w", lineNumber+1, err)
 			}
-			values = append(values, vs...)
+			values = append(values, decoded...)
 			continue
 		}
-		values = append(values, line)
+		values = append(values, bareToken{value: line, line: lineNumber + 1})
 	}
 	return values, nil
 }
 
-func collectImportValues(values []any, out *[]ImportEntry) {
-	for _, v := range values {
-		switch item := v.(type) {
+type bareToken struct {
+	value string
+	line  int
+}
+
+func collectImportValues(values []any, source string, output *[]ParsedImportEntry) {
+	for _, value := range values {
+		switch item := value.(type) {
 		case []any:
-			collectImportValues(item, out)
-		case string:
-			tok := strings.TrimSpace(item)
-			if tok != "" {
-				*out = append(*out, ImportEntry{AccessToken: tok})
+			collectImportValues(item, source, output)
+		case bareToken:
+			entry := ParsedImportEntry{Source: "line"}
+			if !validBareToken(item.value) {
+				entry.Err = fmt.Errorf("line %d is not a recognized token", item.line)
+			} else if looksRefreshToken(item.value) {
+				entry.Entry.RefreshToken = item.value
+			} else {
+				entry.Entry.AccessToken = item.value
 			}
+			*output = append(*output, entry)
+		case string:
+			entry := ParsedImportEntry{Source: source}
+			if !validBareToken(item) {
+				entry.Err = errors.New("string value is not a recognized token")
+			} else if looksRefreshToken(item) {
+				entry.Entry.RefreshToken = strings.TrimSpace(item)
+			} else {
+				entry.Entry.AccessToken = strings.TrimSpace(item)
+			}
+			*output = append(*output, entry)
 		case map[string]any:
-			// Wrapper objects: {"accounts": [...]} (Amber & sub2api-data backups).
 			if inner, ok := item["accounts"].([]any); ok {
-				collectImportValues(inner, out)
+				collectImportValues(inner, "accounts", output)
 				continue
 			}
-			*out = append(*out, entryFromMap(item))
+			entry, warnings := entryFromMap(item)
+			*output = append(*output, ParsedImportEntry{Entry: entry, Source: detectSource(item), Warnings: warnings})
+		default:
+			*output = append(*output, ParsedImportEntry{Source: source, Err: fmt.Errorf("unsupported value type %T", value)})
 		}
 	}
 }
 
-// entryFromMap extracts token/identity fields from one account object,
-// tolerating the upstream key variants: values nested under "tokens" (Codex
-// CLI auth.json) or "credentials" (sub2api-data backups), and camelCase names.
-func entryFromMap(m map[string]any) ImportEntry {
-	var e ImportEntry
-	e.AccessToken = firstString(m,
+func validBareToken(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.ContainsAny(value, " \t") {
+		return false
+	}
+	if looksRefreshToken(value) || strings.HasPrefix(value, "sk-") {
+		return len(value) >= 20
+	}
+	return validJWT(value)
+}
+
+func validJWT(value string) bool {
+	parts := strings.Split(strings.TrimSpace(value), ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts[:2] {
+		if len(part) < 4 {
+			return false
+		}
+		if _, err := base64.RawURLEncoding.DecodeString(part); err != nil {
+			return false
+		}
+	}
+	return len(parts[2]) >= 8
+}
+
+func validOpaqueToken(value string) bool {
+	value = strings.TrimSpace(value)
+	return len(value) >= 20 && !strings.ContainsAny(value, " \t\r\n")
+}
+
+func looksRefreshToken(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(value, "rt_") || strings.HasPrefix(value, "refresh_")
+}
+
+func detectSource(value map[string]any) string {
+	if _, ok := value["credentials"].(map[string]any); ok {
+		return "sub2api_backup"
+	}
+	if _, ok := value["tokens"].(map[string]any); ok {
+		return "codex_auth"
+	}
+	return "account_object"
+}
+
+func entryFromMap(value map[string]any) (ImportEntry, []string) {
+	entry := ImportEntry{}
+	entry.AccessToken = firstString(value,
 		[]string{"tokens", "access_token"}, []string{"tokens", "accessToken"},
 		[]string{"credentials", "access_token"}, []string{"credentials", "accessToken"},
 		[]string{"access_token"}, []string{"accessToken"}, []string{"token"},
 	)
-	e.RefreshToken = firstString(m,
+	entry.RefreshToken = firstString(value,
 		[]string{"tokens", "refresh_token"}, []string{"tokens", "refreshToken"},
 		[]string{"credentials", "refresh_token"}, []string{"credentials", "refreshToken"},
 		[]string{"refresh_token"}, []string{"refreshToken"},
 	)
-	e.IDToken = firstString(m,
+	entry.IDToken = firstString(value,
 		[]string{"tokens", "id_token"}, []string{"tokens", "idToken"},
 		[]string{"credentials", "id_token"}, []string{"credentials", "idToken"},
 		[]string{"id_token"}, []string{"idToken"},
 	)
-	e.Email = firstString(m, []string{"email"}, []string{"user", "email"}, []string{"name"})
-	e.ChatGPTAccountID = firstString(m,
+	entry.Email = firstString(value, []string{"email"}, []string{"user", "email"}, []string{"name"})
+	entry.ChatGPTAccountID = firstString(value,
 		[]string{"chatgpt_account_id"}, []string{"chatgptAccountId"},
-		[]string{"account_id"}, []string{"accountId"},
-		[]string{"account", "id"}, []string{"account", "account_id"},
-		[]string{"account", "chatgpt_account_id"},
 		[]string{"credentials", "chatgpt_account_id"},
 	)
-	e.PlanType = firstString(m,
-		[]string{"plan_type"}, []string{"planType"},
-		[]string{"account", "plan_type"}, []string{"account", "planType"},
+	warnings := []string{}
+	if entry.ChatGPTAccountID == "" {
+		if ambiguous := firstString(value,
+			[]string{"account_id"}, []string{"accountId"}, []string{"account", "id"}, []string{"account", "account_id"},
+		); ambiguous != "" {
+			warnings = append(warnings, "ambiguous account_id ignored until identity verification")
+		}
+	}
+	entry.PlanType = firstString(value,
+		[]string{"plan_type"}, []string{"planType"}, []string{"account", "plan_type"}, []string{"account", "planType"},
 	)
-	e.ExpiresAt = firstScalar(m,
+	entry.ExpiresAt = firstScalar(value,
 		[]string{"tokens", "expires_at"}, []string{"tokens", "expiresAt"},
-		[]string{"credentials", "expires_at"},
-		[]string{"expires_at"}, []string{"expiresAt"},
+		[]string{"credentials", "expires_at"}, []string{"expires_at"}, []string{"expiresAt"},
 	)
-	return e
+	return entry, warnings
 }
 
-func lookupPath(m map[string]any, path []string) (any, bool) {
-	var cur any = m
+func lookupPath(value map[string]any, path []string) (any, bool) {
+	var current any = value
 	for _, key := range path {
-		obj, ok := cur.(map[string]any)
+		object, ok := current.(map[string]any)
 		if !ok {
 			return nil, false
 		}
-		cur, ok = obj[key]
+		current, ok = object[key]
 		if !ok {
 			return nil, false
 		}
 	}
-	return cur, true
+	return current, true
 }
 
-func firstString(m map[string]any, paths ...[]string) string {
-	for _, p := range paths {
-		if v, ok := lookupPath(m, p); ok {
-			if s, ok := v.(string); ok {
-				if s = strings.TrimSpace(s); s != "" {
-					return s
+func firstString(value map[string]any, paths ...[]string) string {
+	for _, path := range paths {
+		if candidate, ok := lookupPath(value, path); ok {
+			if text, ok := candidate.(string); ok {
+				if text = strings.TrimSpace(text); text != "" {
+					return text
 				}
 			}
 		}
@@ -182,23 +355,21 @@ func firstString(m map[string]any, paths ...[]string) string {
 	return ""
 }
 
-// firstScalar returns the first string or numeric value at the given paths,
-// formatted as a string (unix seconds keep their integer form).
-func firstScalar(m map[string]any, paths ...[]string) string {
-	for _, p := range paths {
-		v, ok := lookupPath(m, p)
+func firstScalar(value map[string]any, paths ...[]string) string {
+	for _, path := range paths {
+		candidate, ok := lookupPath(value, path)
 		if !ok {
 			continue
 		}
-		switch n := v.(type) {
+		switch scalar := candidate.(type) {
 		case string:
-			if s := strings.TrimSpace(n); s != "" {
-				return s
+			if text := strings.TrimSpace(scalar); text != "" {
+				return text
 			}
 		case json.Number:
-			return n.String()
+			return scalar.String()
 		case float64:
-			return strconv.FormatInt(int64(n), 10)
+			return strconv.FormatInt(int64(scalar), 10)
 		}
 	}
 	return ""

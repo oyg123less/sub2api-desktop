@@ -8,5 +8,7 @@ interface Window {
   __SUB2API__?: {
     controlPort: number;
     controlToken: string;
+    generation: number;
+    sidecarVersion?: string;
   };
 }

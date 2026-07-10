@@ -12,10 +12,13 @@ const app = useAppStore();
 const proxies = ref<Proxy[]>([]);
 const loading = ref(true);
 const testing = ref<Record<number, boolean>>({});
+type ProxyTest = Awaited<ReturnType<typeof api.testProxy>>;
+const testResults = ref<Record<number, ProxyTest>>({});
 
 const addOpen = ref(false);
 const saving = ref(false);
 const editId = ref<number | null>(null);
+const clearPassword = ref(false);
 const form = reactive({
   name: "",
   type: "http" as Proxy["type"],
@@ -40,6 +43,7 @@ async function load() {
 function openAdd() {
   editId.value = null;
   Object.assign(form, { name: "", type: "http", host: "", port: 1080, username: "", password: "" });
+  clearPassword.value = false;
   addOpen.value = true;
 }
 
@@ -53,6 +57,7 @@ function openEdit(p: Proxy) {
     username: p.username || "",
     password: "",
   });
+  clearPassword.value = false;
   addOpen.value = true;
 }
 
@@ -70,6 +75,7 @@ async function save() {
       port: Number(form.port),
       username: form.username || undefined,
       password: form.password || undefined,
+      clear_password: editId.value != null ? clearPassword.value : undefined,
     };
     if (editId.value != null) {
       await api.updateProxy(editId.value, payload);
@@ -89,6 +95,7 @@ async function test(p: Proxy) {
   testing.value[p.id] = true;
   try {
     const r = await api.testProxy(p.id);
+		testResults.value[p.id] = r;
     if (r.ok) {
       app.toast(`${t("proxies.testOk")} · ${r.latency_ms}ms`, "success");
     } else {
@@ -145,6 +152,11 @@ onMounted(load);
           <div style="flex: 1">
             <div style="font-weight: 550">{{ p.name }}</div>
             <div class="faint mono text-sm">{{ p.host }}:{{ p.port }}</div>
+					<div v-if="testResults[p.id]" class="proxy-stages">
+						<span v-for="stage in testResults[p.id].stages" :key="stage.id" class="proxy-stage" :class="`stage-${stage.status}`">
+							{{ t(`proxies.stage.${stage.id}`) }}
+						</span>
+					</div>
           </div>
           <button class="btn btn-ghost btn-sm" :disabled="testing[p.id]" @click="test(p)">
             <Icon name="refresh" :size="14" :class="testing[p.id] ? 'spin' : ''" />
@@ -194,9 +206,13 @@ onMounted(load);
             </div>
             <div class="field">
               <label class="field-label">{{ t("proxies.password") }}</label>
-              <input v-model="form.password" type="password" class="input" :placeholder="editId != null ? t('proxies.passwordKeep') : ''" />
+              <input v-model="form.password" type="password" class="input" :disabled="clearPassword" :placeholder="editId != null ? t('proxies.passwordKeep') : ''" />
             </div>
           </div>
+          <label v-if="editId != null" class="import-validate">
+            <input v-model="clearPassword" type="checkbox" />
+            <span>{{ t("proxies.passwordClear") }}</span>
+          </label>
           <div class="modal-actions">
             <button class="btn btn-ghost" @click="addOpen = false">{{ t("common.cancel") }}</button>
             <button class="btn btn-primary" :disabled="saving" @click="save">{{ t("common.save") }}</button>
@@ -216,3 +232,11 @@ onMounted(load);
     />
   </div>
 </template>
+
+<style scoped>
+.proxy-stages { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 6px; }
+.proxy-stage { font-size: 11px; line-height: 18px; padding: 0 6px; border: 1px solid var(--border); border-radius: 4px; color: var(--text-muted); }
+.stage-ok { color: var(--success); border-color: color-mix(in srgb, var(--success) 35%, var(--border)); }
+.stage-failed { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); }
+.stage-not_run, .stage-skipped { opacity: .55; }
+</style>

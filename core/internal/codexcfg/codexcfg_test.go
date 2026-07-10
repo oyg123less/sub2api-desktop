@@ -31,7 +31,7 @@ func TestApplyThenRestoreExistingConfig(t *testing.T) {
 	if !strings.Contains(cfg, `base_url = "http://127.0.0.1:8080/v1"`) {
 		t.Fatalf("base_url missing: %s", cfg)
 	}
-	if !strings.Contains(cfg, `model = "gpt-5.5"`) {
+	if !strings.Contains(cfg, `model = "gpt-5.6-sol"`) {
 		t.Fatalf("default model missing: %s", cfg)
 	}
 
@@ -53,6 +53,9 @@ func TestApplyThenRestoreExistingConfig(t *testing.T) {
 	}
 	if !st.Applied || !st.BackupExists {
 		t.Fatalf("unexpected status: %+v", st)
+	}
+	if st.Model != "gpt-5.6-sol" {
+		t.Fatalf("status model = %q, want gpt-5.6-sol", st.Model)
 	}
 
 	if err := m.Restore(); err != nil {
@@ -108,6 +111,49 @@ func TestBackupPreservesTrueOriginalAcrossReapply(t *testing.T) {
 	}
 	if got := readFile(t, filepath.Join(dir, configName)); got != orig {
 		t.Fatalf("re-apply clobbered original backup: %q", got)
+	}
+}
+
+func TestWriteFilesNormalizesMaxReasoningEffort(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := strings.Replace(RenderConfig("http://127.0.0.1:8080/v1", "gpt-5.6-sol"),
+		`model_reasoning_effort = "high"`, `model_reasoning_effort = "max" # preserve`, 1)
+	if err := m.WriteFiles(config, ""); err != nil {
+		t.Fatal(err)
+	}
+	written := readFile(t, filepath.Join(dir, configName))
+	if !strings.Contains(written, `model_reasoning_effort = "xhigh" # preserve`) {
+		t.Fatalf("reasoning effort was not normalized: %s", written)
+	}
+	if err := ValidateConfig(written); err != nil {
+		t.Fatalf("normalized config is invalid: %v", err)
+	}
+}
+
+func TestValidateConfigRejectsUnsupportedReasoningEffort(t *testing.T) {
+	config := strings.Replace(RenderConfig("http://127.0.0.1:8080/v1", "gpt-5.6-sol"),
+		`model_reasoning_effort = "high"`, `model_reasoning_effort = "ultra"`, 1)
+	if err := ValidateConfig(config); err == nil {
+		t.Fatal("unsupported reasoning effort was accepted")
+	}
+	if _, err := NormalizeConfig(config); err == nil {
+		t.Fatal("unsupported reasoning effort was normalized")
+	}
+}
+
+func TestNormalizeConfigCanonicalizesReasoningEffortCase(t *testing.T) {
+	config := strings.Replace(RenderConfig("http://127.0.0.1:8080/v1", "gpt-5.6-sol"),
+		`model_reasoning_effort = "high"`, `model_reasoning_effort = "HIGH"`, 1)
+	normalized, err := NormalizeConfig(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(normalized, `model_reasoning_effort = "high"`) {
+		t.Fatalf("reasoning effort case was not normalized: %s", normalized)
 	}
 }
 

@@ -182,3 +182,108 @@ func TestNoAccountReturns503(t *testing.T) {
 		t.Fatalf("expected 503, got %d", w.Code)
 	}
 }
+
+func TestChatStreamingFailureEmitsErrorWithoutDone(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.created","response":{"id":"r"}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","delta":"partial"}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.failed","response":{"status":"failed","error":{"message":"boom"}}}`+"\n\n")
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_UPSTREAM_URL", upstream.URL)
+
+	st := newTestStore(t)
+	seedAccount(t, st)
+	cfg, _ := st.LoadSettings()
+	cfg.TLSFingerprint = false
+	_ = st.SaveSettings(cfg)
+	engine := gateway.New(st, account.NewManager(st), func() store.Settings { s, _ := st.LoadSettings(); return s }, nil)
+
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-5.4","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	w := httptest.NewRecorder()
+	engine.ChatCompletions(w, r)
+	out := w.Body.String()
+	if !strings.Contains(out, `"code":"upstream_failed_event"`) {
+		t.Fatalf("missing error event: %s", out)
+	}
+	if strings.Contains(out, "data: [DONE]") {
+		t.Fatalf("failed stream must not contain DONE: %s", out)
+	}
+	logs, _ := st.RecentLogs(1)
+	if len(logs) != 1 || logs[0].StatusCode != http.StatusBadGateway || logs[0].TerminalEvent != "response.failed" {
+		t.Fatalf("unexpected log: %+v", logs)
+	}
+}
+
+func TestChatIncompleteMaxTokensEndsWithLength(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.created","response":{"id":"r"}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","delta":"partial"}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}`+"\n\n")
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_UPSTREAM_URL", upstream.URL)
+
+	st := newTestStore(t)
+	seedAccount(t, st)
+	cfg, _ := st.LoadSettings()
+	cfg.TLSFingerprint = false
+	_ = st.SaveSettings(cfg)
+	engine := gateway.New(st, account.NewManager(st), func() store.Settings { s, _ := st.LoadSettings(); return s }, nil)
+
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-5.4","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	w := httptest.NewRecorder()
+	engine.ChatCompletions(w, r)
+	if !strings.Contains(w.Body.String(), `"finish_reason":"length"`) || !strings.Contains(w.Body.String(), "data: [DONE]") {
+		t.Fatalf("unexpected incomplete response: %s", w.Body.String())
+	}
+}
+
+func TestUnsupportedParametersReturnStableCode(t *testing.T) {
+	tests := []struct {
+		path string
+		body string
+	}{
+		{path: "/v1/chat/completions", body: `{"model":"gpt-5.4","messages":[{"role":"user","content":"hi"}],"stop":["END"]}`},
+		{path: "/v1/chat/completions", body: `{"model":"gpt-5.4","messages":[{"role":"user","content":"hi"}],"n":2}`},
+		{path: "/v1/responses", body: `{"model":"gpt-5.4","input":"hi","logprobs":true}`},
+	}
+	for _, tt := range tests {
+		st := newTestStore(t)
+		engine := gateway.New(st, account.NewManager(st), func() store.Settings { s, _ := st.LoadSettings(); return s }, nil)
+		r := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+		w := httptest.NewRecorder()
+		if tt.path == "/v1/responses" {
+			engine.Responses(w, r)
+		} else {
+			engine.ChatCompletions(w, r)
+		}
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"code":"unsupported_parameter"`) {
+			t.Fatalf("path=%s status=%d body=%s", tt.path, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestAccountProbeRejectsMissingTerminal(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.created","response":{"id":"r"}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","delta":"partial"}`+"\n\n")
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_UPSTREAM_URL", upstream.URL)
+	st := newTestStore(t)
+	seedAccount(t, st)
+	cfg, _ := st.LoadSettings()
+	cfg.TLSFingerprint = false
+	_ = st.SaveSettings(cfg)
+	manager := account.NewManager(st)
+	engine := gateway.New(st, manager, func() store.Settings { s, _ := st.LoadSettings(); return s }, nil)
+	accountValue, _ := st.GetAccount(1)
+	result := engine.TestAccount(t.Context(), accountValue, "gpt-5.4", "hi")
+	if result.OK || result.Status != http.StatusBadGateway || !strings.Contains(result.Error, "terminal") {
+		t.Fatalf("unexpected probe result: %+v", result)
+	}
+}

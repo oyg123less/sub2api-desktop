@@ -12,7 +12,7 @@ import (
 
 // streamResponse translates the upstream Responses SSE into Chat Completions
 // SSE and writes it to the client as it arrives.
-func (e *Engine) streamResponse(w http.ResponseWriter, body io.Reader, chatReq *apicompat.ChatCompletionsRequest, model, logModel string, acc *store.Account, start time.Time) forwardResult {
+func (e *Engine) streamResponse(w http.ResponseWriter, body io.Reader, chatReq *apicompat.ChatCompletionsRequest, acc *store.Account, start time.Time, meta forwardMeta) forwardResult {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: "streaming unsupported"}
@@ -24,11 +24,11 @@ func (e *Engine) streamResponse(w http.ResponseWriter, body io.Reader, chatReq *
 	flusher.Flush()
 
 	state := apicompat.NewResponsesEventToChatState()
-	state.Model = model
+	state.Model = meta.RequestedModel
 	state.IncludeUsage = chatReq.StreamOptions != nil && chatReq.StreamOptions.IncludeUsage
 
 	write := func(chunk apicompat.ChatCompletionsChunk) bool {
-		chunk.Model = model
+		chunk.Model = meta.RequestedModel
 		sse, err := apicompat.ChatChunkToSSE(chunk)
 		if err != nil {
 			return false
@@ -40,6 +40,7 @@ func (e *Engine) streamResponse(w http.ResponseWriter, body io.Reader, chatReq *
 		return true
 	}
 
+	terminal := &sseTerminal{}
 	sc := scanSSE(body)
 	for sc.Scan() {
 		line := sc.Text()
@@ -47,30 +48,41 @@ func (e *Engine) streamResponse(w http.ResponseWriter, body io.Reader, chatReq *
 		if !ok {
 			continue
 		}
+		terminal.observe(evt)
+		if terminal.errorKind != "" {
+			writeStreamError(w, terminal.errorKind, terminal.message)
+			flusher.Flush()
+			prompt, completion := usageCounts(state.Usage)
+			e.logForward(acc, meta, terminal.status, prompt, completion, time.Since(start), terminal.message, terminal.errorKind, terminal.event)
+			return forwardResult{outcome: outcomeUpstreamError, status: terminal.status, errMsg: terminal.message, headersWritten: true}
+		}
 		for _, chunk := range apicompat.ResponsesEventToChatChunks(evt, state) {
 			if !write(chunk) {
+				e.logForward(acc, meta, 499, 0, 0, time.Since(start), "client cancelled stream", "client_cancelled", "client_cancelled")
 				return forwardResult{outcome: outcomeClientClosed, headersWritten: true}
 			}
 		}
 	}
-	for _, chunk := range apicompat.FinalizeResponsesChatStream(state) {
-		if !write(chunk) {
-			return forwardResult{outcome: outcomeClientClosed, headersWritten: true}
-		}
+	if err := terminal.finish(sc.Err()); err != nil {
+		writeStreamError(w, terminal.errorKind, terminal.message)
+		flusher.Flush()
+		prompt, completion := usageCounts(state.Usage)
+		e.logForward(acc, meta, terminal.status, prompt, completion, time.Since(start), terminal.message, terminal.errorKind, terminal.event)
+		return forwardResult{outcome: outcomeUpstreamError, status: terminal.status, errMsg: terminal.message, headersWritten: true}
 	}
 	_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	flusher.Flush()
 
 	prompt, completion := usageCounts(state.Usage)
-	e.logRequest(acc, logModel, http.StatusOK, prompt, completion, time.Since(start), true, "")
+	e.logForward(acc, meta, http.StatusOK, prompt, completion, time.Since(start), "", "", terminal.event)
 	return forwardResult{outcome: outcomeSuccess, headersWritten: true}
 }
 
 // aggregateResponse consumes the upstream SSE and assembles a single
 // non-streaming Chat Completions response.
-func (e *Engine) aggregateResponse(w http.ResponseWriter, body io.Reader, chatReq *apicompat.ChatCompletionsRequest, model, logModel string, acc *store.Account, start time.Time) forwardResult {
+func (e *Engine) aggregateResponse(w http.ResponseWriter, body io.Reader, chatReq *apicompat.ChatCompletionsRequest, acc *store.Account, start time.Time, meta forwardMeta) forwardResult {
 	state := apicompat.NewResponsesEventToChatState()
-	state.Model = model
+	state.Model = meta.RequestedModel
 	state.IncludeUsage = true
 
 	var content strings.Builder
@@ -113,18 +125,26 @@ func (e *Engine) aggregateResponse(w http.ResponseWriter, body io.Reader, chatRe
 		}
 	}
 
+	terminal := &sseTerminal{}
 	sc := scanSSE(body)
 	for sc.Scan() {
 		evt, ok := parseSSEEvent(sc.Text())
 		if !ok {
 			continue
 		}
+		terminal.observe(evt)
+		if terminal.errorKind != "" {
+			break
+		}
 		for _, chunk := range apicompat.ResponsesEventToChatChunks(evt, state) {
 			apply(chunk)
 		}
 	}
-	for _, chunk := range apicompat.FinalizeResponsesChatStream(state) {
-		apply(chunk)
+	if err := terminal.finish(sc.Err()); err != nil {
+		prompt, completion := usageCounts(state.Usage)
+		e.logForward(acc, meta, terminal.status, prompt, completion, time.Since(start), terminal.message, terminal.errorKind, terminal.event)
+		writeError(w, terminal.status, terminal.message, terminal.errorKind)
+		return forwardResult{outcome: outcomeUpstreamError, status: terminal.status, errMsg: terminal.message, headersWritten: true}
 	}
 
 	msg := apicompat.ChatMessage{Role: "assistant"}
@@ -143,7 +163,7 @@ func (e *Engine) aggregateResponse(w http.ResponseWriter, body io.Reader, chatRe
 		ID:      state.ID,
 		Object:  "chat.completion",
 		Created: state.Created,
-		Model:   model,
+		Model:   meta.RequestedModel,
 		Choices: []apicompat.ChatChoice{{
 			Index:        0,
 			Message:      msg,
@@ -154,7 +174,7 @@ func (e *Engine) aggregateResponse(w http.ResponseWriter, body io.Reader, chatRe
 
 	prompt, completion := usageCounts(state.Usage)
 	writeJSON(w, http.StatusOK, resp)
-	e.logRequest(acc, logModel, http.StatusOK, prompt, completion, time.Since(start), false, "")
+	e.logForward(acc, meta, http.StatusOK, prompt, completion, time.Since(start), "", "", terminal.event)
 	return forwardResult{outcome: outcomeSuccess, headersWritten: true}
 }
 

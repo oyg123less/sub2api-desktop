@@ -6,16 +6,25 @@ package control
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/csv"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"sub2api-desktop/core/internal/account"
+	"sub2api-desktop/core/internal/diagnostics"
 	"sub2api-desktop/core/internal/gateway"
 	"sub2api-desktop/core/internal/openai"
+	"sub2api-desktop/core/internal/redact"
 	"sub2api-desktop/core/internal/store"
 )
 
@@ -36,27 +45,29 @@ type SettingsAccess interface {
 
 // Control holds control API dependencies.
 type Control struct {
-	store    *store.Store
-	mgr      *account.Manager
-	oauth    *oauthCoordinator
-	settings SettingsAccess
-	server   ServerController
-	engine   *gateway.Engine
-	token    string
-	version  string
+	store       *store.Store
+	mgr         *account.Manager
+	oauth       *oauthCoordinator
+	settings    SettingsAccess
+	server      ServerController
+	engine      *gateway.Engine
+	diagnostics *diagnostics.Service
+	token       string
+	version     string
 }
 
 // New builds the control API.
-func New(s *store.Store, mgr *account.Manager, settings SettingsAccess, server ServerController, engine *gateway.Engine, token, version string) *Control {
+func New(s *store.Store, mgr *account.Manager, settings SettingsAccess, server ServerController, engine *gateway.Engine, diagnosticService *diagnostics.Service, token, version string) *Control {
 	return &Control{
-		store:    s,
-		mgr:      mgr,
-		oauth:    newOAuthCoordinator(mgr, s, settings.Get),
-		settings: settings,
-		server:   server,
-		engine:   engine,
-		token:    token,
-		version:  version,
+		store:       s,
+		mgr:         mgr,
+		oauth:       newOAuthCoordinator(mgr, s, settings.Get),
+		settings:    settings,
+		server:      server,
+		engine:      engine,
+		diagnostics: diagnosticService,
+		token:       token,
+		version:     version,
 	}
 }
 
@@ -73,6 +84,8 @@ func (c *Control) Mount(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /control/accounts", h(c.listAccounts))
 	mux.HandleFunc("POST /control/accounts/import", h(c.importAccounts))
+	mux.HandleFunc("POST /control/accounts/import/preview", h(c.previewImportAccounts))
+	mux.HandleFunc("POST /control/accounts/import/commit", h(c.commitImportAccounts))
 	mux.HandleFunc("DELETE /control/accounts/{id}", h(c.deleteAccount))
 	mux.HandleFunc("POST /control/accounts/{id}/refresh", h(c.refreshAccount))
 	mux.HandleFunc("POST /control/accounts/{id}/proxy", h(c.bindProxy))
@@ -97,7 +110,12 @@ func (c *Control) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /control/models", h(c.listModels))
 
 	mux.HandleFunc("GET /control/logs", h(c.logs))
+	mux.HandleFunc("GET /control/logs/export", h(c.exportLogs))
+	mux.HandleFunc("DELETE /control/logs", h(c.clearLogs))
 	mux.HandleFunc("GET /control/stats", h(c.stats))
+	mux.HandleFunc("POST /control/diagnostics/runs", h(c.createDiagnosticRun))
+	mux.HandleFunc("GET /control/diagnostics/runs/{id}", h(c.getDiagnosticRun))
+	mux.HandleFunc("GET /control/diagnostics/runs/{id}/report", h(c.diagnosticReport))
 }
 
 // WithCORS wraps a handler with permissive CORS headers and handles preflight
@@ -148,15 +166,60 @@ func (c *Control) status(w http.ResponseWriter, r *http.Request) {
 	if cfg.AllowLAN {
 		host = "0.0.0.0"
 	}
+	lanAddresses := localLANAddresses(c.server.Port())
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version":        c.version,
-		"server_running": c.server.Running(),
-		"port":           c.server.Port(),
-		"host":           host,
-		"endpoint":       "http://127.0.0.1:" + strconv.Itoa(c.server.Port()) + "/v1",
-		"local_api_key":  cfg.LocalAPIKey,
-		"account_count":  len(accounts),
+		"version":          c.version,
+		"server_running":   c.server.Running(),
+		"port":             c.server.Port(),
+		"host":             host,
+		"endpoint":         "http://127.0.0.1:" + strconv.Itoa(c.server.Port()) + "/v1",
+		"lan_addresses":    lanAddresses,
+		"local_api_key":    cfg.LocalAPIKey,
+		"account_count":    len(accounts),
+		"schema_version":   c.store.SchemaVersion(),
+		"migration_backup": c.store.MigrationBackup(),
 	})
+}
+
+func (c *Control) createDiagnosticRun(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusAccepted, c.diagnostics.Start())
+}
+
+func (c *Control) getDiagnosticRun(w http.ResponseWriter, r *http.Request) {
+	run, err := c.diagnostics.Get(r.PathValue("id"))
+	if errors.Is(err, diagnostics.ErrRunNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "diagnostic run not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
+}
+
+func (c *Control) diagnosticReport(w http.ResponseWriter, r *http.Request) {
+	format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
+	if format == "" {
+		format = "json"
+	}
+	if format != "json" && format != "text" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "format must be json or text"})
+		return
+	}
+	data, contentType, err := c.diagnostics.Report(r.PathValue("id"), format)
+	if errors.Is(err, diagnostics.ErrRunNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "diagnostic run not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="amber-diagnostics-%s.%s"`, r.PathValue("id"), format))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 func (c *Control) serverStart(w http.ResponseWriter, r *http.Request) {
@@ -214,11 +277,71 @@ func (c *Control) putSettings(w http.ResponseWriter, r *http.Request) {
 	if in.Language == "" {
 		in.Language = cur.Language
 	}
+	if in.AccountStrategy == "" {
+		in.AccountStrategy = cur.AccountStrategy
+	}
+	switch in.AccountStrategy {
+	case gateway.StrategyFailover, gateway.StrategyRoundRobin, gateway.StrategyQuotaAware:
+	default:
+		writeControlError(w, http.StatusBadRequest, "invalid_account_strategy", "invalid account scheduling strategy", false, nil)
+		return
+	}
+	if in.LogRetentionDays != 0 && in.LogRetentionDays != 7 && in.LogRetentionDays != 30 && in.LogRetentionDays != 90 {
+		writeControlError(w, http.StatusBadRequest, "invalid_log_retention", "log retention must be 0, 7, 30, or 90 days", false, nil)
+		return
+	}
+	if in.MaxLogRows == 0 {
+		in.MaxLogRows = cur.MaxLogRows
+	}
+	if in.MaxLogRows < 1000 || in.MaxLogRows > 1000000 {
+		writeControlError(w, http.StatusBadRequest, "invalid_max_log_rows", "max log rows must be between 1,000 and 1,000,000", false, nil)
+		return
+	}
+	if in.CompatProfile == "" {
+		in.CompatProfile = cur.CompatProfile
+	}
+	switch in.CompatProfile {
+	case "standard":
+		in.TLSFingerprint = false
+	case "codex":
+		in.TLSFingerprint = true
+	default:
+		writeControlError(w, http.StatusBadRequest, "invalid_compatibility_profile", "compatibility profile must be standard or codex", false, nil)
+		return
+	}
 	if err := c.settings.Save(in); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, c.settings.Get())
+}
+
+func localLANAddresses(port int) []string {
+	addresses, err := net.InterfaceAddrs()
+	if err != nil {
+		return []string{}
+	}
+	result := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, address := range addresses {
+		var ip net.IP
+		switch value := address.(type) {
+		case *net.IPNet:
+			ip = value.IP
+		case *net.IPAddr:
+			ip = value.IP
+		}
+		if ip == nil || ip.IsLoopback() || ip.IsUnspecified() || ip.To4() == nil {
+			continue
+		}
+		value := "http://" + net.JoinHostPort(ip.String(), strconv.Itoa(port)) + "/v1"
+		if _, ok := seen[value]; !ok {
+			seen[value] = struct{}{}
+			result = append(result, value)
+		}
+	}
+	sort.Strings(result)
+	return result
 }
 
 func (c *Control) regenKey(w http.ResponseWriter, r *http.Request) {
@@ -333,18 +456,88 @@ func (c *Control) setAccountStatus(w http.ResponseWriter, r *http.Request) {
 // importAccounts accepts a batch of accounts as JSON. The body may be a bare
 // array of entries or an object of the form {"accounts": [...]}.
 func (c *Control) importAccounts(w http.ResponseWriter, r *http.Request) {
-	raw, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+	raw, ok := readImportBody(w, r)
+	if !ok {
 		return
 	}
-	entries, err := account.ParseImportPayload(string(raw))
+	result, err := c.mgr.CommitImport(r.Context(), raw, importSHA(raw), false)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		writeImportError(w, err)
 		return
 	}
-	res := c.mgr.Import(entries)
-	writeJSON(w, http.StatusOK, res)
+	errors := []string{}
+	for _, row := range result.Rows {
+		if row.ErrorMessage != "" {
+			errors = append(errors, fmt.Sprintf("row %d: %s", row.Index, row.ErrorMessage))
+		}
+	}
+	writeJSON(w, http.StatusOK, account.ImportResult{
+		Imported: result.Imported, Updated: result.Updated, Skipped: result.Skipped + result.Failed, Errors: errors,
+	})
+}
+
+func (c *Control) previewImportAccounts(w http.ResponseWriter, r *http.Request) {
+	raw, ok := readImportBody(w, r)
+	if !ok {
+		return
+	}
+	preview, err := c.mgr.PreviewImport(r.Context(), raw)
+	if err != nil {
+		writeImportError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, preview)
+}
+
+func (c *Control) commitImportAccounts(w http.ResponseWriter, r *http.Request) {
+	raw, ok := readImportBody(w, r)
+	if !ok {
+		return
+	}
+	expected := r.Header.Get("X-Import-Preview-SHA256")
+	validate, _ := strconv.ParseBool(r.Header.Get("X-Validate-After-Import"))
+	result, err := c.mgr.CommitImport(r.Context(), raw, expected, validate)
+	if err != nil {
+		writeImportError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func readImportBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	limited := http.MaxBytesReader(w, r.Body, account.MaxImportBytes)
+	raw, err := io.ReadAll(limited)
+	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeControlError(w, http.StatusRequestEntityTooLarge, "import_too_large", "import exceeds 10 MiB", false, nil)
+		} else {
+			writeControlError(w, http.StatusBadRequest, "import_read_failed", err.Error(), false, nil)
+		}
+		return nil, false
+	}
+	return raw, true
+}
+
+func importSHA(raw []byte) string {
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+func writeImportError(w http.ResponseWriter, err error) {
+	var serviceErr *account.ImportServiceError
+	if !errors.As(err, &serviceErr) {
+		writeControlError(w, http.StatusInternalServerError, "import_failed", err.Error(), false, nil)
+		return
+	}
+	status := http.StatusBadRequest
+	switch serviceErr.Code {
+	case "import_preview_mismatch", "import_duplicate_conflict":
+		status = http.StatusConflict
+	case "import_commit_failed":
+		status = http.StatusInternalServerError
+	}
+	writeControlError(w, status, serviceErr.Code, serviceErr.Message, serviceErr.Retryable, serviceErr.Details)
 }
 
 func (c *Control) deleteAccount(w http.ResponseWriter, r *http.Request) {
@@ -464,15 +657,23 @@ func (c *Control) updateProxy(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var p store.Proxy
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+	var body struct {
+		Name          *string          `json:"name"`
+		Type          *store.ProxyType `json:"type"`
+		Host          *string          `json:"host"`
+		Port          *int             `json:"port"`
+		Username      *string          `json:"username"`
+		Password      *string          `json:"password"`
+		ClearPassword bool             `json:"clear_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	if p.Type == "" {
-		p.Type = store.ProxyHTTP
-	}
-	updated, err := c.store.UpdateProxy(id, &p)
+	updated, err := c.store.UpdateProxyPatch(id, store.ProxyPatch{
+		Name: body.Name, Type: body.Type, Host: body.Host, Port: body.Port, Username: body.Username,
+		Password: body.Password, ClearPassword: body.ClearPassword,
+	})
 	if err == store.ErrNotFound {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "proxy not found"})
 		return
@@ -506,18 +707,18 @@ func (c *Control) testProxy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "proxy not found"})
 		return
 	}
-	latency, err := testProxyLatency(r.Context(), proxy)
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "latency_ms": latency.Milliseconds()})
+	writeJSON(w, http.StatusOK, testProxyLatency(r.Context(), proxy))
 }
 
 // listModels returns the model options (incl. reasoning-effort suffixed
 // variants) offered in the connectivity-test / default-model pickers.
 func (c *Control) listModels(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"models": openai.CodexTestModelOptions})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"models":              openai.ModelOptions(),
+		"default_model":       openai.DefaultGatewayModel,
+		"default_test_model":  openai.DefaultTestModel,
+		"codex_default_model": openai.DefaultCodexModel,
+	})
 }
 
 // --- logs / stats ---
@@ -548,11 +749,74 @@ func (c *Control) stats(w http.ResponseWriter, r *http.Request) {
 	}
 	daily, _ := c.store.Daily(days)
 	byModel, _ := c.store.ByModel(since)
+	health, _ := c.store.LogHealth()
+	cfg := c.settings.Get()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"summary":  summary,
-		"daily":    daily,
-		"by_model": byModel,
+		"summary": summary, "daily": daily, "by_model": byModel,
+		"retention": map[string]any{
+			"days": cfg.LogRetentionDays, "max_rows": cfg.MaxLogRows,
+			"retained_rows": health.Rows, "oldest_at": health.OldestAt, "newest_at": health.NewestAt,
+		},
 	})
+}
+
+func (c *Control) exportLogs(w http.ResponseWriter, r *http.Request) {
+	format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
+	if format == "" {
+		format = "json"
+	}
+	if format != "json" && format != "csv" {
+		writeControlError(w, http.StatusBadRequest, "invalid_export_format", "format must be json or csv", false, nil)
+		return
+	}
+	days, _ := strconv.Atoi(r.URL.Query().Get("days"))
+	var since time.Time
+	if days > 0 {
+		since = time.Now().AddDate(0, 0, -days)
+	}
+	logs, err := c.store.LogsForExport(since)
+	if err != nil {
+		writeControlError(w, http.StatusInternalServerError, "log_export_failed", err.Error(), true, nil)
+		return
+	}
+	for _, entry := range logs {
+		entry.AccountEmail = redact.MaskEmail(entry.AccountEmail)
+		entry.Error = redact.Sanitize(entry.Error)
+	}
+	stamp := time.Now().Format("20060102-150405")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="amber-logs-%s.%s"`, stamp, format))
+	if format == "json" {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{"exported_at": time.Now().UTC(), "logs": logs})
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF})
+	writer := csv.NewWriter(w)
+	_ = writer.Write([]string{"id", "created_at", "request_id", "account_email", "requested_model", "resolved_model", "status_code", "error_kind", "attempt_count", "terminal_event", "prompt_tokens", "completion_tokens", "total_tokens", "latency_ms", "stream", "error"})
+	for _, entry := range logs {
+		_ = writer.Write([]string{
+			strconv.FormatInt(entry.ID, 10), entry.CreatedAt.UTC().Format(time.RFC3339), entry.RequestID, entry.AccountEmail,
+			entry.RequestedModel, entry.ResolvedModel, strconv.Itoa(entry.StatusCode), entry.ErrorKind,
+			strconv.Itoa(entry.AttemptCount), entry.TerminalEvent, strconv.Itoa(entry.PromptTokens),
+			strconv.Itoa(entry.CompletionTokens), strconv.Itoa(entry.TotalTokens), strconv.FormatInt(entry.LatencyMS, 10),
+			strconv.FormatBool(entry.Stream), entry.Error,
+		})
+	}
+	writer.Flush()
+}
+
+func (c *Control) clearLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("X-Confirm-Clear") != "clear-request-logs" {
+		writeControlError(w, http.StatusPreconditionFailed, "log_clear_confirmation_required", "log clear confirmation is required", false, nil)
+		return
+	}
+	deleted, err := c.store.ClearLogs()
+	if err != nil {
+		writeControlError(w, http.StatusInternalServerError, "log_clear_failed", err.Error(), true, nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted})
 }
 
 // --- helpers ---
@@ -570,4 +834,10 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeControlError(w http.ResponseWriter, status int, code, message string, retryable bool, details map[string]any) {
+	writeJSON(w, status, map[string]any{"error": map[string]any{
+		"code": code, "message": message, "retryable": retryable, "details": details,
+	}})
 }

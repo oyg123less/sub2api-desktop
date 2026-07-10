@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"sub2api-desktop/core/internal/apicompat"
 	"sub2api-desktop/core/internal/openai"
 	"sub2api-desktop/core/internal/store"
@@ -29,9 +31,21 @@ func (e *Engine) Responses(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error(), "invalid_request_error")
 		return
 	}
+	var rawRequest map[string]json.RawMessage
+	if json.Unmarshal(bodyBytes, &rawRequest) == nil {
+		if parameter, unsupported := unsupportedParameter(rawRequest); unsupported {
+			writeErrorCode(w, http.StatusBadRequest, "parameter is not supported by the upstream: "+parameter, "invalid_request_error", "unsupported_parameter")
+			return
+		}
+	}
 
 	cfg := e.settings()
 	requestedModel, _ := body["model"].(string)
+	requestID := strings.TrimSpace(r.Header.Get("X-Request-ID"))
+	if requestID == "" {
+		requestID = uuid.NewString()
+	}
+	clientStream, _ := body["stream"].(bool)
 	model, ok := resolveModel(requestedModel, cfg.DefaultModel)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "unknown model: "+requestedModel+"（仅支持 gpt-5*/codex 系列模型）", "invalid_request_error")
@@ -64,7 +78,7 @@ func (e *Engine) Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	candidates, err := e.selectAccounts()
+	candidates, releaseFirst, err := e.selectAccounts()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account lookup failed: "+err.Error(), "internal_error")
 		return
@@ -75,10 +89,29 @@ func (e *Engine) Responses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var lastErr string
-	for _, acc := range candidates {
-		result := e.forwardResponsesOnce(r.Context(), w, upstreamBody, logModel, acc, cfg)
+	attempt := 0
+	for index, acc := range candidates {
+		release := releaseFirst
+		if index > 0 {
+			release = e.scheduler.Acquire(acc.ID)
+		}
+		attempt++
+		meta := forwardMeta{RequestID: requestID, RequestedModel: requestedModel, ResolvedModel: logModel, Attempt: attempt, Stream: clientStream}
+		result := e.forwardResponsesOnce(r.Context(), w, upstreamBody, acc, cfg, meta)
+		if result.outcome == outcomeAuthFailed && acc.RefreshToken != "" {
+			if refreshed, err := e.forceRefreshAccount(r.Context(), acc, cfg); err == nil {
+				acc = refreshed
+				attempt++
+				meta.Attempt = attempt
+				result = e.forwardResponsesOnce(r.Context(), w, upstreamBody, acc, cfg, meta)
+			} else {
+				result.errMsg = "token refresh failed: " + err.Error()
+			}
+		}
+		release()
 		switch result.outcome {
 		case outcomeSuccess:
+			_ = e.store.RecordAccountSuccess(acc.ID)
 			return
 		case outcomeRateLimited:
 			retry := result.retryAfter
@@ -89,7 +122,7 @@ func (e *Engine) Responses(w http.ResponseWriter, r *http.Request) {
 			lastErr = result.errMsg
 			continue
 		case outcomeAuthFailed:
-			_ = e.store.SetAccountStatus(acc.ID, store.AccountRefreshFailed, result.errMsg)
+			_ = e.store.RecordAccountFailure(acc.ID, result.errMsg)
 			lastErr = result.errMsg
 			continue
 		case outcomeClientClosed:
@@ -108,7 +141,7 @@ func (e *Engine) Responses(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusServiceUnavailable, lastErr, "all_accounts_unavailable")
 }
 
-func (e *Engine) forwardResponsesOnce(ctx context.Context, w http.ResponseWriter, upstreamBody []byte, logModel string, acc *store.Account, cfg store.Settings) forwardResult {
+func (e *Engine) forwardResponsesOnce(ctx context.Context, w http.ResponseWriter, upstreamBody []byte, acc *store.Account, cfg store.Settings, meta forwardMeta) forwardResult {
 	start := time.Now()
 
 	var proxy *store.Proxy
@@ -117,11 +150,11 @@ func (e *Engine) forwardResponsesOnce(ctx context.Context, w http.ResponseWriter
 			proxy = p
 		}
 	}
-	client, err := newHTTPClient(proxy, cfg.TLSFingerprint, 10*time.Minute)
+	client, err := newHTTPClient(proxy, cfg.CompatProfile, 10*time.Minute)
 	if err != nil {
 		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: err.Error()}
 	}
-	authClient, _ := newHTTPClient(proxy, false, 60*time.Second)
+	authClient, _ := newHTTPClient(proxy, "standard", 60*time.Second)
 
 	token, err := e.accounts.ValidAccessToken(ctx, authClient, acc)
 	if err != nil {
@@ -137,6 +170,7 @@ func (e *Engine) forwardResponsesOnce(ctx context.Context, w http.ResponseWriter
 	resp, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
+			e.logForward(acc, meta, 499, 0, 0, time.Since(start), "client cancelled request", "client_cancelled", "request_cancelled")
 			return forwardResult{outcome: outcomeClientClosed}
 		}
 		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadGateway, errMsg: "upstream request failed: " + err.Error()}
@@ -146,28 +180,31 @@ func (e *Engine) forwardResponsesOnce(ctx context.Context, w http.ResponseWriter
 	usage := e.captureCodexUsage(acc, resp.Header)
 
 	if resp.StatusCode == http.StatusTooManyRequests {
-		e.logRequest(acc, logModel, resp.StatusCode, 0, 0, time.Since(start), true, "rate limited (429)")
+		e.logForward(acc, meta, resp.StatusCode, 0, 0, time.Since(start), "rate limited (429)", "account_rate_limited", "http_429")
 		return forwardResult{outcome: outcomeRateLimited, status: resp.StatusCode, errMsg: "账号已限额（429）", retryAfter: rateLimitRetryAfter(resp.Header, usage)}
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		msg := readUpstreamError(resp.Body)
-		e.logRequest(acc, logModel, resp.StatusCode, 0, 0, time.Since(start), true, msg)
+		e.logForward(acc, meta, resp.StatusCode, 0, 0, time.Since(start), msg, "account_unauthorized", "http_auth_error")
 		return forwardResult{outcome: outcomeAuthFailed, status: resp.StatusCode, errMsg: "鉴权失败: " + msg}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		msg := readUpstreamError(resp.Body)
-		e.logRequest(acc, logModel, resp.StatusCode, 0, 0, time.Since(start), true, msg)
+		e.logForward(acc, meta, resp.StatusCode, 0, 0, time.Since(start), msg, "upstream_http_error", "http_error")
 		return forwardResult{outcome: outcomeUpstreamError, status: resp.StatusCode, errMsg: msg}
 	}
 
 	_ = e.store.TouchAccount(acc.ID)
 
-	return e.relayResponsesSSE(w, resp.Body, logModel, acc, start)
+	if meta.Stream {
+		return e.relayResponsesSSE(w, resp.Body, acc, start, meta)
+	}
+	return e.aggregateResponsesJSON(w, resp.Body, acc, start, meta)
 }
 
 // relayResponsesSSE copies the upstream Responses SSE stream to the client
 // verbatim while extracting token usage from response.completed for logging.
-func (e *Engine) relayResponsesSSE(w http.ResponseWriter, body io.Reader, model string, acc *store.Account, start time.Time) forwardResult {
+func (e *Engine) relayResponsesSSE(w http.ResponseWriter, body io.Reader, acc *store.Account, start time.Time, meta forwardMeta) forwardResult {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: "streaming unsupported"}
@@ -178,26 +215,90 @@ func (e *Engine) relayResponsesSSE(w http.ResponseWriter, body io.Reader, model 
 	w.WriteHeader(http.StatusOK)
 
 	var usage *apicompat.ResponsesUsage
+	terminal := &sseTerminal{}
 	sc := scanSSE(body)
 	for sc.Scan() {
 		line := sc.Text()
+		if evt, ok := parseSSEEvent(line); ok {
+			terminal.observe(evt)
+			if terminal.usage != nil {
+				usage = terminal.usage
+			}
+			if terminal.errorKind != "" {
+				writeStreamError(w, terminal.errorKind, terminal.message)
+				flusher.Flush()
+				prompt, completion := responsesUsageCounts(usage)
+				e.logForward(acc, meta, terminal.status, prompt, completion, time.Since(start), terminal.message, terminal.errorKind, terminal.event)
+				return forwardResult{outcome: outcomeUpstreamError, status: terminal.status, errMsg: terminal.message, headersWritten: true}
+			}
+		}
 		if _, err := io.WriteString(w, line+"\n"); err != nil {
+			e.logForward(acc, meta, 499, 0, 0, time.Since(start), "client cancelled stream", "client_cancelled", "client_cancelled")
 			return forwardResult{outcome: outcomeClientClosed, headersWritten: true}
 		}
 		if line == "" {
 			flusher.Flush()
-			continue
 		}
-		if evt, ok := parseSSEEvent(line); ok && evt.Response != nil && evt.Response.Usage != nil {
-			usage = evt.Response.Usage
-		}
+	}
+	if err := terminal.finish(sc.Err()); err != nil {
+		writeStreamError(w, terminal.errorKind, terminal.message)
+		flusher.Flush()
+		prompt, completion := responsesUsageCounts(usage)
+		e.logForward(acc, meta, terminal.status, prompt, completion, time.Since(start), terminal.message, terminal.errorKind, terminal.event)
+		return forwardResult{outcome: outcomeUpstreamError, status: terminal.status, errMsg: terminal.message, headersWritten: true}
 	}
 	flusher.Flush()
 
-	prompt, completion := 0, 0
-	if usage != nil {
-		prompt, completion = usage.InputTokens, usage.OutputTokens
-	}
-	e.logRequest(acc, model, http.StatusOK, prompt, completion, time.Since(start), true, "")
+	prompt, completion := responsesUsageCounts(usage)
+	e.logForward(acc, meta, http.StatusOK, prompt, completion, time.Since(start), "", "", terminal.event)
 	return forwardResult{outcome: outcomeSuccess, headersWritten: true}
+}
+
+func (e *Engine) aggregateResponsesJSON(w http.ResponseWriter, body io.Reader, acc *store.Account, start time.Time, meta forwardMeta) forwardResult {
+	terminal := &sseTerminal{}
+	accumulator := apicompat.NewBufferedResponseAccumulator()
+	sc := scanSSE(body)
+	for sc.Scan() {
+		evt, ok := parseSSEEvent(sc.Text())
+		if !ok {
+			continue
+		}
+		terminal.observe(evt)
+		if terminal.errorKind != "" {
+			break
+		}
+		accumulator.ProcessEvent(evt)
+	}
+	if err := terminal.finish(sc.Err()); err != nil {
+		prompt, completion := responsesUsageCounts(terminal.usage)
+		e.logForward(acc, meta, terminal.status, prompt, completion, time.Since(start), terminal.message, terminal.errorKind, terminal.event)
+		writeError(w, terminal.status, terminal.message, terminal.errorKind)
+		return forwardResult{outcome: outcomeUpstreamError, status: terminal.status, errMsg: terminal.message, headersWritten: true}
+	}
+
+	resp := terminal.response
+	if resp == nil {
+		resp = &apicompat.ResponsesResponse{Status: "completed"}
+	}
+	if resp.Object == "" {
+		resp.Object = "response"
+	}
+	if resp.Model == "" {
+		resp.Model = meta.ResolvedModel
+	}
+	if resp.Usage == nil {
+		resp.Usage = terminal.usage
+	}
+	accumulator.SupplementResponseOutput(resp)
+	writeJSON(w, http.StatusOK, resp)
+	prompt, completion := responsesUsageCounts(resp.Usage)
+	e.logForward(acc, meta, http.StatusOK, prompt, completion, time.Since(start), "", "", terminal.event)
+	return forwardResult{outcome: outcomeSuccess, headersWritten: true}
+}
+
+func responsesUsageCounts(usage *apicompat.ResponsesUsage) (int, int) {
+	if usage == nil {
+		return 0, 0
+	}
+	return usage.InputTokens, usage.OutputTokens
 }

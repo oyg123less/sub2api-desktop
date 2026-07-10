@@ -3,7 +3,16 @@ import { onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import Icon from "../components/Icon.vue";
 import ConfirmModal from "../components/ConfirmModal.vue";
-import { api, type Account, type AccountUsage, type AccountTestResult, type Proxy } from "../api/control";
+import {
+  api,
+  type Account,
+  type AccountUsage,
+  type AccountTestResult,
+  type ImportCommitResult,
+  type ImportPreview,
+  type Proxy,
+	type Settings,
+} from "../api/control";
 import { useAppStore } from "../store";
 import { openUrl } from "../platform";
 
@@ -14,24 +23,16 @@ const accounts = ref<Account[]>([]);
 const usage = ref<Record<string, AccountUsage>>({});
 const proxies = ref<Proxy[]>([]);
 const loading = ref(true);
+const accountStrategy = ref<Settings["account_strategy"]>("quota_aware");
 
 // connectivity test flow
 const testOpen = ref(false);
 const testTarget = ref<Account | null>(null);
-const testModel = ref("gpt-5.4-high");
+const testModel = ref("");
 const testRunning = ref(false);
 const testResult = ref<AccountTestResult | null>(null);
 const testError = ref("");
-const modelOptions = ref<string[]>([
-  "gpt-5.5",
-  "gpt-5.4-low",
-  "gpt-5.4-medium",
-  "gpt-5.4-high",
-  "gpt-5.4-xhigh",
-  "gpt-5.3-codex-high",
-  "gpt-5",
-  "gpt-5-codex",
-]);
+const modelOptions = ref<string[]>([]);
 
 function pct(v?: number) {
   if (v == null) return 0;
@@ -100,6 +101,11 @@ const importText = ref("");
 const importing = ref(false);
 const importFileName = ref("");
 const importFileInput = ref<HTMLInputElement | null>(null);
+const importFileBlob = ref<Blob | null>(null);
+const importStage = ref<"input" | "preview" | "result">("input");
+const importPreview = ref<ImportPreview | null>(null);
+const importResult = ref<ImportCommitResult | null>(null);
+const validateAfterImport = ref(true);
 
 const importExample = `[
   {
@@ -113,8 +119,24 @@ const importExample = `[
 function openImport() {
   importText.value = "";
   importFileName.value = "";
+  importFileBlob.value = null;
+  importStage.value = "input";
+  importPreview.value = null;
+  importResult.value = null;
+  validateAfterImport.value = true;
   if (importFileInput.value) importFileInput.value.value = "";
   importOpen.value = true;
+}
+
+function closeImport() {
+  if (importing.value) return;
+  importOpen.value = false;
+}
+
+function decodeFileForPreview(bytes: Uint8Array): string {
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder("utf-16le").decode(bytes.subarray(2));
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder("utf-16be").decode(bytes.subarray(2));
+  return new TextDecoder("utf-8").decode(bytes);
 }
 
 async function onImportFile(event: Event) {
@@ -122,38 +144,54 @@ async function onImportFile(event: Event) {
   const file = input.files?.[0];
   if (!file) return;
   try {
-    importText.value = await file.text();
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    importText.value = decodeFileForPreview(bytes);
+    importFileBlob.value = file.slice();
     importFileName.value = file.name;
   } catch (e) {
     app.toast((e as Error).message, "error");
   }
 }
 
-async function submitImport() {
-  const raw = importText.value.trim();
-  if (!raw) {
+function onImportTextInput() {
+  importFileBlob.value = null;
+  importFileName.value = "";
+}
+
+function importPayload(): BodyInit {
+  return importFileBlob.value ?? importText.value;
+}
+
+async function previewImport() {
+  if (!importText.value.trim()) {
     app.toast(t("accounts.importEmpty"), "error");
     return;
   }
   importing.value = true;
   try {
-    const r = await api.importAccounts(raw);
-    const msg = t("accounts.importResult", {
-      imported: r.imported,
-      updated: r.updated,
-      skipped: r.skipped,
-    });
-    app.toast(msg, r.skipped > 0 ? "warn" : "success");
-    if (r.errors && r.errors.length) {
-      app.toast(r.errors.join("; "), "error");
-    }
-    if (r.imported > 0 || r.updated > 0) {
-      importOpen.value = false;
-      await load();
-      await app.refreshStatus();
-    }
-  } catch (e) {
-    app.toast((e as Error).message, "error");
+    importPreview.value = await api.previewImport(importPayload());
+    importStage.value = "preview";
+  } catch (error) {
+    app.toast((error as Error).message, "error");
+  } finally {
+    importing.value = false;
+  }
+}
+
+async function commitImport() {
+  if (!importPreview.value || importPreview.value.summary.conflict > 0) return;
+  importing.value = true;
+  try {
+    importResult.value = await api.commitImport(
+      importPayload(),
+      importPreview.value.content_sha256,
+      validateAfterImport.value,
+    );
+    importStage.value = "result";
+    await load();
+    await app.refreshStatus();
+  } catch (error) {
+    app.toast((error as Error).message, "error");
   } finally {
     importing.value = false;
   }
@@ -161,10 +199,15 @@ async function submitImport() {
 
 async function load() {
   try {
-    const [acc, prox] = [await api.listAccounts(), await api.listProxies()];
+		const [acc, prox, settings] = await Promise.all([api.listAccounts(), api.listProxies(), api.getSettings()]);
     accounts.value = acc.accounts || [];
     usage.value = acc.usage || {};
     proxies.value = prox.proxies || [];
+		accountStrategy.value = settings.account_strategy;
+    if (!testModel.value) testModel.value = settings.default_model;
+    if (testModel.value && !modelOptions.value.includes(testModel.value)) {
+      modelOptions.value.unshift(testModel.value);
+    }
   } catch (e) {
     app.toast((e as Error).message, "error");
   } finally {
@@ -317,7 +360,7 @@ onMounted(() => {
     .then((r) => {
       if (r.models?.length) {
         modelOptions.value = r.models;
-        if (!r.models.includes(testModel.value)) testModel.value = r.models[0];
+        if (!r.models.includes(testModel.value)) testModel.value = r.default_test_model || r.models[0];
       }
     })
     .catch(() => {});
@@ -331,6 +374,7 @@ onUnmounted(() => clearInterval(pollTimer));
       <div>
         <h1 class="page-title">{{ t("accounts.title") }}</h1>
         <p class="page-desc">{{ t("accounts.desc") }}</p>
+				<p class="faint text-sm">{{ t(`accounts.strategy.${accountStrategy}`) }}</p>
       </div>
       <div class="flex gap-8">
         <button class="btn btn-ghost" @click="openImport">
@@ -388,6 +432,14 @@ onUnmounted(() => clearInterval(pollTimer));
             <span class="faint text-sm" style="flex: 1">{{ t("accounts.lastUsed") }}</span>
             <span class="text-sm">{{ fmtDate(a.last_used_at) }}</span>
           </div>
+					<div class="list-row" style="padding: 7px 0">
+						<span class="faint text-sm" style="flex: 1">{{ t("accounts.lastSuccess") }}</span>
+						<span class="text-sm">{{ fmtDate(a.last_success_at) }}</span>
+					</div>
+					<div v-if="a.next_retry_at" class="list-row" style="padding: 7px 0">
+						<span class="faint text-sm" style="flex: 1">{{ t("accounts.nextRetry") }}</span>
+						<span class="text-sm">{{ fmtDate(a.next_retry_at) }}</span>
+					</div>
           <div class="list-row" style="padding: 7px 0">
             <span class="faint text-sm" style="flex: 1">{{ t("accounts.tokensUsed") }}</span>
             <span class="text-sm mono">{{ fmtNum(usage[a.id]?.total_tokens) }}</span>
@@ -547,38 +599,113 @@ onUnmounted(() => clearInterval(pollTimer));
 
     <!-- Import modal -->
     <Teleport to="body">
-      <div v-if="importOpen" class="modal-backdrop" @click.self="importOpen = false">
-        <div class="modal" style="max-width: 560px">
-          <h3 class="modal-title">{{ t("accounts.import") }}</h3>
-          <p class="modal-desc">{{ t("accounts.importHint") }}</p>
-          <div class="flex items-center gap-8" style="margin-bottom: 10px">
-            <button class="btn btn-ghost btn-sm" @click="importFileInput?.click()">
-              <Icon name="upload" :size="14" /> {{ t("accounts.importChooseFile") }}
-            </button>
-            <span v-if="importFileName" class="faint text-sm">{{ importFileName }}</span>
-            <input
-              ref="importFileInput"
-              type="file"
-              accept="application/json,.json"
-              style="display: none"
-              @change="onImportFile"
-            />
+      <div v-if="importOpen" class="modal-backdrop" @click.self="closeImport">
+        <div class="modal import-modal" role="dialog" aria-modal="true" tabindex="-1" @keydown.esc="closeImport">
+          <div class="row-between">
+            <h3 class="modal-title">{{ t("accounts.import") }}</h3>
+            <span class="badge badge-neutral">{{ t(`accounts.importStage.${importStage}`) }}</span>
           </div>
-          <textarea
-            v-model="importText"
-            class="input"
-            rows="10"
-            spellcheck="false"
-            :placeholder="importExample"
-            style="width: 100%; font-family: var(--font-mono, monospace); font-size: 12px; resize: vertical"
-          ></textarea>
-          <div class="modal-actions">
-            <button class="btn btn-ghost" @click="importOpen = false">{{ t("common.cancel") }}</button>
-            <button class="btn btn-primary" :disabled="importing" @click="submitImport">
-              <Icon v-if="importing" name="refresh" class="spin" :size="14" />
-              {{ t("accounts.import") }}
-            </button>
-          </div>
+
+          <template v-if="importStage === 'input'">
+            <p class="modal-desc">{{ t("accounts.importHint") }}</p>
+            <div class="flex items-center gap-8" style="margin-bottom: 10px">
+              <button class="btn btn-ghost btn-sm" @click="importFileInput?.click()">
+                <Icon name="upload" :size="14" /> {{ t("accounts.importChooseFile") }}
+              </button>
+              <span v-if="importFileName" class="faint text-sm import-file-name">{{ importFileName }}</span>
+              <input
+                ref="importFileInput"
+                type="file"
+                accept="application/json,.json,.jsonl,text/plain"
+                style="display: none"
+                @change="onImportFile"
+              />
+            </div>
+            <textarea
+              v-model="importText"
+              class="input import-textarea"
+              rows="12"
+              spellcheck="false"
+              :placeholder="importExample"
+              @input="onImportTextInput"
+            ></textarea>
+            <div class="modal-actions">
+              <button class="btn btn-ghost" @click="closeImport">{{ t("common.cancel") }}</button>
+              <button class="btn btn-primary" :disabled="importing" @click="previewImport">
+                <Icon v-if="importing" name="refresh" class="spin" :size="14" />
+                {{ t("accounts.importPreview") }}
+              </button>
+            </div>
+          </template>
+
+          <template v-else-if="importStage === 'preview' && importPreview">
+            <div class="import-summary">
+              <span class="badge badge-success">{{ t("accounts.importAction.create") }} {{ importPreview.summary.create }}</span>
+              <span class="badge badge-neutral">{{ t("accounts.importAction.update") }} {{ importPreview.summary.update }}</span>
+              <span class="badge badge-warn">{{ t("accounts.importAction.skip") }} {{ importPreview.summary.skip }}</span>
+              <span v-if="importPreview.summary.error" class="badge badge-danger">{{ t("accounts.importAction.error") }} {{ importPreview.summary.error }}</span>
+              <span v-if="importPreview.summary.conflict" class="badge badge-danger">{{ t("accounts.importAction.conflict") }} {{ importPreview.summary.conflict }}</span>
+            </div>
+            <div class="import-table-wrap">
+              <table class="table import-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>{{ t("accounts.importActionLabel") }}</th>
+                    <th>{{ t("accounts.importAccount") }}</th>
+                    <th>{{ t("accounts.importCredentials") }}</th>
+                    <th>{{ t("accounts.importMessage") }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in importPreview.rows" :key="row.index">
+                    <td>{{ row.index }}</td>
+                    <td><span class="badge" :class="`import-action-${row.action}`">{{ t(`accounts.importAction.${row.action}`) }}</span></td>
+                    <td>
+                      <div>{{ row.email_masked || row.chatgpt_account_id_masked || "-" }}</div>
+                      <small v-if="row.identity_verified" class="text-success">{{ t("accounts.importVerified") }}</small>
+                      <small v-else class="faint">{{ t("accounts.importPending") }}</small>
+                    </td>
+                    <td class="import-credentials">
+                      <span :class="{ active: row.has_access_token }">A</span>
+                      <span :class="{ active: row.has_refresh_token }">R</span>
+                      <span :class="{ active: row.has_id_token }">I</span>
+                    </td>
+                    <td class="import-message">
+                      <div v-if="row.error_message" class="text-danger">{{ row.error_message }}</div>
+                      <div v-for="warning in row.warnings" :key="warning">{{ warning }}</div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <label class="import-validate">
+              <input v-model="validateAfterImport" type="checkbox" />
+              <span>{{ t("accounts.importValidate") }}</span>
+            </label>
+            <div class="modal-actions">
+              <button class="btn btn-ghost" :disabled="importing" @click="importStage = 'input'">{{ t("common.edit") }}</button>
+              <button class="btn btn-primary" :disabled="importing || importPreview.summary.conflict > 0" @click="commitImport">
+                <Icon v-if="importing" name="refresh" class="spin" :size="14" />
+                {{ t("accounts.importConfirm", { count: importPreview.summary.create + importPreview.summary.update }) }}
+              </button>
+            </div>
+          </template>
+
+          <template v-else-if="importStage === 'result' && importResult">
+            <div class="import-result">
+              <Icon name="check" :size="28" />
+              <h4>{{ t("accounts.importComplete") }}</h4>
+              <p>{{ t("accounts.importResult", { imported: importResult.imported, updated: importResult.updated, skipped: importResult.skipped + importResult.failed }) }}</p>
+              <p v-if="importResult.validated" class="faint">{{ t("accounts.importValidated", { count: importResult.validated }) }}</p>
+            </div>
+            <div v-if="importResult.warnings?.length" class="import-result-warnings">
+              <div v-for="warning in importResult.warnings" :key="warning">{{ warning }}</div>
+            </div>
+            <div class="modal-actions">
+              <button class="btn btn-primary" @click="closeImport">{{ t("common.close") }}</button>
+            </div>
+          </template>
         </div>
       </div>
     </Teleport>

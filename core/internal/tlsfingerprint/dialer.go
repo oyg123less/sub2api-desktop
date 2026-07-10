@@ -5,8 +5,11 @@ package tlsfingerprint
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -168,7 +171,11 @@ func (d *SOCKS5ProxyDialer) DialTLSContext(ctx context.Context, network, addr st
 
 	// Step 2: Establish SOCKS5 tunnel to target
 	slog.Debug("tls_fingerprint_socks5_establishing_tunnel", "target", addr)
-	conn, err := socksDialer.Dial("tcp", addr)
+	contextDialer, ok := socksDialer.(proxy.ContextDialer)
+	if !ok {
+		return nil, errors.New("SOCKS5 dialer does not support context cancellation")
+	}
+	conn, err := contextDialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		slog.Debug("tls_fingerprint_socks5_connect_failed", "error", err)
 		return nil, fmt.Errorf("SOCKS5 connect: %w", err)
@@ -204,6 +211,17 @@ func (d *HTTPProxyDialer) DialTLSContext(ctx context.Context, network, addr stri
 		return nil, fmt.Errorf("connect to proxy: %w", err)
 	}
 	slog.Debug("tls_fingerprint_http_proxy_connected", "proxy_addr", proxyAddr)
+	if d.proxyURL.Scheme == "https" {
+		tlsConn := tls.Client(conn, &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			ServerName: d.proxyURL.Hostname(),
+		})
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("proxy TLS handshake: %w", err)
+		}
+		conn = tlsConn
+	}
 
 	// Step 2: Send CONNECT request to establish tunnel
 	req := &http.Request{
@@ -236,13 +254,20 @@ func (d *HTTPProxyDialer) DialTLSContext(ctx context.Context, network, addr stri
 		slog.Debug("tls_fingerprint_http_proxy_read_response_failed", "error", err)
 		return nil, fmt.Errorf("read CONNECT response: %w", err)
 	}
-	// CONNECT response has no body; do not defer resp.Body.Close() as it wraps the
-	// same conn that will be used for the TLS handshake.
-
 	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+		_ = resp.Body.Close()
 		_ = conn.Close()
 		slog.Debug("tls_fingerprint_http_proxy_connect_failed_status", "status_code", resp.StatusCode, "status", resp.Status)
 		return nil, fmt.Errorf("proxy CONNECT failed: %s", resp.Status)
+	}
+	// A successful CONNECT response has no body. If a proxy explicitly sends a
+	// fixed-length body, consume it before starting the target TLS handshake.
+	if resp.ContentLength > 0 {
+		if _, err := io.CopyN(io.Discard, resp.Body, resp.ContentLength); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("read proxy CONNECT response body: %w", err)
+		}
 	}
 	slog.Debug("tls_fingerprint_http_proxy_tunnel_established")
 

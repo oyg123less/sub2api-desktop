@@ -140,6 +140,7 @@ onMounted(load);
               {{ applied ? t("codex.statusOn") : t("codex.statusOff") }}
             </span>
             <span class="faint text-sm">{{ st.config_path }}</span>
+						<span v-if="st.backup_at" class="faint text-sm">{{ t("codex.backupAt", { time: new Date(st.backup_at).toLocaleString() }) }}</span>
           </div>
           <div class="flex items-center gap-8">
             <button class="btn btn-primary" :disabled="busy" @click="apply">
@@ -168,7 +169,7 @@ onMounted(load);
               class="input mono"
               :style="modelValid ? '' : 'border-color: var(--danger)'"
               list="codex-model-options"
-              placeholder="gpt-5.5"
+              placeholder="gpt-5.6-sol"
             />
             <datalist id="codex-model-options">
               <option v-for="m in st.models" :key="m" :value="m" />

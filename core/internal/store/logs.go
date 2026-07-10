@@ -11,10 +11,12 @@ func (s *Store) InsertLog(l *RequestLog) error {
 		streamInt = 1
 	}
 	_, err := s.db.Exec(`INSERT INTO request_logs
-		(account_id, account_email, model, status_code, prompt_tokens, completion_tokens, total_tokens, latency_ms, stream, error, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		(account_id, account_email, model, status_code, prompt_tokens, completion_tokens, total_tokens, latency_ms, stream, error, created_at,
+		 request_id, requested_model, resolved_model, error_kind, attempt_count, terminal_event)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		l.AccountID, l.AccountEmail, l.Model, l.StatusCode, l.PromptTokens, l.CompletionTokens,
-		l.TotalTokens, l.LatencyMS, streamInt, l.Error, time.Now().Unix())
+		l.TotalTokens, l.LatencyMS, streamInt, l.Error, time.Now().Unix(), l.RequestID, l.RequestedModel,
+		l.ResolvedModel, l.ErrorKind, max(l.AttemptCount, 1), l.TerminalEvent)
 	return err
 }
 
@@ -23,7 +25,8 @@ func (s *Store) RecentLogs(limit int) ([]*RequestLog, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := s.db.Query(`SELECT id, account_id, account_email, model, status_code, prompt_tokens, completion_tokens, total_tokens, latency_ms, stream, error, created_at
+	rows, err := s.db.Query(`SELECT id, account_id, account_email, model, status_code, prompt_tokens, completion_tokens, total_tokens, latency_ms, stream, error, created_at,
+		request_id, requested_model, resolved_model, error_kind, attempt_count, terminal_event
 		FROM request_logs ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -40,6 +43,35 @@ func (s *Store) RecentLogs(limit int) ([]*RequestLog, error) {
 	return out, rows.Err()
 }
 
+// LogsForExport returns logs in chronological order for deterministic JSON and
+// CSV exports. A zero since value exports the full retained range.
+func (s *Store) LogsForExport(since time.Time) ([]*RequestLog, error) {
+	rows, err := s.db.Query(`SELECT id, account_id, account_email, model, status_code, prompt_tokens, completion_tokens, total_tokens, latency_ms, stream, error, created_at,
+		request_id, requested_model, resolved_model, error_kind, attempt_count, terminal_event
+		FROM request_logs WHERE created_at >= ? ORDER BY id ASC`, timeToUnix(since))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*RequestLog
+	for rows.Next() {
+		entry, err := scanLog(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, entry)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ClearLogs() (int64, error) {
+	result, err := s.db.Exec(`DELETE FROM request_logs`)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 func scanLog(rows interface {
 	Scan(dest ...any) error
 }) (*RequestLog, error) {
@@ -51,7 +83,8 @@ func scanLog(rows interface {
 	)
 	if err := rows.Scan(&l.ID, &accID, &l.AccountEmail, &l.Model, &l.StatusCode,
 		&l.PromptTokens, &l.CompletionTokens, &l.TotalTokens, &l.LatencyMS, &streamInt,
-		&l.Error, &createdAt); err != nil {
+		&l.Error, &createdAt, &l.RequestID, &l.RequestedModel, &l.ResolvedModel, &l.ErrorKind,
+		&l.AttemptCount, &l.TerminalEvent); err != nil {
 		return nil, err
 	}
 	l.AccountID = accID
