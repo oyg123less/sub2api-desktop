@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -90,6 +91,7 @@ func (m *Manager) ValidAccessToken(ctx context.Context, client *http.Client, acc
 	if err := m.store.UpdateTokens(acc.ID, tok.AccessToken, newRefresh, tok.IDToken, expiresAt); err != nil {
 		return "", err
 	}
+	m.backfillIdentityFromIDToken(acc.ID, tok.IDToken)
 	updated, err := m.store.GetAccount(acc.ID)
 	if err != nil {
 		return "", err
@@ -122,7 +124,29 @@ func (m *Manager) Refresh(ctx context.Context, client *http.Client, id int64) er
 		newRefresh = acc.RefreshToken
 	}
 	expiresAt := time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
-	return m.store.UpdateTokens(id, tok.AccessToken, newRefresh, tok.IDToken, expiresAt)
+	if err := m.store.UpdateTokens(id, tok.AccessToken, newRefresh, tok.IDToken, expiresAt); err != nil {
+		return err
+	}
+	m.backfillIdentityFromIDToken(id, tok.IDToken)
+	return nil
+}
+
+func (m *Manager) backfillIdentityFromIDToken(id int64, raw string) {
+	if strings.TrimSpace(raw) == "" {
+		return
+	}
+	claims, err := openai.DecodeIDToken(raw)
+	if err != nil {
+		slog.Warn("decode refreshed account identity failed", "account_id", id, "error", err)
+		return
+	}
+	info := claims.GetUserInfo()
+	if info.Email == "" && info.ChatGPTAccountID == "" && info.PlanType == "" {
+		return
+	}
+	if err := m.store.BackfillAccountIdentity(id, info.Email, info.ChatGPTAccountID, info.PlanType); err != nil {
+		slog.Warn("backfill refreshed account identity failed", "account_id", id, "error", err)
+	}
 }
 
 func (m *Manager) doRefresh(ctx context.Context, client *http.Client, refreshToken string) (*openai.TokenResponse, error) {

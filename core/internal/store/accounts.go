@@ -183,6 +183,17 @@ func (s *Store) UpdateTokens(id int64, access, refresh, idToken string, expiresA
 	return err
 }
 
+// BackfillAccountIdentity fills identity metadata that was unavailable when the
+// account was created. Existing non-empty values are never overwritten.
+func (s *Store) BackfillAccountIdentity(id int64, email, chatGPTAccountID, planType string) error {
+	_, err := s.db.Exec(`UPDATE accounts SET
+		email=CASE WHEN email='' THEN ? ELSE email END,
+		chatgpt_account_id=CASE WHEN chatgpt_account_id='' THEN ? ELSE chatgpt_account_id END,
+		plan_type=CASE WHEN plan_type='' THEN ? ELSE plan_type END,
+		updated_at=? WHERE id=?`, email, chatGPTAccountID, planType, time.Now().Unix(), id)
+	return err
+}
+
 func timeToUnixPtr(t *time.Time) int64 {
 	if t == nil {
 		return 0
