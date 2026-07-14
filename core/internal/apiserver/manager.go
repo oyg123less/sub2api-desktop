@@ -18,10 +18,12 @@ type Manager struct {
 	handler  *Handler
 	settings func() store.Settings
 
-	mu      sync.Mutex
-	server  *http.Server
-	running bool
-	port    int
+	lifecycleMu sync.Mutex
+	mu          sync.Mutex
+	server      *http.Server
+	running     bool
+	port        int
+	allowLAN    bool
 }
 
 // NewManager creates an API server manager.
@@ -49,12 +51,17 @@ func (m *Manager) Port() int {
 
 // Start binds and serves the API. It is safe to call when already running.
 func (m *Manager) Start() error {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	return m.startWithSettings(m.settings())
+}
+
+func (m *Manager) startWithSettings(cfg store.Settings) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.running {
 		return nil
 	}
-	cfg := m.settings()
 	host := "127.0.0.1"
 	if cfg.AllowLAN {
 		host = "0.0.0.0"
@@ -71,6 +78,7 @@ func (m *Manager) Start() error {
 	m.server = srv
 	m.running = true
 	m.port = cfg.ListenPort
+	m.allowLAN = cfg.AllowLAN
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			// Serve exited unexpectedly; mark as stopped.
@@ -84,6 +92,12 @@ func (m *Manager) Start() error {
 
 // Stop gracefully shuts down the API server.
 func (m *Manager) Stop() error {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	return m.stop()
+}
+
+func (m *Manager) stop() error {
 	m.mu.Lock()
 	srv := m.server
 	m.running = false
@@ -95,4 +109,34 @@ func (m *Manager) Stop() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return srv.Shutdown(ctx)
+}
+
+// Restart applies the latest listen settings. If the new address cannot be
+// bound, the previous listener is restored before the error is returned.
+func (m *Manager) Restart() error {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+
+	m.mu.Lock()
+	wasRunning := m.running
+	previous := store.Settings{ListenPort: m.port, AllowLAN: m.allowLAN}
+	m.mu.Unlock()
+	if !wasRunning {
+		return nil
+	}
+	if err := m.stop(); err != nil {
+		rollbackErr := m.startWithSettings(previous)
+		if rollbackErr != nil {
+			return fmt.Errorf("stop API server for restart: %w (restore previous listener: %v)", err, rollbackErr)
+		}
+		return fmt.Errorf("stop API server for restart: %w", err)
+	}
+	if err := m.startWithSettings(m.settings()); err != nil {
+		rollbackErr := m.startWithSettings(previous)
+		if rollbackErr != nil {
+			return fmt.Errorf("restart API server: %w (restore previous listener: %v)", err, rollbackErr)
+		}
+		return fmt.Errorf("restart API server: %w (previous listener restored)", err)
+	}
+	return nil
 }

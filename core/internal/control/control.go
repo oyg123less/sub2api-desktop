@@ -35,6 +35,7 @@ type ServerController interface {
 	Port() int
 	Start() error
 	Stop() error
+	Restart() error
 }
 
 // SettingsAccess abstracts reading and persisting settings, so the control API
@@ -365,6 +366,18 @@ func (c *Control) putSettings(w http.ResponseWriter, r *http.Request) {
 	if err := c.settings.Save(in); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
+	}
+	listenChanged := in.ListenPort != cur.ListenPort || in.AllowLAN != cur.AllowLAN
+	if listenChanged && c.server != nil && c.server.Running() {
+		if err := c.server.Restart(); err != nil {
+			rollbackErr := c.settings.Save(cur)
+			message := err.Error()
+			if rollbackErr != nil {
+				message += "; restore settings: " + rollbackErr.Error()
+			}
+			writeControlError(w, http.StatusInternalServerError, "server_restart_failed", message, true, nil)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, c.settings.Get())
 }
