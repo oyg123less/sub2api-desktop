@@ -72,10 +72,6 @@ func (s *Store) insertImportedAccount(tx *sql.Tx, mutation AccountImportMutation
 	if err != nil {
 		return 0, err
 	}
-	chatGPTID := ""
-	if mutation.IdentityVerified {
-		chatGPTID = mutation.ChatGPTAccountID
-	}
 	status := AccountPending
 	lastSuccess := int64(0)
 	if mutation.LiveValidated {
@@ -88,7 +84,7 @@ func (s *Store) insertImportedAccount(tx *sql.Tx, mutation AccountImportMutation
 		 rate_limited_until, proxy_id, last_used_at, created_at, updated_at, usage_snapshot, credential_fingerprint,
 		 last_success_at, consecutive_failures, next_retry_at)
 		VALUES (?,?,?,?,?,?,?,?,?,0,NULL,0,?,?,'',?,?,0,0)`,
-		mutation.Email, chatGPTID, mutation.PlanType, accessEnc, refreshEnc, idEnc, timeToUnix(mutation.ExpiresAt),
+		mutation.Email, mutation.ChatGPTAccountID, mutation.PlanType, accessEnc, refreshEnc, idEnc, timeToUnix(mutation.ExpiresAt),
 		string(status), "", now, now, CredentialFingerprint(mutation.AccessToken, mutation.RefreshToken), lastSuccess)
 	if err != nil {
 		return 0, err
@@ -119,9 +115,15 @@ func (s *Store) updateImportedAccount(tx *sql.Tx, mutation AccountImportMutation
 		}
 	}
 	if !mutation.IdentityVerified {
-		mutation.Email = existing.Email
-		mutation.ChatGPTAccountID = existing.ChatGPTAccountID
-		mutation.PlanType = existing.PlanType
+		if existing.Email != "" {
+			mutation.Email = existing.Email
+		}
+		if existing.ChatGPTAccountID != "" {
+			mutation.ChatGPTAccountID = existing.ChatGPTAccountID
+		}
+		if existing.PlanType != "" {
+			mutation.PlanType = existing.PlanType
+		}
 	} else {
 		if mutation.Email == "" {
 			mutation.Email = existing.Email

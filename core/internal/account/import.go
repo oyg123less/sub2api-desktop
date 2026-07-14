@@ -162,10 +162,18 @@ func (m *Manager) PreviewImport(ctx context.Context, raw []byte) (*ImportPreview
 				entry.PlanType = identity.PlanType
 			}
 		} else {
-			if displayID != "" {
-				row.Warnings = append(row.Warnings, "unverified account identity will not be used for matching")
+			if entry.ChatGPTAccountID == "" {
+				entry.ChatGPTAccountID = identity.ChatGPTAccountID
 			}
-			entry.ChatGPTAccountID = ""
+			if entry.Email == "" {
+				entry.Email = identity.Email
+			}
+			if entry.PlanType == "" {
+				entry.PlanType = identity.PlanType
+			}
+			if entry.ChatGPTAccountID != "" {
+				row.Warnings = append(row.Warnings, "unverified account identity is used for forwarding only and will not be used for matching")
+			}
 		}
 
 		if previous, duplicate := seenIdentity[verifiedID]; duplicate && verifiedID != "" {

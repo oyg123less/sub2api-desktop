@@ -2,6 +2,7 @@ package account
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -98,6 +99,35 @@ func TestAmbiguousSharedAccountIDDoesNotMergeDistinctCredentials(t *testing.T) {
 	}
 }
 
+func TestImportPersistsDecodedUnverifiedIdentityForForwarding(t *testing.T) {
+	manager, st := newImportTestManager(t, fakeIdentityVerifier{})
+	idToken := unsignedIdentityToken(t, "decoded@example.com", "acct_decoded", "plus")
+	raw := mustImportJSON(t, []ImportEntry{{AccessToken: accessA, IDToken: idToken}})
+
+	preview, err := manager.PreviewImport(context.Background(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Rows[0].IdentityVerified {
+		t.Fatal("decoded identity was unexpectedly marked verified")
+	}
+	if _, err := manager.CommitImport(context.Background(), raw, preview.ContentSHA256, false); err != nil {
+		t.Fatal(err)
+	}
+
+	accounts, err := st.ListAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(accounts) != 1 {
+		t.Fatalf("account count = %d, want 1", len(accounts))
+	}
+	account := accounts[0]
+	if account.ChatGPTAccountID != "acct_decoded" || account.Email != "decoded@example.com" || account.PlanType != "plus" {
+		t.Fatalf("decoded forwarding identity was not persisted: %#v", account)
+	}
+}
+
 func TestImportUpdatePreservesMissingTokens(t *testing.T) {
 	manager, st := newImportTestManager(t, fakeIdentityVerifier{
 		idA: {Email: "new@example.com", ChatGPTAccountID: "acct_existing", PlanType: "pro", Level: IdentitySigned},
@@ -156,4 +186,24 @@ func mustImportJSON(t *testing.T, entries []ImportEntry) []byte {
 		t.Fatal(err)
 	}
 	return raw
+}
+
+func unsignedIdentityToken(t *testing.T, email, accountID, plan string) string {
+	t.Helper()
+	header, err := json.Marshal(map[string]string{"alg": "RS256", "kid": "untrusted"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"email": email,
+		"https://api.openai.com/auth": map[string]string{
+			"chatgpt_account_id": accountID,
+			"chatgpt_plan_type":  plan,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encode := base64.RawURLEncoding.EncodeToString
+	return encode(header) + "." + encode(payload) + ".invalidsig"
 }
