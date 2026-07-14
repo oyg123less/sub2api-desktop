@@ -146,6 +146,63 @@ func TestMigrationFailureRestoresLegacyDatabase(t *testing.T) {
 	}
 }
 
+func TestV022MigrationDefaultsLegacyAccountsAndEncryptsAPIKeys(t *testing.T) {
+	dir := t.TempDir()
+	cipher, err := appcrypto.LoadOrCreate(filepath.Join(dir, "key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(dir, "sub2api.db")
+	createLegacyDatabase(t, dbPath, cipher)
+
+	st, err := Open(dbPath, cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	for _, column := range []string{"account_type", "base_url", "api_key"} {
+		if !testColumnExists(t, st.db, "accounts", column) {
+			t.Fatalf("accounts.%s missing after v0.2.2 migration", column)
+		}
+	}
+	legacyAccounts, err := st.ListAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(legacyAccounts) != 1 || legacyAccounts[0].AccountType != AccountTypeOAuth {
+		t.Fatalf("legacy account type = %#v, want oauth", legacyAccounts)
+	}
+
+	const apiKey = "sk-secret-api-key-value"
+	created, err := st.CreateAccount(&Account{
+		AccountType: AccountTypeAPIKey,
+		BaseURL:     "https://api.example.com/v1/responses",
+		APIKey:      apiKey,
+		Email:       "Example API",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.APIKey != apiKey || created.AccountType != AccountTypeAPIKey {
+		t.Fatal("API-key account was not decrypted correctly")
+	}
+	var storedAPIKey string
+	if err := st.db.QueryRow(`SELECT api_key FROM accounts WHERE id=?`, created.ID).Scan(&storedAPIKey); err != nil {
+		t.Fatal(err)
+	}
+	if storedAPIKey == "" || storedAPIKey == apiKey {
+		t.Fatal("api_key was not encrypted at rest")
+	}
+	var migrationName string
+	if err := st.db.QueryRow(`SELECT name FROM schema_migrations WHERE version=4`).Scan(&migrationName); err != nil {
+		t.Fatal(err)
+	}
+	if migrationName != "v0.2.2 api-key accounts" {
+		t.Fatalf("migration name = %q", migrationName)
+	}
+}
+
 func createLegacyDatabase(t *testing.T, dbPath string, cipher *appcrypto.Cipher) {
 	t.Helper()
 	db, err := sql.Open("sqlite", dbPath)

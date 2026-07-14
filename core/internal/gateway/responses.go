@@ -95,7 +95,7 @@ func (e *Engine) Responses(w http.ResponseWriter, r *http.Request) {
 		attempt++
 		meta := forwardMeta{RequestID: requestID, RequestedModel: requestedModel, ResolvedModel: logModel, Attempt: attempt, Stream: clientStream}
 		result := e.forwardResponsesOnce(r.Context(), w, upstreamBody, acc, cfg, meta)
-		if result.outcome == outcomeAuthFailed && acc.RefreshToken != "" {
+		if result.outcome == outcomeAuthFailed && acc.AccountType == store.AccountTypeOAuth && acc.RefreshToken != "" {
 			if refreshed, err := e.forceRefreshAccount(r.Context(), acc, cfg); err == nil {
 				acc = refreshed
 				attempt++
@@ -179,7 +179,7 @@ func (e *Engine) forwardResponsesOnce(ctx context.Context, w http.ResponseWriter
 		return forwardResult{outcome: outcomeAuthFailed, errMsg: "token refresh failed: " + err.Error()}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, UpstreamURL(), bytes.NewReader(upstreamBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURLForAccount(acc), bytes.NewReader(upstreamBody))
 	if err != nil {
 		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: err.Error()}
 	}

@@ -5,6 +5,14 @@ import "time"
 // AccountStatus enumerates the lifecycle states of an OpenAI account.
 type AccountStatus string
 
+// AccountType identifies how an upstream account authenticates.
+type AccountType string
+
+const (
+	AccountTypeOAuth  AccountType = "oauth"
+	AccountTypeAPIKey AccountType = "api_key"
+)
+
 const (
 	AccountActive        AccountStatus = "active"
 	AccountRefreshFailed AccountStatus = "refresh_failed"
@@ -26,10 +34,13 @@ type CodexUsage struct {
 	UpdatedAt                  time.Time `json:"updated_at"`
 }
 
-// Account is a single ChatGPT OAuth account. Token fields are stored encrypted
-// at rest and decrypted only in memory.
+// Account is a single OAuth or API-key upstream account. Credential fields are
+// stored encrypted at rest and decrypted only in memory.
 type Account struct {
 	ID                    int64         `json:"id"`
+	AccountType           AccountType   `json:"account_type"`
+	BaseURL               string        `json:"base_url"`
+	APIKey                string        `json:"-"`
 	Email                 string        `json:"email"`
 	ChatGPTAccountID      string        `json:"chatgpt_account_id"`
 	PlanType              string        `json:"plan_type"`

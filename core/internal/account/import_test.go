@@ -238,6 +238,52 @@ func TestImportUpdatePreservesMissingTokens(t *testing.T) {
 	}
 }
 
+func TestImportMixedOAuthAndAPIKeyAccounts(t *testing.T) {
+	manager, st := newImportTestManager(t, fakeIdentityVerifier{})
+	raw := mustImportJSON(t, []ImportEntry{
+		{AccessToken: accessA, Email: "oauth@example.com"},
+		{AccountType: string(store.AccountTypeAPIKey), BaseURL: "https://api.example.com/v1/responses", APIKey: "sk-mixed", Email: "Example API"},
+	})
+	preview, err := manager.PreviewImport(context.Background(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Summary.Create != 2 || preview.Rows[0].AccountType != string(store.AccountTypeOAuth) || preview.Rows[1].AccountType != string(store.AccountTypeAPIKey) {
+		t.Fatalf("unexpected mixed preview summary: %#v", preview.Summary)
+	}
+	if _, err := manager.CommitImport(context.Background(), raw, preview.ContentSHA256, true); err != nil {
+		t.Fatal(err)
+	}
+	accounts, err := st.ListAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(accounts) != 2 {
+		t.Fatalf("account count = %d, want 2", len(accounts))
+	}
+	if accounts[0].AccountType != store.AccountTypeOAuth || accounts[0].Status != store.AccountPending {
+		t.Fatalf("unexpected OAuth account: %#v", accounts[0])
+	}
+	if accounts[1].AccountType != store.AccountTypeAPIKey || accounts[1].Status != store.AccountActive || accounts[1].APIKey != "sk-mixed" {
+		t.Fatal("API-key account was not imported as active")
+	}
+}
+
+func TestImportAPIKeyDeduplicatesNormalizedBaseURLAndKey(t *testing.T) {
+	manager, _ := newImportTestManager(t, fakeIdentityVerifier{})
+	raw := mustImportJSON(t, []ImportEntry{
+		{AccountType: string(store.AccountTypeAPIKey), BaseURL: "https://API.Example.com/v1/responses/", APIKey: "sk-shared"},
+		{AccountType: string(store.AccountTypeAPIKey), BaseURL: "https://api.example.com/v1/responses", APIKey: "sk-shared"},
+	})
+	preview, err := manager.PreviewImport(context.Background(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Summary.Create != 1 || preview.Summary.Skip != 1 || preview.Rows[1].Action != ImportSkip {
+		t.Fatalf("normalized API-key duplicate was not skipped: %#v", preview.Summary)
+	}
+}
+
 func newImportTestManager(t *testing.T, verifier IdentityVerifier) (*Manager, *store.Store) {
 	t.Helper()
 	dir := t.TempDir()

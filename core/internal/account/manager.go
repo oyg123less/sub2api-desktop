@@ -56,6 +56,12 @@ const refreshSkew = 5 * time.Minute
 // refreshing it if necessary. It reloads the account from the store after
 // refreshing so callers see the latest tokens.
 func (m *Manager) ValidAccessToken(ctx context.Context, client *http.Client, acc *store.Account) (string, error) {
+	if acc.AccountType == store.AccountTypeAPIKey {
+		if strings.TrimSpace(acc.APIKey) == "" {
+			return "", fmt.Errorf("API-key account has no api_key")
+		}
+		return acc.APIKey, nil
+	}
 	if !acc.ExpiresAt.IsZero() && time.Now().Before(acc.ExpiresAt.Add(-refreshSkew)) {
 		return acc.AccessToken, nil
 	}

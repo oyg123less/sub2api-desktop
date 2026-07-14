@@ -11,6 +11,9 @@ import (
 	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
+
+	"sub2api-desktop/core/internal/openai"
+	"sub2api-desktop/core/internal/store"
 )
 
 const MaxImportBytes = 10 << 20
@@ -65,14 +68,36 @@ func ParseImportDocument(raw []byte) ([]ParsedImportEntry, error) {
 		entries[index].Index = index + 1
 		if entries[index].Err == nil {
 			entry := entries[index].Entry
-			if strings.TrimSpace(entry.AccessToken) == "" && strings.TrimSpace(entry.RefreshToken) == "" {
-				entries[index].Err = errors.New("missing access_token and refresh_token")
-			} else if entry.AccessToken != "" && !validBareToken(entry.AccessToken) {
-				entries[index].Err = errors.New("access_token has an invalid format")
-			} else if entry.RefreshToken != "" && !validOpaqueToken(entry.RefreshToken) {
-				entries[index].Err = errors.New("refresh_token has an invalid format")
-			} else if entry.IDToken != "" && !validJWT(entry.IDToken) {
-				entries[index].Err = errors.New("id_token has an invalid JWT format")
+			entry.AccountType = strings.ToLower(strings.TrimSpace(entry.AccountType))
+			entry.BaseURL = strings.TrimSpace(entry.BaseURL)
+			entry.APIKey = strings.TrimSpace(entry.APIKey)
+			if entry.AccountType == "" {
+				entry.AccountType = string(store.AccountTypeOAuth)
+				if entry.APIKey != "" && strings.TrimSpace(entry.AccessToken) == "" && strings.TrimSpace(entry.RefreshToken) == "" {
+					entry.AccountType = string(store.AccountTypeAPIKey)
+				}
+			}
+			entries[index].Entry = entry
+			switch store.AccountType(entry.AccountType) {
+			case store.AccountTypeAPIKey:
+				if entry.APIKey == "" {
+					entries[index].Err = errors.New("missing api_key")
+				} else if entry.BaseURL == "" {
+					entry.BaseURL = openai.CodexResponsesURL
+					entries[index].Entry = entry
+				}
+			case store.AccountTypeOAuth:
+				if strings.TrimSpace(entry.AccessToken) == "" && strings.TrimSpace(entry.RefreshToken) == "" {
+					entries[index].Err = errors.New("missing access_token and refresh_token")
+				} else if entry.AccessToken != "" && !validBareToken(entry.AccessToken) {
+					entries[index].Err = errors.New("access_token has an invalid format")
+				} else if entry.RefreshToken != "" && !validOpaqueToken(entry.RefreshToken) {
+					entries[index].Err = errors.New("refresh_token has an invalid format")
+				} else if entry.IDToken != "" && !validJWT(entry.IDToken) {
+					entries[index].Err = errors.New("id_token has an invalid JWT format")
+				}
+			default:
+				entries[index].Err = fmt.Errorf("unsupported account_type %q", entry.AccountType)
 			}
 		}
 	}
@@ -289,6 +314,11 @@ func detectSource(value map[string]any) string {
 
 func entryFromMap(value map[string]any) (ImportEntry, []string) {
 	entry := ImportEntry{}
+	entry.AccountType = firstString(value, []string{"account_type"}, []string{"accountType"})
+	entry.BaseURL = firstString(value, []string{"base_url"}, []string{"baseUrl"}, []string{"BaseURL"})
+	entry.APIKey = firstString(value,
+		[]string{"api_key"}, []string{"apiKey"}, []string{"credentials", "api_key"}, []string{"credentials", "apiKey"},
+	)
 	entry.AccessToken = firstString(value,
 		[]string{"tokens", "access_token"}, []string{"tokens", "accessToken"},
 		[]string{"credentials", "access_token"}, []string{"credentials", "accessToken"},

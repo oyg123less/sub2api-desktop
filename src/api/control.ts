@@ -105,6 +105,8 @@ export interface CodexUsage {
 
 export interface Account {
   id: number;
+  account_type: "oauth" | "api_key";
+  base_url: string;
   email: string;
   chatgpt_account_id: string;
   plan_type: string;
@@ -242,12 +244,14 @@ export type ImportAction = "create" | "update" | "skip" | "error" | "conflict";
 export interface ImportPreviewRow {
   index: number;
   action: ImportAction;
+  account_type: "oauth" | "api_key";
   matched_account_id?: number;
   email_masked?: string;
   chatgpt_account_id_masked?: string;
   has_access_token: boolean;
   has_refresh_token: boolean;
   has_id_token: boolean;
+  has_api_key: boolean;
   identity_level: "unparsed" | "decoded" | "signed";
   identity_verified: boolean;
   warnings: string[];

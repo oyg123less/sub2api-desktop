@@ -15,6 +15,7 @@ func (s *Store) scanAccount(row interface {
 		accessEnc   string
 		refreshEnc  string
 		idTokenEnc  string
+		apiKeyEnc   string
 		expiresAt   int64
 		rateUntil   int64
 		lastUsed    int64
@@ -26,7 +27,7 @@ func (s *Store) scanAccount(row interface {
 		lastSuccess int64
 		nextRetry   int64
 	)
-	if err := row.Scan(&a.ID, &a.Email, &a.ChatGPTAccountID, &a.PlanType,
+	if err := row.Scan(&a.ID, &a.AccountType, &a.BaseURL, &apiKeyEnc, &a.Email, &a.ChatGPTAccountID, &a.PlanType,
 		&accessEnc, &refreshEnc, &idTokenEnc, &expiresAt, &status, &a.StatusReason,
 		&rateUntil, &proxyID, &lastUsed, &createdAt, &updatedAt, &usageJSON,
 		&a.CredentialFingerprint, &lastSuccess, &a.ConsecutiveFailures, &nextRetry); err != nil {
@@ -47,6 +48,12 @@ func (s *Store) scanAccount(row interface {
 	}
 	if a.IDToken, err = s.cipher.Decrypt(idTokenEnc); err != nil {
 		return nil, err
+	}
+	if a.APIKey, err = s.cipher.Decrypt(apiKeyEnc); err != nil {
+		return nil, err
+	}
+	if a.AccountType == "" {
+		a.AccountType = AccountTypeOAuth
 	}
 	a.Status = AccountStatus(status)
 	a.ExpiresAt = unixToTime(expiresAt)
@@ -75,7 +82,7 @@ func (s *Store) scanAccount(row interface {
 	return &a, nil
 }
 
-const accountCols = `id, email, chatgpt_account_id, plan_type, access_token, refresh_token, id_token, expires_at, status, status_reason, rate_limited_until, proxy_id, last_used_at, created_at, updated_at, usage_snapshot, credential_fingerprint, last_success_at, consecutive_failures, next_retry_at`
+const accountCols = `id, account_type, base_url, api_key, email, chatgpt_account_id, plan_type, access_token, refresh_token, id_token, expires_at, status, status_reason, rate_limited_until, proxy_id, last_used_at, created_at, updated_at, usage_snapshot, credential_fingerprint, last_success_at, consecutive_failures, next_retry_at`
 
 // CreateAccount inserts a new account (tokens encrypted).
 func (s *Store) CreateAccount(a *Account) (*Account, error) {
@@ -92,18 +99,25 @@ func (s *Store) CreateAccount(a *Account) (*Account, error) {
 	if err != nil {
 		return nil, err
 	}
+	apiKeyEnc, err := s.cipher.Encrypt(a.APIKey)
+	if err != nil {
+		return nil, err
+	}
+	if a.AccountType == "" {
+		a.AccountType = AccountTypeOAuth
+	}
 	if a.Status == "" {
 		a.Status = AccountActive
 	}
 	if a.CredentialFingerprint == "" {
-		a.CredentialFingerprint = CredentialFingerprint(a.AccessToken, a.RefreshToken)
+		a.CredentialFingerprint = AccountCredentialFingerprint(a.AccountType, a.AccessToken, a.RefreshToken, a.BaseURL, a.APIKey)
 	}
 	res, err := s.db.Exec(`INSERT INTO accounts
-		(email, chatgpt_account_id, plan_type, access_token, refresh_token, id_token, expires_at, status, status_reason, rate_limited_until, proxy_id, last_used_at, created_at, updated_at, usage_snapshot, credential_fingerprint, last_success_at, consecutive_failures, next_retry_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'',?,?,?,?)`,
-		a.Email, a.ChatGPTAccountID, a.PlanType, accessEnc, refreshEnc, idTokenEnc,
+		(account_type, base_url, api_key, email, chatgpt_account_id, plan_type, access_token, refresh_token, id_token, expires_at, status, status_reason, rate_limited_until, proxy_id, last_used_at, created_at, updated_at, usage_snapshot, credential_fingerprint, last_success_at, consecutive_failures, next_retry_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		string(a.AccountType), a.BaseURL, apiKeyEnc, a.Email, a.ChatGPTAccountID, a.PlanType, accessEnc, refreshEnc, idTokenEnc,
 		timeToUnix(a.ExpiresAt), string(a.Status), a.StatusReason, int64(0), a.ProxyID, int64(0),
-		now.Unix(), now.Unix(), a.CredentialFingerprint, timeToUnixPtr(a.LastSuccessAt), a.ConsecutiveFailures, timeToUnixPtr(a.NextRetryAt))
+		now.Unix(), now.Unix(), "", a.CredentialFingerprint, timeToUnixPtr(a.LastSuccessAt), a.ConsecutiveFailures, timeToUnixPtr(a.NextRetryAt))
 	if err != nil {
 		return nil, err
 	}

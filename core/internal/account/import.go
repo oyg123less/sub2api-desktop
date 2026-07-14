@@ -20,6 +20,9 @@ import (
 )
 
 type ImportEntry struct {
+	AccountType      string `json:"account_type"`
+	BaseURL          string `json:"base_url"`
+	APIKey           string `json:"api_key"`
 	Email            string `json:"email"`
 	AccessToken      string `json:"access_token"`
 	RefreshToken     string `json:"refresh_token"`
@@ -51,12 +54,14 @@ type ImportPreviewSummary struct {
 type ImportPreviewRow struct {
 	Index                  int           `json:"index"`
 	Action                 ImportAction  `json:"action"`
+	AccountType            string        `json:"account_type"`
 	MatchedAccountID       int64         `json:"matched_account_id,omitempty"`
 	EmailMasked            string        `json:"email_masked,omitempty"`
 	ChatGPTAccountIDMasked string        `json:"chatgpt_account_id_masked,omitempty"`
 	HasAccessToken         bool          `json:"has_access_token"`
 	HasRefreshToken        bool          `json:"has_refresh_token"`
 	HasIDToken             bool          `json:"has_id_token"`
+	HasAPIKey              bool          `json:"has_api_key"`
 	IdentityLevel          IdentityLevel `json:"identity_level"`
 	IdentityVerified       bool          `json:"identity_verified"`
 	Warnings               []string      `json:"warnings"`
@@ -118,9 +123,12 @@ func (m *Manager) PreviewImport(ctx context.Context, raw []byte) (*ImportPreview
 		entry.AccessToken = strings.TrimSpace(entry.AccessToken)
 		entry.RefreshToken = strings.TrimSpace(entry.RefreshToken)
 		entry.IDToken = strings.TrimSpace(entry.IDToken)
+		entry.APIKey = strings.TrimSpace(entry.APIKey)
+		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
 		row := ImportPreviewRow{
-			Index: parsedEntry.Index, HasAccessToken: entry.AccessToken != "", HasRefreshToken: entry.RefreshToken != "",
-			HasIDToken: entry.IDToken != "", IdentityLevel: IdentityUnparsed,
+			AccountType: entry.AccountType,
+			Index:       parsedEntry.Index, HasAccessToken: entry.AccessToken != "", HasRefreshToken: entry.RefreshToken != "",
+			HasIDToken: entry.IDToken != "", HasAPIKey: entry.APIKey != "", IdentityLevel: IdentityUnparsed,
 			Warnings: append([]string(nil), parsedEntry.Warnings...),
 		}
 		if parsedEntry.Err != nil {
@@ -129,10 +137,14 @@ func (m *Manager) PreviewImport(ctx context.Context, raw []byte) (*ImportPreview
 			continue
 		}
 
-		identity, identityWarnings := m.resolveImportIdentity(ctx, entry)
-		row.Warnings = append(row.Warnings, identityWarnings...)
-		row.IdentityLevel = identity.Level
-		row.IdentityVerified = identity.Level == IdentitySigned
+		identity := VerifiedIdentity{Level: IdentityUnparsed}
+		if store.AccountType(entry.AccountType) != store.AccountTypeAPIKey {
+			var identityWarnings []string
+			identity, identityWarnings = m.resolveImportIdentity(ctx, entry)
+			row.Warnings = append(row.Warnings, identityWarnings...)
+			row.IdentityLevel = identity.Level
+			row.IdentityVerified = identity.Level == IdentitySigned
+		}
 		displayEmail, displayID := entry.Email, entry.ChatGPTAccountID
 		if identity.Email != "" {
 			displayEmail = identity.Email
@@ -171,7 +183,8 @@ func (m *Manager) PreviewImport(ctx context.Context, raw []byte) (*ImportPreview
 			}
 		}
 
-		fingerprint := store.CredentialFingerprint(entry.AccessToken, entry.RefreshToken)
+		accountType := store.AccountType(entry.AccountType)
+		fingerprint := store.AccountCredentialFingerprint(accountType, entry.AccessToken, entry.RefreshToken, entry.BaseURL, entry.APIKey)
 		if previous, duplicate := seenFingerprint[fingerprint]; duplicate && fingerprint != "" {
 			if previous.verifiedID != "" && verifiedID != "" && previous.verifiedID != verifiedID {
 				row.Action, row.ErrorCode = ImportConflict, "import_duplicate_conflict"
@@ -216,6 +229,7 @@ func (m *Manager) PreviewImport(ctx context.Context, raw []byte) (*ImportPreview
 		}
 
 		mutation := store.AccountImportMutation{
+			AccountType: accountType, BaseURL: entry.BaseURL, APIKey: entry.APIKey,
 			Index: parsedEntry.Index, Email: entry.Email, ChatGPTAccountID: entry.ChatGPTAccountID, PlanType: entry.PlanType,
 			AccessToken: entry.AccessToken, RefreshToken: entry.RefreshToken, IDToken: entry.IDToken,
 			ExpiresAt: parseExpiry(entry.ExpiresAt), IdentityVerified: row.IdentityVerified,
@@ -372,6 +386,9 @@ func (m *Manager) validateImportedAccounts(ctx context.Context, applied []store.
 			account, err := m.store.GetAccount(item.AccountID)
 			if err != nil {
 				addWarning(item.Index, fmt.Sprintf("row %d validation: %v", item.Index, err))
+				continue
+			}
+			if account.AccountType == store.AccountTypeAPIKey {
 				continue
 			}
 			if account.RefreshToken == "" {

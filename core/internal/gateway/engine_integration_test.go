@@ -183,6 +183,89 @@ func TestNoAccountReturns503(t *testing.T) {
 	}
 }
 
+func TestAPIKeyAccountUsesBaseURLWithoutOAuthRefresh(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*gateway.Engine, *store.Store) (int, string)
+	}{
+		{
+			name: "chat completions",
+			call: func(engine *gateway.Engine, _ *store.Store) (int, string) {
+				r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-5.4","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+				w := httptest.NewRecorder()
+				engine.ChatCompletions(w, r)
+				return w.Code, w.Body.String()
+			},
+		},
+		{
+			name: "responses",
+			call: func(engine *gateway.Engine, _ *store.Store) (int, string) {
+				r := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.4","stream":true,"input":"hi"}`))
+				w := httptest.NewRecorder()
+				engine.Responses(w, r)
+				return w.Code, w.Body.String()
+			},
+		},
+		{
+			name: "connectivity test",
+			call: func(engine *gateway.Engine, st *store.Store) (int, string) {
+				accounts, err := st.ListAccounts()
+				if err != nil || len(accounts) != 1 {
+					return http.StatusInternalServerError, "failed to load API-key test account"
+				}
+				result := engine.TestAccount(t.Context(), accounts[0], "gpt-5.4", "hi")
+				if !result.OK {
+					return result.Status, result.Error
+				}
+				return result.Status, result.Sample
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured http.Header
+			calls := 0
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				captured = r.Header.Clone()
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp_api","status":"completed","model":"gpt-5.4","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`+"\n\n")
+			}))
+			defer upstream.Close()
+			t.Setenv("SUB2API_UPSTREAM_URL", "http://127.0.0.1:1/should-not-be-used")
+
+			st := newTestStore(t)
+			_, err := st.CreateAccount(&store.Account{
+				AccountType:      store.AccountTypeAPIKey,
+				BaseURL:          upstream.URL,
+				APIKey:           "sk-api-key",
+				ChatGPTAccountID: "must-not-be-forwarded",
+				RefreshToken:     "refresh_must_not_be_used_1234567890",
+				ExpiresAt:        time.Now().Add(-time.Hour),
+				Status:           store.AccountActive,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			engine := gateway.New(st, account.NewManager(st), func() store.Settings { s, _ := st.LoadSettings(); return s }, nil)
+			status, body := tt.call(engine, st)
+			if status != http.StatusOK {
+				t.Fatalf("status = %d body=%s", status, body)
+			}
+			if calls != 1 {
+				t.Fatalf("upstream calls = %d, want 1", calls)
+			}
+			if captured.Get("Authorization") != "Bearer sk-api-key" {
+				t.Fatal("API-key authorization header was not forwarded")
+			}
+			if captured.Get("chatgpt-account-id") != "" {
+				t.Fatalf("unexpected chatgpt-account-id = %q", captured.Get("chatgpt-account-id"))
+			}
+		})
+	}
+}
+
 func TestChatStreamingFailureEmitsErrorWithoutDone(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

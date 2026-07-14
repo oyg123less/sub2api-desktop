@@ -67,6 +67,9 @@ func parseCodexUsageHeaders(h http.Header) *store.CodexUsage {
 // captureCodexUsage persists the latest usage snapshot for the account and
 // returns it (nil when the response carried no usage headers).
 func (e *Engine) captureCodexUsage(acc *store.Account, h http.Header) *store.CodexUsage {
+	if acc == nil || acc.AccountType == store.AccountTypeAPIKey {
+		return nil
+	}
 	u := parseCodexUsageHeaders(h)
 	if u != nil {
 		_ = e.store.SetAccountCodexUsage(acc.ID, u)

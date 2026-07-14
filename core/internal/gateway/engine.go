@@ -28,16 +28,23 @@ import (
 	apptransport "sub2api-desktop/core/internal/transport"
 )
 
-// defaultUpstreamURL is the ChatGPT Codex responses endpoint.
-const defaultUpstreamURL = "https://chatgpt.com/backend-api/codex/responses"
-
 // UpstreamURL returns the effective upstream endpoint, allowing override via the
 // SUB2API_UPSTREAM_URL environment variable (used for tests).
 func UpstreamURL() string {
 	if v := os.Getenv("SUB2API_UPSTREAM_URL"); v != "" {
 		return v
 	}
-	return defaultUpstreamURL
+	return openai.CodexResponsesURL
+}
+
+func upstreamURLForAccount(acc *store.Account) string {
+	if acc != nil && acc.AccountType == store.AccountTypeAPIKey {
+		if baseURL := strings.TrimSpace(acc.BaseURL); baseURL != "" {
+			return baseURL
+		}
+		return openai.CodexResponsesURL
+	}
+	return UpstreamURL()
 }
 
 // Engine holds the dependencies for request forwarding.
@@ -129,7 +136,7 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		attempt++
 		meta := forwardMeta{RequestID: requestID, RequestedModel: requestedModel, ResolvedModel: logModel, Attempt: attempt, Stream: chatReq.Stream}
 		result := e.forwardOnce(r.Context(), w, &chatReq, acc, cfg, meta)
-		if result.outcome == outcomeAuthFailed && acc.RefreshToken != "" {
+		if result.outcome == outcomeAuthFailed && acc.AccountType == store.AccountTypeOAuth && acc.RefreshToken != "" {
 			if refreshed, err := e.forceRefreshAccount(r.Context(), acc, cfg); err == nil {
 				acc = refreshed
 				attempt++
@@ -261,7 +268,7 @@ func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq
 		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: err.Error()}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, UpstreamURL(), bytes.NewReader(upstreamBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURLForAccount(acc), bytes.NewReader(upstreamBody))
 	if err != nil {
 		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: err.Error()}
 	}
@@ -321,6 +328,9 @@ func isNetworkOrProxyError(err error) bool {
 
 func (e *Engine) forceRefreshAccount(ctx context.Context, acc *store.Account, cfg store.Settings) (*store.Account, error) {
 	_ = cfg
+	if acc.AccountType == store.AccountTypeAPIKey {
+		return nil, errors.New("API-key accounts cannot refresh OAuth tokens")
+	}
 	var proxy *store.Proxy
 	if acc.ProxyID != nil {
 		if p, err := e.store.GetProxy(*acc.ProxyID); err == nil {
@@ -378,7 +388,11 @@ func (e *Engine) selectAccounts() ([]*store.Account, func(), error) {
 		if a.Status == store.AccountRefreshFailed && a.NextRetryAt != nil && now.Before(*a.NextRetryAt) {
 			continue
 		}
-		if strings.TrimSpace(a.AccessToken) == "" && strings.TrimSpace(a.RefreshToken) == "" {
+		if a.AccountType == store.AccountTypeAPIKey {
+			if strings.TrimSpace(a.APIKey) == "" {
+				continue
+			}
+		} else if strings.TrimSpace(a.AccessToken) == "" && strings.TrimSpace(a.RefreshToken) == "" {
 			continue
 		}
 		out = append(out, a)
@@ -427,7 +441,7 @@ func setCodexHeaders(req *http.Request, token string, acc *store.Account, cfg st
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
-	if acc.ChatGPTAccountID != "" {
+	if acc.AccountType != store.AccountTypeAPIKey && acc.ChatGPTAccountID != "" {
 		req.Header.Set("chatgpt-account-id", acc.ChatGPTAccountID)
 	}
 	ua := cfg.UserAgent

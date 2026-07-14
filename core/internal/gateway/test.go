@@ -95,7 +95,7 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 		return res
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, UpstreamURL(), bytes.NewReader(upstreamBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURLForAccount(acc), bytes.NewReader(upstreamBody))
 	if err != nil {
 		res.Error = err.Error()
 		return res

@@ -6,15 +6,17 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	appcrypto "sub2api-desktop/core/internal/crypto"
 )
 
-const CurrentSchemaVersion = 3
+const CurrentSchemaVersion = 4
 
 type migration struct {
 	version int
@@ -26,6 +28,7 @@ var migrations = []migration{
 	{version: 1, name: "v0.1.1 baseline", apply: migrateBaseline},
 	{version: 2, name: "v0.2.0 reliability", apply: migrateV020},
 	{version: 3, name: "v0.2.0 compatibility settings", apply: migrateV020CompatibilitySettings},
+	{version: 4, name: "v0.2.2 api-key accounts", apply: migrateV022APIKeyAccounts},
 }
 
 func databaseExists(path string) bool {
@@ -219,6 +222,20 @@ func migrateV020CompatibilitySettings(tx *sql.Tx, _ *appcrypto.Cipher) error {
 	return err
 }
 
+func migrateV022APIKeyAccounts(tx *sql.Tx, _ *appcrypto.Cipher) error {
+	columns := []struct{ name, declaration string }{
+		{"account_type", `TEXT NOT NULL DEFAULT 'oauth'`},
+		{"base_url", `TEXT NOT NULL DEFAULT ''`},
+		{"api_key", `TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, column := range columns {
+		if err := addColumnIfMissing(tx, "accounts", column.name, column.declaration); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func addColumnIfMissing(tx *sql.Tx, table, column, declaration string) error {
 	rows, err := tx.Query(`PRAGMA table_info(` + table + `)`)
 	if err != nil {
@@ -408,6 +425,28 @@ func CredentialFingerprint(access, refresh string) string {
 		return ""
 	}
 	sum := sha256.Sum256([]byte(prefix + value))
+	return hex.EncodeToString(sum[:])
+}
+
+// AccountCredentialFingerprint preserves the existing OAuth fingerprint
+// behavior while giving API-key accounts a stable endpoint-scoped identity.
+func AccountCredentialFingerprint(accountType AccountType, access, refresh, baseURL, apiKey string) string {
+	if accountType != AccountTypeAPIKey {
+		return CredentialFingerprint(access, refresh)
+	}
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return ""
+	}
+	normalizedURL := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if parsed, err := url.Parse(normalizedURL); err == nil {
+		parsed.Scheme = strings.ToLower(parsed.Scheme)
+		parsed.Host = strings.ToLower(parsed.Host)
+		parsed.Path = strings.TrimRight(parsed.Path, "/")
+		parsed.Fragment = ""
+		normalizedURL = parsed.String()
+	}
+	sum := sha256.Sum256([]byte("api_key:" + normalizedURL + "\x00" + apiKey))
 	return hex.EncodeToString(sum[:])
 }
 
