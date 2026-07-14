@@ -252,12 +252,36 @@ func (c *Control) getSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Control) putSettings(w http.ResponseWriter, r *http.Request) {
+	var fields map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&fields); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	encoded, err := json.Marshal(fields)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
 	var in store.Settings
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := json.Unmarshal(encoded, &in); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 	cur := c.settings.Get()
+	for key, values := range map[string]struct {
+		target  *bool
+		current bool
+	}{
+		"allow_lan":           {target: &in.AllowLAN, current: cur.AllowLAN},
+		"inject_instructions": {target: &in.InjectInstr, current: cur.InjectInstr},
+		"auto_start_server":   {target: &in.AutoStartServer, current: cur.AutoStartServer},
+		"tls_fingerprint":     {target: &in.TLSFingerprint, current: cur.TLSFingerprint},
+		"auto_recovery":       {target: &in.AutoRecovery, current: cur.AutoRecovery},
+	} {
+		if _, exists := fields[key]; !exists {
+			*values.target = values.current
+		}
+	}
 	// Preserve the API key unless explicitly regenerated.
 	if in.LocalAPIKey == "" {
 		in.LocalAPIKey = cur.LocalAPIKey
@@ -309,9 +333,13 @@ func (c *Control) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	switch in.CompatProfile {
 	case "standard":
-		in.TLSFingerprint = false
+		if _, provided := fields["compatibility_profile"]; provided {
+			in.TLSFingerprint = false
+		}
 	case "codex":
-		in.TLSFingerprint = true
+		if _, provided := fields["compatibility_profile"]; provided {
+			in.TLSFingerprint = true
+		}
 	default:
 		writeControlError(w, http.StatusBadRequest, "invalid_compatibility_profile", "compatibility profile must be standard or codex", false, nil)
 		return
