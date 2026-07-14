@@ -64,6 +64,71 @@ func TestJWTIdentityVerifier(t *testing.T) {
 	}
 }
 
+func TestImportClassifiesJWKSNetworkAndSignatureFailures(t *testing.T) {
+	signingKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const kid = "classification-key"
+	token := signedIdentityToken(t, signingKey, kid, openai.ClientID, time.Now().Add(time.Hour))
+	raw := mustImportJSON(t, []ImportEntry{{AccessToken: accessA, IDToken: token}})
+
+	timeoutServer := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	timeoutClient := timeoutServer.Client()
+	timeoutClient.Timeout = 25 * time.Millisecond
+	timeoutManager, _ := newImportTestManager(t, fakeIdentityVerifier{})
+	timeoutManager.identityVerifier = NewJWTIdentityVerifier(timeoutClient, timeoutServer.URL)
+	timeoutPreview, err := timeoutManager.PreviewImport(context.Background(), raw)
+	timeoutServer.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSingleWarningCode(t, timeoutPreview, WarningJWKSUnreachable)
+
+	wrongKeyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJWKS(t, w, wrongKey, kid)
+	}))
+	defer wrongKeyServer.Close()
+	signatureManager, _ := newImportTestManager(t, fakeIdentityVerifier{})
+	signatureManager.identityVerifier = NewJWTIdentityVerifier(wrongKeyServer.Client(), wrongKeyServer.URL)
+	signaturePreview, err := signatureManager.PreviewImport(context.Background(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSingleWarningCode(t, signaturePreview, WarningSignatureInvalid)
+}
+
+func assertSingleWarningCode(t *testing.T, preview *ImportPreview, code string) {
+	t.Helper()
+	if len(preview.Rows) != 1 {
+		t.Fatalf("preview rows = %d, want 1", len(preview.Rows))
+	}
+	if len(preview.Rows[0].WarningCodes) != 1 || preview.Rows[0].WarningCodes[0] != code {
+		t.Fatalf("warning codes = %#v, want [%s]", preview.Rows[0].WarningCodes, code)
+	}
+	if preview.Rows[0].IdentityLevel != IdentityDecoded || preview.Rows[0].IdentityVerified {
+		t.Fatal("failed verification did not retain decoded identity")
+	}
+}
+
+func writeJWKS(t *testing.T, w http.ResponseWriter, key *rsa.PrivateKey, kid string) {
+	t.Helper()
+	exponent := big.NewInt(int64(key.PublicKey.E)).Bytes()
+	if err := json.NewEncoder(w).Encode(map[string]any{"keys": []map[string]any{{
+		"kty": "RSA", "kid": kid, "alg": "RS256", "use": "sig",
+		"n": base64.RawURLEncoding.EncodeToString(key.PublicKey.N.Bytes()),
+		"e": base64.RawURLEncoding.EncodeToString(exponent),
+	}}}); err != nil {
+		t.Errorf("write JWKS: %v", err)
+	}
+}
+
 func signedIdentityToken(t *testing.T, key *rsa.PrivateKey, kid, audience string, expires time.Time) string {
 	t.Helper()
 	claims := jwt.MapClaims{

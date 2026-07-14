@@ -777,6 +777,7 @@ onUnmounted(() => clearInterval(pollTimer));
                     </td>
                     <td class="import-message">
                       <div v-if="row.error_message" class="text-danger">{{ row.error_message }}</div>
+                      <div v-for="code in row.warning_codes" :key="code">{{ t(`accounts.importWarning.${code}`) }}</div>
                       <div v-for="warning in row.warnings" :key="warning">{{ warning }}</div>
                     </td>
                   </tr>

@@ -173,6 +173,10 @@ const zh = {
     importConfirm: "确认导入 {count}",
     importComplete: "导入已完成",
     importValidated: "已验证 {count} 个账号",
+    importWarning: {
+      jwks_unreachable: "无法连接身份验证服务；已保留解码身份，请检查网络后重试验证。",
+      signature_invalid: "ID Token 签名或声明无效；身份未验证。",
+    },
   },
   proxies: {
     title: "代理管理",
@@ -490,6 +494,10 @@ const en: typeof zh = {
     importConfirm: "Import {count}",
     importComplete: "Import completed",
     importValidated: "Validated {count} accounts",
+    importWarning: {
+      jwks_unreachable: "The identity service is unreachable. Decoded identity was retained; check the network and retry validation.",
+      signature_invalid: "The ID token signature or claims are invalid; identity is unverified.",
+    },
     refreshOk: "Token refreshed",
     test: "Test connectivity",
     testTitle: "Account connectivity test",

@@ -255,6 +255,7 @@ export interface ImportPreviewRow {
   identity_level: "unparsed" | "decoded" | "signed";
   identity_verified: boolean;
   warnings: string[];
+  warning_codes: ("jwks_unreachable" | "signature_invalid")[];
   error_code?: string;
   error_message?: string;
 }

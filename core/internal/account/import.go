@@ -65,6 +65,7 @@ type ImportPreviewRow struct {
 	IdentityLevel          IdentityLevel `json:"identity_level"`
 	IdentityVerified       bool          `json:"identity_verified"`
 	Warnings               []string      `json:"warnings"`
+	WarningCodes           []string      `json:"warning_codes"`
 	ErrorCode              string        `json:"error_code,omitempty"`
 	ErrorMessage           string        `json:"error_message,omitempty"`
 }
@@ -139,9 +140,10 @@ func (m *Manager) PreviewImport(ctx context.Context, raw []byte) (*ImportPreview
 
 		identity := VerifiedIdentity{Level: IdentityUnparsed}
 		if store.AccountType(entry.AccountType) != store.AccountTypeAPIKey {
-			var identityWarnings []string
-			identity, identityWarnings = m.resolveImportIdentity(ctx, entry)
+			var identityWarnings, identityWarningCodes []string
+			identity, identityWarnings, identityWarningCodes = m.resolveImportIdentity(ctx, entry)
 			row.Warnings = append(row.Warnings, identityWarnings...)
+			row.WarningCodes = append(row.WarningCodes, identityWarningCodes...)
 			row.IdentityLevel = identity.Level
 			row.IdentityVerified = identity.Level == IdentitySigned
 		}
@@ -275,31 +277,32 @@ func (p *ImportPreview) addRow(row ImportPreviewRow) {
 	}
 }
 
-func (m *Manager) resolveImportIdentity(ctx context.Context, entry ImportEntry) (VerifiedIdentity, []string) {
+func (m *Manager) resolveImportIdentity(ctx context.Context, entry ImportEntry) (VerifiedIdentity, []string, []string) {
 	warnings := []string{}
+	warningCodes := []string{}
 	if entry.IDToken != "" {
 		identity, err := m.identityVerifier.VerifyIDToken(ctx, entry.IDToken)
 		if err == nil {
 			if identity.Expired {
 				warnings = append(warnings, "verified ID token is expired")
 			}
-			return identity, warnings
+			return identity, warnings, warningCodes
 		}
 		identity = decodeIdentity(entry.IDToken)
-		warnings = append(warnings, "ID token signature or claims could not be verified")
+		warningCodes = append(warningCodes, identityVerificationWarningCode(err))
 		if identity.Expired {
 			warnings = append(warnings, "ID token is expired")
 		}
-		return identity, warnings
+		return identity, warnings, warningCodes
 	}
 	if entry.AccessToken != "" {
 		identity := decodeIdentity(entry.AccessToken)
 		if identity.Level == IdentityDecoded {
 			warnings = append(warnings, "access token identity is decoded but unverified")
 		}
-		return identity, warnings
+		return identity, warnings, warningCodes
 	}
-	return VerifiedIdentity{Level: IdentityUnparsed}, warnings
+	return VerifiedIdentity{Level: IdentityUnparsed}, warnings, warningCodes
 }
 
 func (m *Manager) matchImportAccount(verifiedID, fingerprint string) (*store.Account, error) {
