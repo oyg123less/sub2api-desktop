@@ -229,6 +229,41 @@ func TestClientErrorDoesNotFailOver(t *testing.T) {
 	}
 }
 
+func TestFailoverOnEarlyStreamingFailure(t *testing.T) {
+	var calls int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, `data: {"type":"response.failed","response":{"status":"failed","error":{"message":"first account failed"}}}`+"\n\n")
+			return
+		}
+		writeSuccessfulSSE(w, "second account succeeded")
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_UPSTREAM_URL", upstream.URL)
+
+	st := newTestStore(t)
+	seedFailoverAccounts(t, st)
+	engine := newFailoverEngine(t, st)
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-5.4","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	w := httptest.NewRecorder()
+	engine.ChatCompletions(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "second account succeeded") || !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("expected complete stream from second account: %s", body)
+	}
+	if strings.Contains(body, "first account failed") || strings.Contains(body, `"code":"upstream_failed_event"`) {
+		t.Fatalf("first account failure leaked into client stream: %s", body)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("upstream calls = %d, want 2", got)
+	}
+}
+
 func seedFailoverAccounts(t *testing.T, st *store.Store) []*store.Account {
 	t.Helper()
 	accounts := make([]*store.Account, 0, 2)

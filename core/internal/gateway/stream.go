@@ -20,8 +20,15 @@ func (e *Engine) streamResponse(w http.ResponseWriter, body io.Reader, chatReq *
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
+	streamStarted := false
+	startStream := func() {
+		if streamStarted {
+			return
+		}
+		streamStarted = true
+		w.WriteHeader(http.StatusOK)
+		flusher.Flush()
+	}
 
 	state := apicompat.NewResponsesEventToChatState()
 	state.Model = meta.RequestedModel
@@ -33,6 +40,7 @@ func (e *Engine) streamResponse(w http.ResponseWriter, body io.Reader, chatReq *
 		if err != nil {
 			return false
 		}
+		startStream()
 		if _, err := io.WriteString(w, sse); err != nil {
 			return false
 		}
@@ -50,10 +58,13 @@ func (e *Engine) streamResponse(w http.ResponseWriter, body io.Reader, chatReq *
 		}
 		terminal.observe(evt)
 		if terminal.errorKind != "" {
-			writeStreamError(w, terminal.errorKind, terminal.message)
-			flusher.Flush()
 			prompt, completion := usageCounts(state.Usage)
 			e.logForward(acc, meta, terminal.status, prompt, completion, time.Since(start), terminal.message, terminal.errorKind, terminal.event)
+			if !streamStarted {
+				return forwardResult{outcome: outcomeUpstreamError, status: terminal.status, errMsg: terminal.message, retryable: true}
+			}
+			writeStreamError(w, terminal.errorKind, terminal.message)
+			flusher.Flush()
 			return forwardResult{outcome: outcomeUpstreamError, status: terminal.status, errMsg: terminal.message, headersWritten: true}
 		}
 		for _, chunk := range apicompat.ResponsesEventToChatChunks(evt, state) {
@@ -64,12 +75,16 @@ func (e *Engine) streamResponse(w http.ResponseWriter, body io.Reader, chatReq *
 		}
 	}
 	if err := terminal.finish(sc.Err()); err != nil {
-		writeStreamError(w, terminal.errorKind, terminal.message)
-		flusher.Flush()
 		prompt, completion := usageCounts(state.Usage)
 		e.logForward(acc, meta, terminal.status, prompt, completion, time.Since(start), terminal.message, terminal.errorKind, terminal.event)
+		if !streamStarted {
+			return forwardResult{outcome: outcomeUpstreamError, status: terminal.status, errMsg: terminal.message, retryable: true}
+		}
+		writeStreamError(w, terminal.errorKind, terminal.message)
+		flusher.Flush()
 		return forwardResult{outcome: outcomeUpstreamError, status: terminal.status, errMsg: terminal.message, headersWritten: true}
 	}
+	startStream()
 	_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	flusher.Flush()
 
