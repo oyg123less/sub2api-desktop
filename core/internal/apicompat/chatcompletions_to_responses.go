@@ -88,10 +88,14 @@ func ChatCompletionsToResponses(req *ChatCompletionsRequest) (*ResponsesRequest,
 		out.Tools = convertChatToolsToResponses(req.Tools, req.Functions)
 	}
 
-	// tool_choice: already compatible format — pass through directly.
+	// tool_choice: normalize Chat's nested named-function form to Responses.
 	// Legacy function_call needs mapping.
 	if len(req.ToolChoice) > 0 {
-		out.ToolChoice = req.ToolChoice
+		tc, err := convertChatToolChoiceToResponses(req.ToolChoice)
+		if err != nil {
+			return nil, fmt.Errorf("convert tool_choice: %w", err)
+		}
+		out.ToolChoice = tc
 	} else if len(req.FunctionCall) > 0 {
 		tc, err := convertChatFunctionCallToToolChoice(req.FunctionCall)
 		if err != nil {
@@ -121,7 +125,7 @@ func convertChatMessagesToResponsesInput(msgs []ChatMessage) ([]ResponsesInputIt
 // ResponsesInputItem values.
 func chatMessageToResponsesItems(m ChatMessage) ([]ResponsesInputItem, error) {
 	switch m.Role {
-	case "system":
+	case "system", "developer":
 		return chatSystemToResponses(m)
 	case "user":
 		return chatUserToResponses(m)
@@ -149,12 +153,12 @@ func chatSystemToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 	return []ResponsesInputItem{{Role: "developer", Content: content}}, nil
 }
 
-// collectChatSystemTexts joins the plain text of all system messages so it can
-// be mirrored into the Responses instructions field (matching upstream).
+// collectChatSystemTexts joins system and developer text so it can be mirrored
+// into the Responses instructions field (matching upstream).
 func collectChatSystemTexts(msgs []ChatMessage) string {
 	var texts []string
 	for _, m := range msgs {
-		if m.Role != "system" {
+		if m.Role != "system" && m.Role != "developer" {
 			continue
 		}
 		parsed, err := parseChatMessageContent(m.Content)
@@ -490,6 +494,45 @@ func defaultStrictFalse(src *bool) *bool {
 		return &value
 	}
 	return src
+}
+
+func convertChatToolChoiceToResponses(raw json.RawMessage) (json.RawMessage, error) {
+	var choice string
+	if err := json.Unmarshal(raw, &choice); err == nil {
+		return append(json.RawMessage(nil), raw...), nil
+	}
+
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return nil, fmt.Errorf("tool_choice must be a string or object: %w", err)
+	}
+	if object == nil {
+		return nil, fmt.Errorf("tool_choice object is null")
+	}
+
+	var choiceType string
+	if err := json.Unmarshal(object["type"], &choiceType); err != nil || choiceType != "function" {
+		return nil, fmt.Errorf("tool_choice object must have type %q", "function")
+	}
+
+	if rawName, ok := object["name"]; ok {
+		var name string
+		if err := json.Unmarshal(rawName, &name); err != nil || strings.TrimSpace(name) == "" {
+			return nil, fmt.Errorf("tool_choice function name must be a non-empty string")
+		}
+		return append(json.RawMessage(nil), raw...), nil
+	}
+
+	var function struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(object["function"], &function); err != nil || strings.TrimSpace(function.Name) == "" {
+		return nil, fmt.Errorf("tool_choice.function.name must be a non-empty string")
+	}
+	return json.Marshal(map[string]string{
+		"type": "function",
+		"name": function.Name,
+	})
 }
 
 // convertChatFunctionCallToToolChoice maps the legacy function_call field to a
