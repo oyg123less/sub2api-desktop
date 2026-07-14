@@ -108,7 +108,10 @@ func (m *Manager) PreviewImport(ctx context.Context, raw []byte) (*ImportPreview
 		fingerprint string
 		index       int
 	}{}
-	seenFingerprint := map[string]int{}
+	seenFingerprint := map[string]struct {
+		verifiedID string
+		index      int
+	}{}
 
 	for _, parsedEntry := range parsed {
 		entry := parsedEntry.Entry
@@ -143,14 +146,6 @@ func (m *Manager) PreviewImport(ctx context.Context, raw []byte) (*ImportPreview
 		}
 		row.ChatGPTAccountIDMasked = maskAccountID(displayID)
 
-		fingerprint := store.CredentialFingerprint(entry.AccessToken, entry.RefreshToken)
-		if firstIndex, duplicate := seenFingerprint[fingerprint]; duplicate && fingerprint != "" {
-			row.Action = ImportSkip
-			row.Warnings = append(row.Warnings, fmt.Sprintf("exact credential duplicate of row %d", firstIndex))
-			preview.addRow(row)
-			continue
-		}
-
 		verifiedID := ""
 		if row.IdentityVerified {
 			verifiedID = identity.ChatGPTAccountID
@@ -174,6 +169,26 @@ func (m *Manager) PreviewImport(ctx context.Context, raw []byte) (*ImportPreview
 			if entry.ChatGPTAccountID != "" {
 				row.Warnings = append(row.Warnings, "unverified account identity is used for forwarding only and will not be used for matching")
 			}
+		}
+
+		fingerprint := store.CredentialFingerprint(entry.AccessToken, entry.RefreshToken)
+		if previous, duplicate := seenFingerprint[fingerprint]; duplicate && fingerprint != "" {
+			if previous.verifiedID != "" && verifiedID != "" && previous.verifiedID != verifiedID {
+				row.Action, row.ErrorCode = ImportConflict, "import_duplicate_conflict"
+				row.ErrorMessage = fmt.Sprintf("credential fingerprint is shared by different verified identities in row %d", previous.index)
+			} else {
+				row.Action = ImportSkip
+				switch {
+				case previous.verifiedID != "" && previous.verifiedID == verifiedID:
+					row.Warnings = append(row.Warnings, fmt.Sprintf("same verified identity and credentials as row %d", previous.index))
+				case previous.verifiedID == "" && verifiedID == "":
+					row.Warnings = append(row.Warnings, fmt.Sprintf("credentials match row %d but neither row has a verified identity; conservatively deduplicated", previous.index))
+				default:
+					row.Warnings = append(row.Warnings, fmt.Sprintf("exact credential duplicate of row %d", previous.index))
+				}
+			}
+			preview.addRow(row)
+			continue
 		}
 
 		if previous, duplicate := seenIdentity[verifiedID]; duplicate && verifiedID != "" {
@@ -214,7 +229,10 @@ func (m *Manager) PreviewImport(ctx context.Context, raw []byte) (*ImportPreview
 		}
 		preview.plan = append(preview.plan, mutation)
 		if fingerprint != "" {
-			seenFingerprint[fingerprint] = parsedEntry.Index
+			seenFingerprint[fingerprint] = struct {
+				verifiedID string
+				index      int
+			}{verifiedID: verifiedID, index: parsedEntry.Index}
 		}
 		if verifiedID != "" {
 			seenIdentity[verifiedID] = struct {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	appcrypto "sub2api-desktop/core/internal/crypto"
@@ -128,6 +129,81 @@ func TestImportPersistsDecodedUnverifiedIdentityForForwarding(t *testing.T) {
 	}
 }
 
+func TestImportSameRefreshTokenDifferentVerifiedIdentitiesConflicts(t *testing.T) {
+	manager, _ := newImportTestManager(t, fakeIdentityVerifier{
+		idA: {ChatGPTAccountID: "acct_a", Level: IdentitySigned},
+		idB: {ChatGPTAccountID: "acct_b", Level: IdentitySigned},
+	})
+	sharedRefresh := "refresh_shared_12345678901234567890"
+	raw := mustImportJSON(t, []ImportEntry{
+		{AccessToken: accessA, RefreshToken: sharedRefresh, IDToken: idA},
+		{AccessToken: accessB, RefreshToken: sharedRefresh, IDToken: idB},
+	})
+
+	preview, err := manager.PreviewImport(context.Background(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Summary.Create != 1 || preview.Summary.Conflict != 1 || preview.Rows[1].Action != ImportConflict {
+		t.Fatalf("same refresh token with different identities was not a conflict: %#v", preview)
+	}
+}
+
+func TestImportSameRefreshTokenSameVerifiedIdentitySkipsDuplicate(t *testing.T) {
+	manager, _ := newImportTestManager(t, fakeIdentityVerifier{
+		idA: {ChatGPTAccountID: "acct_same", Level: IdentitySigned},
+		idB: {ChatGPTAccountID: "acct_same", Level: IdentitySigned},
+	})
+	sharedRefresh := "refresh_shared_12345678901234567890"
+	raw := mustImportJSON(t, []ImportEntry{
+		{AccessToken: accessA, RefreshToken: sharedRefresh, IDToken: idA},
+		{AccessToken: accessB, RefreshToken: sharedRefresh, IDToken: idB},
+	})
+
+	preview, err := manager.PreviewImport(context.Background(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Summary.Create != 1 || preview.Summary.Skip != 1 || preview.Rows[1].Action != ImportSkip {
+		t.Fatalf("same identity and refresh token was not deduplicated: %#v", preview)
+	}
+}
+
+func TestImportSameAccessTokenDifferentVerifiedIdentitiesConflicts(t *testing.T) {
+	manager, _ := newImportTestManager(t, fakeIdentityVerifier{
+		idA: {ChatGPTAccountID: "acct_a", Level: IdentitySigned},
+		idB: {ChatGPTAccountID: "acct_b", Level: IdentitySigned},
+	})
+	raw := mustImportJSON(t, []ImportEntry{
+		{AccessToken: accessA, IDToken: idA},
+		{AccessToken: accessA, IDToken: idB},
+	})
+
+	preview, err := manager.PreviewImport(context.Background(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Summary.Create != 1 || preview.Summary.Conflict != 1 || preview.Rows[1].Action != ImportConflict {
+		t.Fatalf("same access token with different identities was not a conflict: %#v", preview)
+	}
+}
+
+func TestImportSameCredentialsWithoutVerifiedIdentitySkipsWithWarning(t *testing.T) {
+	manager, _ := newImportTestManager(t, fakeIdentityVerifier{})
+	raw := mustImportJSON(t, []ImportEntry{{AccessToken: accessA}, {AccessToken: accessA}})
+
+	preview, err := manager.PreviewImport(context.Background(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Summary.Create != 1 || preview.Summary.Skip != 1 || preview.Rows[1].Action != ImportSkip {
+		t.Fatalf("unverified duplicate credentials were not conservatively deduplicated: %#v", preview)
+	}
+	if !warningsContain(preview.Rows[1].Warnings, "neither row has a verified identity") {
+		t.Fatalf("missing conservative deduplication warning: %#v", preview.Rows[1].Warnings)
+	}
+}
+
 func TestImportUpdatePreservesMissingTokens(t *testing.T) {
 	manager, st := newImportTestManager(t, fakeIdentityVerifier{
 		idA: {Email: "new@example.com", ChatGPTAccountID: "acct_existing", PlanType: "pro", Level: IdentitySigned},
@@ -186,6 +262,15 @@ func mustImportJSON(t *testing.T, entries []ImportEntry) []byte {
 		t.Fatal(err)
 	}
 	return raw
+}
+
+func warningsContain(warnings []string, fragment string) bool {
+	for _, warning := range warnings {
+		if strings.Contains(warning, fragment) {
+			return true
+		}
+	}
+	return false
 }
 
 func unsignedIdentityToken(t *testing.T, email, accountID, plan string) string {
