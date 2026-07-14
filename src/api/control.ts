@@ -405,6 +405,18 @@ export const api = {
   codexFiles: () => req<CodexFiles>("GET", "/control/codex/files"),
   saveCodexFiles: (config: string, auth: string) =>
     req<CodexFiles>("PUT", "/control/codex/files", { config, auth }),
+  codexRemoteTest: (target: CodexRemoteConnectionInput) =>
+    req<CodexRemoteProbe>("POST", "/control/codex/remote/test", target),
+  codexRemoteInject: (target: CodexRemoteInjectInput) =>
+    req<CodexRemoteTarget>("POST", "/control/codex/remote/inject", target),
+  codexRemoteTargets: () =>
+    req<{ targets: CodexRemoteTarget[] }>("GET", "/control/codex/remote/targets"),
+  codexRemoteSetTunnel: (id: number, enabled: boolean) =>
+    req<CodexRemoteTarget>("POST", `/control/codex/remote/${id}/tunnel`, { enabled }),
+  codexRemoteRestore: (id: number) =>
+    req<CodexRemoteTarget>("POST", `/control/codex/remote/${id}/restore`),
+  codexRemoteDelete: (id: number) =>
+    req<{ ok: boolean }>("DELETE", `/control/codex/remote/${id}`),
 };
 
 export interface CodexStatus {
@@ -429,4 +441,46 @@ export interface CodexFiles {
   auth_content: string;
   config_default: string;
   auth_default: string;
+}
+
+export interface CodexRemoteProbe {
+  os: string;
+  home: string;
+  codex_dir: string;
+  host_key_fingerprint: string;
+  known: boolean;
+}
+
+export interface CodexRemoteTarget {
+  id: number;
+  name: string;
+  host: string;
+  port: number;
+  user: string;
+  remote_port: number;
+  model: string;
+  saved: boolean;
+  injected: boolean;
+  tunnel_enabled: boolean;
+  tunnel_status: "connected" | "down" | "disabled" | "not_injected";
+  last_error?: string;
+  config_preview: string;
+  auth_preview: string;
+  updated_at: string;
+}
+
+export interface CodexRemoteConnectionInput {
+  id?: number;
+  name?: string;
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+}
+
+export interface CodexRemoteInjectInput extends CodexRemoteConnectionInput {
+  model: string;
+  remote_port: number;
+  save: boolean;
+  accept_host_key: boolean;
 }

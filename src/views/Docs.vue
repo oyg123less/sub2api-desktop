@@ -106,16 +106,16 @@ const steps = computed<Step[]>(() =>
           title: "远程开发接入（SSH 隧道）",
           body: [
             "场景：网关跑在你本地 Windows，但你用 VS Code Remote-SSH 连到远程服务器、在远程用 Codex 插件。此时插件跑在远程，直接填 127.0.0.1:8080 是连不上的（那是远程的本地）。",
-            "解决办法：用 SSH「反向端口转发」把远程的 8080 转发回你 Windows 的 8080。这样远程访问 http://127.0.0.1:8080/v1 就等于访问你本地的网关，App 无需任何改动。",
-            "方式一：命令行反向隧道（连接时加 -R，注意是 -R 不是 -L）。",
-            "方式二（推荐）：写进 ~/.ssh/config，VS Code Remote-SSH 连上后自动转发。",
+            "推荐：进入「Codex 接入 → 远程接入」，填写服务器地址、SSH 用户和密码。测试连接并核对 SHA256 主机密钥指纹后，点击「一键注入」。",
+            "Amber 会自动备份远程 ~/.codex/config.toml 与 auth.json、写入本机网关配置，并维护 SSH 反向隧道。目标卡片中的「路由开关」可以立即启停隧道，不会改动远程配置文件。",
+            "下面的 ssh -R 与 ~/.ssh/config 方式作为手动备用方案保留；当一键接入无法使用时可用于排查 sshd 的 AllowTcpForwarding 配置。",
             "验证：在远程终端执行下面的 curl，能返回模型列表即成功（把 sk-local-… 换成仪表盘上的密钥）。",
             "提示：远程 sshd 需 AllowTcpForwarding yes（默认开启）；仅自用时无需 GatewayPorts。",
           ],
           codes: [
-            { label: "方式一：命令行", cmd: "ssh -R 8080:127.0.0.1:8080 user@远程服务器" },
+            { label: "手动备用：命令行", cmd: "ssh -R 8080:127.0.0.1:8080 user@远程服务器" },
             {
-              label: "方式二：~/.ssh/config",
+              label: "手动备用：~/.ssh/config",
               cmd: "Host myserver\n    HostName 远程IP\n    User user\n    RemoteForward 8080 127.0.0.1:8080",
             },
             {
@@ -197,16 +197,16 @@ const steps = computed<Step[]>(() =>
           title: "Remote development (SSH tunnel)",
           body: [
             "Scenario: the gateway runs on your local Windows, but you use VS Code Remote-SSH to a remote server and run the Codex plugin there. The plugin runs remotely, so filling in 127.0.0.1:8080 fails (that's the remote's localhost).",
-            "Fix: use SSH reverse port forwarding to forward the remote's 8080 back to your Windows 8080. Then accessing http://127.0.0.1:8080/v1 on the remote hits your local gateway — no app changes needed.",
-            "Option 1: command-line reverse tunnel (use -R when connecting — note it's -R, not -L).",
-            "Option 2 (recommended): put it in ~/.ssh/config so VS Code Remote-SSH forwards automatically on connect.",
+            "Recommended: open Codex setup → Remote and enter the server address, SSH user, and password. Test the connection, verify the SHA256 host-key fingerprint, then click Inject now.",
+            "Amber backs up remote ~/.codex/config.toml and auth.json, writes the local gateway config, and maintains the SSH reverse tunnel. The target card's Routing switch starts or stops the tunnel without changing remote files.",
+            "The ssh -R and ~/.ssh/config examples below remain as manual fallbacks for troubleshooting sshd AllowTcpForwarding settings.",
             "Verify: run the curl below on the remote terminal; a model list means success (replace sk-local-… with your dashboard key).",
             "Note: the remote sshd needs AllowTcpForwarding yes (on by default); GatewayPorts is not needed for personal use.",
           ],
           codes: [
-            { label: "Option 1: command line", cmd: "ssh -R 8080:127.0.0.1:8080 user@remote-server" },
+            { label: "Manual fallback: command line", cmd: "ssh -R 8080:127.0.0.1:8080 user@remote-server" },
             {
-              label: "Option 2: ~/.ssh/config",
+              label: "Manual fallback: ~/.ssh/config",
               cmd: "Host myserver\n    HostName REMOTE_IP\n    User user\n    RemoteForward 8080 127.0.0.1:8080",
             },
             {
