@@ -23,6 +23,7 @@ import (
 
 	"sub2api-desktop/core/internal/account"
 	"sub2api-desktop/core/internal/apiserver"
+	"sub2api-desktop/core/internal/codexremote"
 	"sub2api-desktop/core/internal/config"
 	"sub2api-desktop/core/internal/control"
 	"sub2api-desktop/core/internal/crypto"
@@ -90,17 +91,25 @@ func run(dataDir string, controlPort int, controlToken string, logger *slog.Logg
 	engine := gateway.New(st, mgr, holder.Get, logger)
 	apiHandler := apiserver.New(engine, holder.Get)
 	apiManager := apiserver.NewManager(apiHandler, holder.Get)
+	remoteCodex, err := codexremote.NewManager(st, filepath.Join(dataDir, "codex_known_hosts"), func() string {
+		return fmt.Sprintf("127.0.0.1:%d", apiManager.Port())
+	}, logger)
+	if err != nil {
+		return fmt.Errorf("init Codex remote manager: %w", err)
+	}
+	defer remoteCodex.Close()
 	diagnosticService := diagnostics.New(st, holder.Get, apiManager, dataDir, version)
 	cleanupCtx, stopCleanup := context.WithCancel(context.Background())
 	defer stopCleanup()
 	go maintainLogs(cleanupCtx, st, holder.Get, logger)
 	go engine.MaintainUsageSnapshots(cleanupCtx)
+	go remoteCodex.RestoreSaved(cleanupCtx)
 
 	if controlToken == "" {
 		controlToken = randomToken()
 	}
 
-	ctrl := control.New(st, mgr, holder, apiManager, engine, diagnosticService, controlToken, version)
+	ctrl := control.New(st, mgr, holder, apiManager, engine, diagnosticService, remoteCodex, controlToken, version)
 
 	// Control API listener (loopback only).
 	controlLn, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", controlPort))

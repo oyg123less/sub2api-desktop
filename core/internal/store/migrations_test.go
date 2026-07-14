@@ -203,6 +203,67 @@ func TestV022MigrationDefaultsLegacyAccountsAndEncryptsAPIKeys(t *testing.T) {
 	}
 }
 
+func TestV023MigrationStoresEncryptedCodexRemoteTargets(t *testing.T) {
+	dir := t.TempDir()
+	cipher, err := appcrypto.LoadOrCreate(filepath.Join(dir, "key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(filepath.Join(dir, "sub2api.db"), cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	for _, column := range []string{"id", "host", "port", "user", "password_cipher", "remote_port", "model", "tunnel_enabled", "injected"} {
+		if !testColumnExists(t, st.db, "codex_remote_targets", column) {
+			t.Fatalf("codex_remote_targets.%s missing", column)
+		}
+	}
+	created, err := st.CreateCodexRemoteTarget(&CodexRemoteTarget{
+		Name: "server", Host: "example.test", Port: 22, User: "deploy", Password: "test-password",
+		RemotePort: 8080, Model: "gpt-5.6-sol", TunnelEnabled: true, Injected: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var passwordCipher string
+	if err := st.db.QueryRow(`SELECT password_cipher FROM codex_remote_targets WHERE id=?`, created.ID).Scan(&passwordCipher); err != nil {
+		t.Fatal(err)
+	}
+	if passwordCipher == "" || passwordCipher == "test-password" {
+		t.Fatal("remote target password was not encrypted")
+	}
+	loaded, err := st.GetCodexRemoteTarget(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Password != "test-password" || !loaded.TunnelEnabled || !loaded.Injected {
+		t.Fatal("remote target did not round-trip through encrypted storage")
+	}
+	if _, err := st.db.Exec(`DROP TABLE codex_remote_targets`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateV023CodexRemoteTargetsInTest(st); err != nil {
+		t.Fatal(err)
+	}
+	if !testColumnExists(t, st.db, "codex_remote_targets", "password_cipher") {
+		t.Fatal("v0.2.3 migration was not idempotent")
+	}
+}
+
+func migrateV023CodexRemoteTargetsInTest(st *Store) error {
+	tx, err := st.db.Begin()
+	if err != nil {
+		return err
+	}
+	if err := migrateV023CodexRemoteTargets(tx, st.cipher); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
 func createLegacyDatabase(t *testing.T, dbPath string, cipher *appcrypto.Cipher) {
 	t.Helper()
 	db, err := sql.Open("sqlite", dbPath)

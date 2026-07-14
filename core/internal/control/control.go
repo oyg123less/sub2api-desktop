@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"sub2api-desktop/core/internal/account"
+	"sub2api-desktop/core/internal/codexremote"
 	"sub2api-desktop/core/internal/diagnostics"
 	"sub2api-desktop/core/internal/gateway"
 	"sub2api-desktop/core/internal/openai"
@@ -43,6 +44,15 @@ type SettingsAccess interface {
 	Save(store.Settings) error
 }
 
+type CodexRemoteController interface {
+	Probe(context.Context, codexremote.ProbeRequest) (codexremote.Probe, error)
+	Inject(context.Context, codexremote.InjectRequest) (codexremote.TargetStatus, error)
+	Targets() ([]codexremote.TargetStatus, error)
+	SetTunnel(context.Context, int64, bool) (codexremote.TargetStatus, error)
+	Restore(context.Context, int64) (codexremote.TargetStatus, error)
+	Delete(int64) error
+}
+
 // Control holds control API dependencies.
 type Control struct {
 	store       *store.Store
@@ -53,12 +63,13 @@ type Control struct {
 	engine      *gateway.Engine
 	diagnostics *diagnostics.Service
 	updates     *updateChecker
+	remoteCodex CodexRemoteController
 	token       string
 	version     string
 }
 
 // New builds the control API.
-func New(s *store.Store, mgr *account.Manager, settings SettingsAccess, server ServerController, engine *gateway.Engine, diagnosticService *diagnostics.Service, token, version string) *Control {
+func New(s *store.Store, mgr *account.Manager, settings SettingsAccess, server ServerController, engine *gateway.Engine, diagnosticService *diagnostics.Service, remoteCodex CodexRemoteController, token, version string) *Control {
 	return &Control{
 		store:       s,
 		mgr:         mgr,
@@ -68,6 +79,7 @@ func New(s *store.Store, mgr *account.Manager, settings SettingsAccess, server S
 		engine:      engine,
 		diagnostics: diagnosticService,
 		updates:     newUpdateChecker(s, settings, version),
+		remoteCodex: remoteCodex,
 		token:       token,
 		version:     version,
 	}
@@ -109,6 +121,12 @@ func (c *Control) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /control/codex/restore", h(c.codexRestore))
 	mux.HandleFunc("GET /control/codex/files", h(c.codexFiles))
 	mux.HandleFunc("PUT /control/codex/files", h(c.codexWriteFiles))
+	mux.HandleFunc("POST /control/codex/remote/test", h(c.codexRemoteTest))
+	mux.HandleFunc("POST /control/codex/remote/inject", h(c.codexRemoteInject))
+	mux.HandleFunc("GET /control/codex/remote/targets", h(c.codexRemoteTargets))
+	mux.HandleFunc("POST /control/codex/remote/{id}/tunnel", h(c.codexRemoteTunnel))
+	mux.HandleFunc("POST /control/codex/remote/{id}/restore", h(c.codexRemoteRestore))
+	mux.HandleFunc("DELETE /control/codex/remote/{id}", h(c.codexRemoteDelete))
 
 	mux.HandleFunc("GET /control/models", h(c.listModels))
 

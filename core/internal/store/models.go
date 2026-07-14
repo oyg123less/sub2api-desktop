@@ -84,6 +84,23 @@ type Proxy struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// CodexRemoteTarget is a saved SSH target for remote Codex configuration.
+// Password is encrypted at rest and never serialized.
+type CodexRemoteTarget struct {
+	ID            int64     `json:"id"`
+	Name          string    `json:"name"`
+	Host          string    `json:"host"`
+	Port          int       `json:"port"`
+	User          string    `json:"user"`
+	Password      string    `json:"-"`
+	RemotePort    int       `json:"remote_port"`
+	Model         string    `json:"model"`
+	TunnelEnabled bool      `json:"tunnel_enabled"`
+	Injected      bool      `json:"injected"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
 // RequestLog records one proxied request for statistics and diagnostics.
 type RequestLog struct {
 	ID               int64     `json:"id"`

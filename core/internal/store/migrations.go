@@ -16,7 +16,7 @@ import (
 	appcrypto "sub2api-desktop/core/internal/crypto"
 )
 
-const CurrentSchemaVersion = 4
+const CurrentSchemaVersion = 5
 
 type migration struct {
 	version int
@@ -29,6 +29,7 @@ var migrations = []migration{
 	{version: 2, name: "v0.2.0 reliability", apply: migrateV020},
 	{version: 3, name: "v0.2.0 compatibility settings", apply: migrateV020CompatibilitySettings},
 	{version: 4, name: "v0.2.2 api-key accounts", apply: migrateV022APIKeyAccounts},
+	{version: 5, name: "v0.2.3 Codex remote targets", apply: migrateV023CodexRemoteTargets},
 }
 
 func databaseExists(path string) bool {
@@ -234,6 +235,24 @@ func migrateV022APIKeyAccounts(tx *sql.Tx, _ *appcrypto.Cipher) error {
 		}
 	}
 	return nil
+}
+
+func migrateV023CodexRemoteTargets(tx *sql.Tx, _ *appcrypto.Cipher) error {
+	_, err := tx.Exec(`CREATE TABLE IF NOT EXISTS codex_remote_targets (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL DEFAULT '',
+		host TEXT NOT NULL,
+		port INTEGER NOT NULL DEFAULT 22,
+		user TEXT NOT NULL,
+		password_cipher TEXT NOT NULL DEFAULT '',
+		remote_port INTEGER NOT NULL DEFAULT 8080,
+		model TEXT NOT NULL DEFAULT '',
+		tunnel_enabled INTEGER NOT NULL DEFAULT 1,
+		injected INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	)`)
+	return err
 }
 
 func addColumnIfMissing(tx *sql.Tx, table, column, declaration string) error {
