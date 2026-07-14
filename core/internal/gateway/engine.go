@@ -40,11 +40,43 @@ func UpstreamURL() string {
 func upstreamURLForAccount(acc *store.Account) string {
 	if acc != nil && acc.AccountType == store.AccountTypeAPIKey {
 		if baseURL := strings.TrimSpace(acc.BaseURL); baseURL != "" {
-			return baseURL
+			return apiKeyResponsesURL(baseURL)
 		}
 		return openai.CodexResponsesURL
 	}
 	return UpstreamURL()
+}
+
+// apiKeyResponsesURL resolves the Responses endpoint for an API-key account:
+// a full endpoint ending in "/responses" is used as-is, a base URL ending in a
+// version segment (e.g. "/v1") gets "/responses" appended, and a bare base URL
+// gets "/v1/responses" appended.
+func apiKeyResponsesURL(base string) string {
+	normalized := strings.TrimRight(base, "/")
+	if strings.HasSuffix(normalized, "/responses") {
+		return normalized
+	}
+	segment := normalized
+	if idx := strings.LastIndex(normalized, "/"); idx >= 0 {
+		segment = normalized[idx+1:]
+	}
+	if isVersionSegment(segment) {
+		return normalized + "/responses"
+	}
+	return normalized + "/v1/responses"
+}
+
+func isVersionSegment(s string) bool {
+	s = strings.ToLower(s)
+	if len(s) < 2 || s[0] != 'v' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // Engine holds the dependencies for request forwarding.
