@@ -490,7 +490,7 @@ onUnmounted(() => clearInterval(pollTimer));
         <div
           v-if="a.status === 'refresh_failed'"
           class="text-sm"
-          style="color: var(--danger); margin-bottom: 10px"
+          style="color: var(--danger); margin-bottom: 10px; overflow-wrap: anywhere"
         >
           {{ a.status_reason || "" }}
         </div>
