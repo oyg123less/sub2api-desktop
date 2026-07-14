@@ -77,6 +77,13 @@ type ImportPreview struct {
 	plan          []store.AccountImportMutation
 }
 
+const importPreviewTTL = 10 * time.Minute
+
+type cachedImportPreview struct {
+	preview   *ImportPreview
+	expiresAt time.Time
+}
+
 type ImportCommitResult struct {
 	ContentSHA256 string               `json:"content_sha256"`
 	Imported      int                  `json:"imported"`
@@ -104,6 +111,15 @@ func contentHash(raw []byte) string {
 }
 
 func (m *Manager) PreviewImport(ctx context.Context, raw []byte) (*ImportPreview, error) {
+	preview, err := m.buildImportPreview(ctx, raw)
+	if err != nil {
+		return nil, err
+	}
+	m.cacheImportPreview(preview)
+	return preview, nil
+}
+
+func (m *Manager) buildImportPreview(ctx context.Context, raw []byte) (*ImportPreview, error) {
 	parsed, err := ParseImportDocument(raw)
 	if err != nil {
 		return nil, &ImportServiceError{Code: "import_parse_failed", Message: err.Error()}
@@ -261,6 +277,45 @@ func (m *Manager) PreviewImport(ctx context.Context, raw []byte) (*ImportPreview
 	return preview, nil
 }
 
+func (m *Manager) cacheImportPreview(preview *ImportPreview) {
+	now := time.Now()
+	m.previewMu.Lock()
+	defer m.previewMu.Unlock()
+	for sha, cached := range m.previewPlans {
+		if !now.Before(cached.expiresAt) {
+			delete(m.previewPlans, sha)
+		}
+	}
+	m.previewPlans[preview.ContentSHA256] = cachedImportPreview{
+		preview: cloneImportPreview(preview), expiresAt: now.Add(importPreviewTTL),
+	}
+}
+
+func (m *Manager) takeCachedImportPreview(sha string) (*ImportPreview, bool) {
+	m.previewMu.Lock()
+	defer m.previewMu.Unlock()
+	cached, ok := m.previewPlans[sha]
+	if !ok {
+		return nil, false
+	}
+	delete(m.previewPlans, sha)
+	if !time.Now().Before(cached.expiresAt) {
+		return nil, false
+	}
+	return cloneImportPreview(cached.preview), true
+}
+
+func cloneImportPreview(source *ImportPreview) *ImportPreview {
+	clone := *source
+	clone.plan = append([]store.AccountImportMutation(nil), source.plan...)
+	clone.Rows = append([]ImportPreviewRow(nil), source.Rows...)
+	for index := range clone.Rows {
+		clone.Rows[index].Warnings = append([]string(nil), source.Rows[index].Warnings...)
+		clone.Rows[index].WarningCodes = append([]string(nil), source.Rows[index].WarningCodes...)
+	}
+	return &clone
+}
+
 func (p *ImportPreview) addRow(row ImportPreviewRow) {
 	p.Rows = append(p.Rows, row)
 	switch row.Action {
@@ -338,9 +393,13 @@ func (m *Manager) CommitImport(ctx context.Context, raw []byte, expectedSHA stri
 			},
 		}
 	}
-	preview, err := m.PreviewImport(ctx, raw)
-	if err != nil {
-		return nil, err
+	preview, ok := m.takeCachedImportPreview(actualSHA)
+	if !ok {
+		var err error
+		preview, err = m.buildImportPreview(ctx, raw)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if preview.Summary.Conflict > 0 {
 		return nil, &ImportServiceError{Code: "import_duplicate_conflict", Message: "import contains conflicting credentials for the same verified identity", Details: map[string]any{"conflicts": preview.Summary.Conflict}}

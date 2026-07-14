@@ -25,8 +25,10 @@ type Manager struct {
 	store            *store.Store
 	identityVerifier IdentityVerifier
 
-	mu    sync.Mutex
-	locks map[int64]*sync.Mutex
+	mu           sync.Mutex
+	locks        map[int64]*sync.Mutex
+	previewMu    sync.Mutex
+	previewPlans map[string]cachedImportPreview
 }
 
 // NewManager creates an account manager.
@@ -35,6 +37,7 @@ func NewManager(s *store.Store) *Manager {
 		store:            s,
 		identityVerifier: NewJWTIdentityVerifier(nil, ""),
 		locks:            make(map[int64]*sync.Mutex),
+		previewPlans:     make(map[string]cachedImportPreview),
 	}
 }
 

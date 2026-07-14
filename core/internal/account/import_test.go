@@ -30,6 +30,47 @@ func (v fakeIdentityVerifier) VerifyIDToken(_ context.Context, token string) (Ve
 	return identity, nil
 }
 
+type countingIdentityVerifier struct {
+	calls int
+}
+
+func (v *countingIdentityVerifier) VerifyIDToken(_ context.Context, _ string) (VerifiedIdentity, error) {
+	v.calls++
+	return VerifiedIdentity{Email: "cached@example.com", ChatGPTAccountID: "acct_cached", Level: IdentitySigned}, nil
+}
+
+func TestCommitImportReusesCachedPreviewPlan(t *testing.T) {
+	manager, st := newImportTestManager(t, fakeIdentityVerifier{})
+	verifier := &countingIdentityVerifier{}
+	manager.identityVerifier = verifier
+	raw := mustImportJSON(t, []ImportEntry{{AccessToken: accessA, IDToken: idA}})
+
+	preview, err := manager.PreviewImport(context.Background(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verifier.calls != 1 {
+		t.Fatalf("identity verifier calls after preview = %d, want 1", verifier.calls)
+	}
+	result, err := manager.CommitImport(context.Background(), raw, preview.ContentSHA256, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verifier.calls != 1 {
+		t.Fatalf("identity verifier calls after cached commit = %d, want 1", verifier.calls)
+	}
+	if result.Imported != 1 {
+		t.Fatalf("imported = %d, want 1", result.Imported)
+	}
+	accounts, err := st.ListAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(accounts) != 1 || accounts[0].ChatGPTAccountID != "acct_cached" {
+		t.Fatal("cached preview plan was not committed")
+	}
+}
+
 func TestImportConflictingVerifiedIdentityDoesNotWritePartialBatch(t *testing.T) {
 	manager, st := newImportTestManager(t, fakeIdentityVerifier{
 		idA: {Email: "same@example.com", ChatGPTAccountID: "acct_same", Level: IdentitySigned},
