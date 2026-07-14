@@ -50,11 +50,15 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 
 	res := TestResult{Model: testModel, AccountStatus: string(acc.Status)}
 
-	var proxy *store.Proxy
-	if acc.ProxyID != nil {
-		if p, err := e.store.GetProxy(*acc.ProxyID); err == nil {
-			proxy = p
-		}
+	proxy, err := e.proxyForAccount(acc)
+	if err != nil {
+		res.Status = http.StatusBadGateway
+		res.Error = errBoundProxyUnavailable.Error()
+		e.logRequestWithDetails(acc, requestLogDetails{
+			ResolvedModel: testModel, Status: res.Status, Latency: time.Since(start), Stream: true,
+			Error: res.Error, ErrorKind: "proxy_unavailable", TerminalEvent: "proxy_resolution_failed",
+		})
+		return res
 	}
 	client, err := newHTTPClient(proxy, cfg.CompatProfile, 90*time.Second)
 	if err != nil {

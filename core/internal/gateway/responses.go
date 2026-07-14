@@ -154,11 +154,11 @@ func (e *Engine) Responses(w http.ResponseWriter, r *http.Request) {
 func (e *Engine) forwardResponsesOnce(ctx context.Context, w http.ResponseWriter, upstreamBody []byte, acc *store.Account, cfg store.Settings, meta forwardMeta) forwardResult {
 	start := time.Now()
 
-	var proxy *store.Proxy
-	if acc.ProxyID != nil {
-		if p, err := e.store.GetProxy(*acc.ProxyID); err == nil {
-			proxy = p
-		}
+	proxy, err := e.proxyForAccount(acc)
+	if err != nil {
+		message := errBoundProxyUnavailable.Error()
+		e.logForward(acc, meta, http.StatusBadGateway, 0, 0, time.Since(start), message, "proxy_unavailable", "proxy_resolution_failed")
+		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadGateway, errMsg: message, retryable: true}
 	}
 	client, err := newHTTPClient(proxy, cfg.CompatProfile, 10*time.Minute)
 	if err != nil {

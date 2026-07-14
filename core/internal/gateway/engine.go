@@ -252,15 +252,17 @@ type forwardMeta struct {
 	Stream                                   bool
 }
 
+var errBoundProxyUnavailable = errors.New("bound proxy is unavailable")
+
 func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq *apicompat.ChatCompletionsRequest, acc *store.Account, cfg store.Settings, meta forwardMeta) forwardResult {
 	start := time.Now()
 
 	// Resolve proxy + client.
-	var proxy *store.Proxy
-	if acc.ProxyID != nil {
-		if p, err := e.store.GetProxy(*acc.ProxyID); err == nil {
-			proxy = p
-		}
+	proxy, err := e.proxyForAccount(acc)
+	if err != nil {
+		message := errBoundProxyUnavailable.Error()
+		e.logForward(acc, meta, http.StatusBadGateway, 0, 0, time.Since(start), message, "proxy_unavailable", "proxy_resolution_failed")
+		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadGateway, errMsg: message, retryable: true}
 	}
 	client, err := newHTTPClient(proxy, cfg.CompatProfile, 10*time.Minute)
 	if err != nil {
@@ -350,6 +352,9 @@ func shouldFailoverUpstreamError(result forwardResult) bool {
 }
 
 func isNetworkOrProxyError(err error) bool {
+	if errors.Is(err, errBoundProxyUnavailable) {
+		return true
+	}
 	var transportErr *apptransport.Error
 	if errors.As(err, &transportErr) {
 		return true
@@ -363,11 +368,9 @@ func (e *Engine) forceRefreshAccount(ctx context.Context, acc *store.Account, cf
 	if acc.AccountType == store.AccountTypeAPIKey {
 		return nil, errors.New("API-key accounts cannot refresh OAuth tokens")
 	}
-	var proxy *store.Proxy
-	if acc.ProxyID != nil {
-		if p, err := e.store.GetProxy(*acc.ProxyID); err == nil {
-			proxy = p
-		}
+	proxy, err := e.proxyForAccount(acc)
+	if err != nil {
+		return nil, err
 	}
 	client, err := newHTTPClient(proxy, "standard", 60*time.Second)
 	if err != nil {
@@ -377,6 +380,18 @@ func (e *Engine) forceRefreshAccount(ctx context.Context, acc *store.Account, cf
 		return nil, err
 	}
 	return e.store.GetAccount(acc.ID)
+}
+
+func (e *Engine) proxyForAccount(acc *store.Account) (*store.Proxy, error) {
+	if acc == nil || acc.ProxyID == nil {
+		return nil, nil
+	}
+	proxy, err := e.store.GetProxy(*acc.ProxyID)
+	if err != nil {
+		e.logger.Warn("bound proxy unavailable", "account_id", acc.ID, "proxy_id", *acc.ProxyID)
+		return nil, fmt.Errorf("%w", errBoundProxyUnavailable)
+	}
+	return proxy, nil
 }
 
 func (e *Engine) logForward(acc *store.Account, meta forwardMeta, status, prompt, completion int, latency time.Duration, message, kind, terminal string) {

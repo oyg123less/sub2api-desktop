@@ -205,6 +205,116 @@ func TestFailoverOnProxyConnectionRefusedPreservesAccountStatus(t *testing.T) {
 	}
 }
 
+func TestMissingBoundProxyFailsClosedAndUsesNextAccount(t *testing.T) {
+	var calls int32
+	var accountID string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		accountID = r.Header.Get("chatgpt-account-id")
+		writeSuccessfulSSE(w, "via unbound account")
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_UPSTREAM_URL", upstream.URL)
+
+	st := newTestStore(t)
+	accounts := seedFailoverAccounts(t, st)
+	missingProxyID := int64(999999)
+	if err := st.SetAccountProxy(accounts[0].ID, &missingProxyID); err != nil {
+		t.Fatal(err)
+	}
+	engine := newFailoverEngine(t, st)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-5.4","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	response := httptest.NewRecorder()
+
+	engine.ChatCompletions(response, request)
+
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "via unbound account") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("upstream calls = %d, want only the unbound account call", got)
+	}
+	if accountID != accounts[1].ChatGPTAccountID {
+		t.Fatalf("upstream account = %q, want %q", accountID, accounts[1].ChatGPTAccountID)
+	}
+	logs, err := st.RecentLogs(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, entry := range logs {
+		if entry.AccountID != nil && *entry.AccountID == accounts[0].ID && entry.ErrorKind == "proxy_unavailable" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("missing proxy_unavailable log: %+v", logs)
+	}
+}
+
+func TestNativeResponsesMissingBoundProxyFailsClosed(t *testing.T) {
+	var calls int32
+	var accountID string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		accountID = r.Header.Get("chatgpt-account-id")
+		writeSuccessfulSSE(w, "native response")
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_UPSTREAM_URL", upstream.URL)
+
+	st := newTestStore(t)
+	accounts := seedFailoverAccounts(t, st)
+	missingProxyID := int64(999999)
+	if err := st.SetAccountProxy(accounts[0].ID, &missingProxyID); err != nil {
+		t.Fatal(err)
+	}
+	engine := newFailoverEngine(t, st)
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.4","stream":true,"input":"hi"}`))
+	response := httptest.NewRecorder()
+
+	engine.Responses(response, request)
+
+	got := atomic.LoadInt32(&calls)
+	if response.Code != http.StatusOK || got != 1 {
+		t.Fatalf("status=%d calls=%d body=%s", response.Code, got, response.Body.String())
+	}
+	if accountID != accounts[1].ChatGPTAccountID {
+		t.Fatalf("upstream account = %q, want %q", accountID, accounts[1].ChatGPTAccountID)
+	}
+}
+
+func TestAccountCheckMissingBoundProxyDoesNotConnectDirectly(t *testing.T) {
+	var calls int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		writeSuccessfulSSE(w, "unexpected direct request")
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_UPSTREAM_URL", upstream.URL)
+
+	st := newTestStore(t)
+	accounts := seedFailoverAccounts(t, st)
+	missingProxyID := int64(999999)
+	if err := st.SetAccountProxy(accounts[0].ID, &missingProxyID); err != nil {
+		t.Fatal(err)
+	}
+	boundAccount, err := st.GetAccount(accounts[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := newFailoverEngine(t, st)
+	result := engine.TestAccount(t.Context(), boundAccount, "gpt-5.4", "hi")
+
+	if result.OK || result.Status != http.StatusBadGateway || result.Error != "bound proxy is unavailable" {
+		t.Fatalf("result = %+v", result)
+	}
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Fatalf("upstream calls = %d, want 0", got)
+	}
+}
+
 func TestClientErrorDoesNotFailOver(t *testing.T) {
 	var calls int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
