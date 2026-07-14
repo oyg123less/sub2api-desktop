@@ -239,29 +239,44 @@ func (s *Store) TouchAccount(id int64) error {
 // end-to-end upstream response.
 func (s *Store) RecordAccountSuccess(id int64) error {
 	now := time.Now().Unix()
-	_, err := s.db.Exec(`UPDATE accounts SET status=?, status_reason='', rate_limited_until=0,
+	_, err := s.db.Exec(`UPDATE accounts SET
+		status=CASE
+			WHEN status=? THEN status
+			WHEN status=? AND rate_limited_until>? THEN status
+			ELSE ? END,
+		status_reason=CASE
+			WHEN status=? OR (status=? AND rate_limited_until>?) THEN status_reason
+			ELSE '' END,
+		rate_limited_until=CASE
+			WHEN status=? AND rate_limited_until>? THEN rate_limited_until
+			ELSE 0 END,
 		last_success_at=?, consecutive_failures=0, next_retry_at=0, updated_at=? WHERE id=?`,
-		string(AccountActive), now, now, id)
+		string(AccountDisabled), string(AccountRateLimited), now, string(AccountActive),
+		string(AccountDisabled), string(AccountRateLimited), now,
+		string(AccountRateLimited), now, now, now, id)
 	return err
 }
 
 // RecordAccountFailure records an authentication/refresh failure with bounded
 // exponential backoff. Network and upstream protocol errors must not call it.
 func (s *Store) RecordAccountFailure(id int64, reason string) error {
-	var failures int
-	if err := s.db.QueryRow(`SELECT consecutive_failures FROM accounts WHERE id=?`, id).Scan(&failures); err != nil {
+	now := time.Now()
+	result, err := s.db.Exec(`UPDATE accounts SET
+		status=?, status_reason=?,
+		next_retry_at=?+CASE consecutive_failures
+			WHEN 0 THEN 60
+			WHEN 1 THEN 300
+			WHEN 2 THEN 900
+			ELSE 1800 END,
+		consecutive_failures=consecutive_failures+1, updated_at=? WHERE id=?`,
+		string(AccountRefreshFailed), reason, now.Unix(), now.Unix(), id)
+	if err != nil {
 		return err
 	}
-	failures++
-	backoffs := []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute, 30 * time.Minute}
-	idx := failures - 1
-	if idx >= len(backoffs) {
-		idx = len(backoffs) - 1
+	if rows, _ := result.RowsAffected(); rows == 0 {
+		return sql.ErrNoRows
 	}
-	now := time.Now()
-	_, err := s.db.Exec(`UPDATE accounts SET status=?, status_reason=?, consecutive_failures=?, next_retry_at=?, updated_at=? WHERE id=?`,
-		string(AccountRefreshFailed), reason, failures, now.Add(backoffs[idx]).Unix(), now.Unix(), id)
-	return err
+	return nil
 }
 
 // RecoverExpiredRateLimits makes accounts whose retry window elapsed eligible
