@@ -52,6 +52,7 @@ type Control struct {
 	server      ServerController
 	engine      *gateway.Engine
 	diagnostics *diagnostics.Service
+	updates     *updateChecker
 	token       string
 	version     string
 }
@@ -66,6 +67,7 @@ func New(s *store.Store, mgr *account.Manager, settings SettingsAccess, server S
 		server:      server,
 		engine:      engine,
 		diagnostics: diagnosticService,
+		updates:     newUpdateChecker(s, settings, version),
 		token:       token,
 		version:     version,
 	}
@@ -75,6 +77,7 @@ func New(s *store.Store, mgr *account.Manager, settings SettingsAccess, server S
 func (c *Control) Mount(mux *http.ServeMux) {
 	h := c.authWrap
 	mux.HandleFunc("GET /control/status", h(c.status))
+	mux.HandleFunc("GET /control/update", h(c.latestRelease))
 	mux.HandleFunc("POST /control/server/start", h(c.serverStart))
 	mux.HandleFunc("POST /control/server/stop", h(c.serverStop))
 

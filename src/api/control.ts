@@ -174,6 +174,15 @@ export interface RequestLog {
   created_at: string;
 }
 
+export interface ReleaseInfo {
+  tag_name: string;
+  name: string;
+  body: string;
+  html_url: string;
+  published_at: string;
+  checked_at: string;
+}
+
 export interface ModelCatalogResponse {
   models: string[];
   default_model: string;
@@ -331,6 +340,7 @@ async function authenticatedDownload(path: string, failureLabel: string): Promis
 // ---- Endpoints ----
 export const api = {
   status: () => req<Status>("GET", "/control/status"),
+  latestRelease: () => req<ReleaseInfo>("GET", "/control/update"),
   startServer: () => req<{ server_running: boolean; port: number }>("POST", "/control/server/start"),
   stopServer: () => req<{ server_running: boolean }>("POST", "/control/server/stop"),
 
