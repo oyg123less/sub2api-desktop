@@ -30,12 +30,13 @@ func (e *Engine) streamResponse(w http.ResponseWriter, body io.Reader, chatReq *
 		flusher.Flush()
 	}
 
+	model := responseModel(meta)
 	state := apicompat.NewResponsesEventToChatState()
-	state.Model = meta.RequestedModel
+	state.Model = model
 	state.IncludeUsage = chatReq.StreamOptions != nil && chatReq.StreamOptions.IncludeUsage
 
 	write := func(chunk apicompat.ChatCompletionsChunk) bool {
-		chunk.Model = meta.RequestedModel
+		chunk.Model = model
 		sse, err := apicompat.ChatChunkToSSE(chunk)
 		if err != nil {
 			return false
@@ -96,8 +97,9 @@ func (e *Engine) streamResponse(w http.ResponseWriter, body io.Reader, chatReq *
 // aggregateResponse consumes the upstream SSE and assembles a single
 // non-streaming Chat Completions response.
 func (e *Engine) aggregateResponse(w http.ResponseWriter, body io.Reader, chatReq *apicompat.ChatCompletionsRequest, acc *store.Account, start time.Time, meta forwardMeta) forwardResult {
+	model := responseModel(meta)
 	state := apicompat.NewResponsesEventToChatState()
-	state.Model = meta.RequestedModel
+	state.Model = model
 	state.IncludeUsage = true
 
 	var content strings.Builder
@@ -178,7 +180,7 @@ func (e *Engine) aggregateResponse(w http.ResponseWriter, body io.Reader, chatRe
 		ID:      state.ID,
 		Object:  "chat.completion",
 		Created: state.Created,
-		Model:   meta.RequestedModel,
+		Model:   model,
 		Choices: []apicompat.ChatChoice{{
 			Index:        0,
 			Message:      msg,
@@ -191,6 +193,13 @@ func (e *Engine) aggregateResponse(w http.ResponseWriter, body io.Reader, chatRe
 	writeJSON(w, http.StatusOK, resp)
 	e.logForward(acc, meta, http.StatusOK, prompt, completion, time.Since(start), "", "", terminal.event)
 	return forwardResult{outcome: outcomeSuccess, headersWritten: true}
+}
+
+func responseModel(meta forwardMeta) string {
+	if strings.TrimSpace(meta.RequestedModel) == "" {
+		return meta.ResolvedModel
+	}
+	return meta.RequestedModel
 }
 
 func usageCounts(u *apicompat.ChatUsage) (int, int) {

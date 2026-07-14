@@ -170,6 +170,46 @@ func TestChatCompletionsNonStreaming(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsOmittedModelReturnsResolvedModel(t *testing.T) {
+	tests := []struct {
+		name   string
+		stream bool
+	}{
+		{name: "streaming", stream: true},
+		{name: "non-streaming", stream: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := httptest.NewServer(mockUpstreamSSE(t, nil))
+			defer upstream.Close()
+			t.Setenv("SUB2API_UPSTREAM_URL", upstream.URL)
+
+			st := newTestStore(t)
+			seedAccount(t, st)
+			cfg, _ := st.LoadSettings()
+			cfg.DefaultModel = "gpt-5"
+			cfg.TLSFingerprint = false
+			_ = st.SaveSettings(cfg)
+			engine := gateway.New(st, account.NewManager(st), func() store.Settings { settings, _ := st.LoadSettings(); return settings }, nil)
+			body := `{"messages":[{"role":"user","content":"hi"}]}`
+			if tt.stream {
+				body = `{"stream":true,"messages":[{"role":"user","content":"hi"}]}`
+			}
+			request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+			response := httptest.NewRecorder()
+
+			engine.ChatCompletions(response, request)
+
+			if response.Code != http.StatusOK {
+				t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
+			}
+			if !strings.Contains(response.Body.String(), `"model":"gpt-5.4"`) || strings.Contains(response.Body.String(), `"model":""`) {
+				t.Fatalf("response did not contain resolved model: %s", response.Body.String())
+			}
+		})
+	}
+}
+
 func TestNoAccountReturns503(t *testing.T) {
 	st := newTestStore(t)
 	mgr := account.NewManager(st)
