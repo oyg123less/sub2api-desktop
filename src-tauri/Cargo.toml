@@ -1,6 +1,6 @@
 [package]
 name = "sub2api-desktop"
-version = "0.2.2"
+version = "0.2.3"
 description = "Sub2API Desktop — local OpenAI-compatible API gateway"
 authors = ["Sub2API Desktop"]
 edition = "2021"
