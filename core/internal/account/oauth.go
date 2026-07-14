@@ -93,7 +93,11 @@ func (m *Manager) Exchange(ctx context.Context, client *http.Client, flow *Login
 	// Update existing account if it matches.
 	if cid != "" {
 		if existing, err := m.store.GetAccountByChatGPTID(cid); err == nil {
-			if err := m.store.UpdateTokens(existing.ID, tok.AccessToken, tok.RefreshToken, tok.IDToken, expiresAt); err != nil {
+			newRefresh := tok.RefreshToken
+			if newRefresh == "" {
+				newRefresh = existing.RefreshToken
+			}
+			if err := m.store.UpdateTokens(existing.ID, tok.AccessToken, newRefresh, tok.IDToken, expiresAt); err != nil {
 				return nil, err
 			}
 			if flow.ProxyID != nil {

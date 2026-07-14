@@ -86,6 +86,38 @@ func TestRefreshNetworkFailurePreservesAccountStatus(t *testing.T) {
 	}
 }
 
+func TestExchangePreservesExistingRefreshTokenWhenResponseOmitsIt(t *testing.T) {
+	manager, st := newImportTestManager(t, fakeIdentityVerifier{})
+	idToken := unsignedIdentityToken(t, "exchange@example.com", "acct_exchange", "plus")
+	existing, err := st.CreateAccount(&store.Account{
+		Email: "exchange@example.com", ChatGPTAccountID: "acct_exchange",
+		AccessToken: "old-access", RefreshToken: "refresh_existing_12345678901234567890",
+		ExpiresAt: time.Now().Add(time.Hour), Status: store.AccountActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		body := `{"access_token":"new-access","id_token":` + quoteJSON(idToken) + `,"expires_in":3600}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+
+	updated, err := manager.Exchange(context.Background(), client, &LoginFlow{CodeVerifier: "verifier", RedirectURI: "http://localhost/callback"}, "code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.ID != existing.ID || updated.AccessToken != "new-access" || updated.RefreshToken != "refresh_existing_12345678901234567890" {
+		t.Fatal("exchange did not preserve the existing refresh token")
+	}
+	persisted, err := st.GetAccount(existing.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.RefreshToken != "refresh_existing_12345678901234567890" {
+		t.Fatal("exchange cleared the persisted refresh token")
+	}
+}
+
 func refreshTestClient(idToken string) *http.Client {
 	return &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		body := `{"access_token":"fresh-access","refresh_token":"fresh-refresh","id_token":` + quoteJSON(idToken) + `,"expires_in":3600}`
