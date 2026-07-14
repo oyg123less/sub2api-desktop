@@ -362,7 +362,7 @@ func (s *Service) checkCodex(context.Context) Check {
 	if err != nil {
 		return failed("Codex configuration directory is unavailable", err)
 	}
-	status, err := manager.Status()
+	status, err := manager.Status("", "")
 	if err != nil {
 		return failed("Codex configuration could not be inspected", err)
 	}

@@ -47,7 +47,7 @@ func TestApplyThenRestoreExistingConfig(t *testing.T) {
 		t.Fatalf("existing auth key lost: %v", auth)
 	}
 
-	st, err := m.Status()
+	st, err := m.Status("http://127.0.0.1:8080/v1", "sk-local-xyz")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,6 +69,40 @@ func TestApplyThenRestoreExistingConfig(t *testing.T) {
 	}
 	if fileExists(filepath.Join(dir, configName) + backupSuffix) {
 		t.Fatal("backup not cleaned up")
+	}
+}
+
+func TestStatusDetectsConfigurationDrift(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Apply("http://127.0.0.1:8080/v1", "key-one", "gpt-5.6"); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name       string
+		baseURL    string
+		apiKey     string
+		wantStale  bool
+		wantReason string
+	}{
+		{name: "current", baseURL: "http://127.0.0.1:8080/v1", apiKey: "key-one"},
+		{name: "base URL changed", baseURL: "http://127.0.0.1:9090/v1", apiKey: "key-one", wantStale: true, wantReason: "base_url_mismatch"},
+		{name: "API key changed", baseURL: "http://127.0.0.1:8080/v1", apiKey: "key-two", wantStale: true, wantReason: "api_key_mismatch"},
+		{name: "both changed", baseURL: "http://127.0.0.1:9090/v1", apiKey: "key-two", wantStale: true, wantReason: "base_url_mismatch,api_key_mismatch"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status, err := m.Status(tt.baseURL, tt.apiKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !status.Applied || status.Stale != tt.wantStale || status.StaleReason != tt.wantReason {
+				t.Fatalf("status = %+v", status)
+			}
+		})
 	}
 }
 

@@ -426,7 +426,9 @@ export interface CodexStatus {
   config_exists: boolean;
   backup_exists: boolean;
 	backup_at?: string;
-	backup_source?: string;
+  backup_source?: string;
+  stale: boolean;
+  stale_reason?: string;
   base_url: string;
   model: string;
   models: string[];

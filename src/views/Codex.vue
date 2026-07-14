@@ -438,6 +438,14 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
+        <div v-if="st.stale" class="stale-warning" role="status">
+          <Icon name="warn" :size="16" />
+          <div>
+            <strong>{{ t("codex.configStale") }}</strong>
+            <span>{{ t("codex.configStaleDesc") }}</span>
+          </div>
+        </div>
+
         <div class="local-fields">
           <div class="field no-margin">
             <label class="field-label">{{ t("codex.baseUrl") }}</label>
@@ -816,6 +824,29 @@ onBeforeUnmount(() => {
   margin-top: 18px;
   padding-top: 18px;
   border-top: 1px solid var(--border-soft);
+}
+.stale-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-top: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--warn);
+  border-radius: 6px;
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.stale-warning > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.stale-warning strong {
+  font-size: 12.5px;
+}
+.stale-warning span {
+  color: var(--text-dim);
+  font-size: 11.5px;
 }
 .no-margin {
   margin: 0;
