@@ -78,11 +78,19 @@ func (e *Engine) captureCodexUsage(acc *store.Account, h http.Header) *store.Cod
 }
 
 // rateLimitRetryAfter derives how long an account should stay rate-limited,
-// preferring the 5-hour window's reset time, then the Retry-After header,
+// using the earliest positive Codex window reset, then Retry-After, and
 // falling back to 10 minutes.
 func rateLimitRetryAfter(h http.Header, usage *store.CodexUsage) time.Duration {
-	if usage != nil && usage.SecondaryResetAfterSeconds != nil && *usage.SecondaryResetAfterSeconds > 0 {
-		return time.Duration(*usage.SecondaryResetAfterSeconds) * time.Second
+	resetSeconds := 0
+	if usage != nil {
+		for _, candidate := range []*int{usage.PrimaryResetAfterSeconds, usage.SecondaryResetAfterSeconds} {
+			if candidate != nil && *candidate > 0 && (resetSeconds == 0 || *candidate < resetSeconds) {
+				resetSeconds = *candidate
+			}
+		}
+	}
+	if resetSeconds > 0 {
+		return time.Duration(resetSeconds) * time.Second
 	}
 	if v := h.Get("Retry-After"); v != "" {
 		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
