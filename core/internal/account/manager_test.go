@@ -2,7 +2,9 @@ package account
 
 import (
 	"context"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -57,6 +59,31 @@ func TestValidAccessTokenBackfillsMissingIdentityWithoutOverwriting(t *testing.T
 	}
 
 	assertAccountIdentity(t, account, "existing@example.com", "acct_new", "team")
+}
+
+func TestRefreshNetworkFailurePreservesAccountStatus(t *testing.T) {
+	manager, st := newImportTestManager(t, fakeIdentityVerifier{})
+	account, err := st.CreateAccount(&store.Account{
+		AccessToken: "expired-access", RefreshToken: "refresh_12345678901234567890",
+		ExpiresAt: time.Now().Add(-time.Hour), Status: store.AccountActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
+	})}
+
+	if err := manager.Refresh(context.Background(), client, account.ID); err == nil {
+		t.Fatal("expected refresh network error")
+	}
+	updated, err := st.GetAccount(account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != store.AccountActive || updated.ConsecutiveFailures != 0 {
+		t.Fatalf("status = %q, consecutive failures = %d; want active and zero", updated.Status, updated.ConsecutiveFailures)
+	}
 }
 
 func refreshTestClient(idToken string) *http.Client {

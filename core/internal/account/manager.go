@@ -5,9 +5,11 @@ package account
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -15,6 +17,7 @@ import (
 
 	"sub2api-desktop/core/internal/openai"
 	"sub2api-desktop/core/internal/store"
+	apptransport "sub2api-desktop/core/internal/transport"
 )
 
 // Manager coordinates token refresh across concurrent requests.
@@ -76,7 +79,9 @@ func (m *Manager) ValidAccessToken(ctx context.Context, client *http.Client, acc
 
 	tok, err := m.doRefresh(ctx, client, fresh.RefreshToken)
 	if err != nil {
-		_ = m.store.SetAccountStatus(acc.ID, store.AccountRefreshFailed, err.Error())
+		if !isRefreshConnectionError(err) {
+			_ = m.store.SetAccountStatus(acc.ID, store.AccountRefreshFailed, err.Error())
+		}
 		return "", err
 	}
 
@@ -116,7 +121,9 @@ func (m *Manager) Refresh(ctx context.Context, client *http.Client, id int64) er
 
 	tok, err := m.doRefresh(ctx, client, acc.RefreshToken)
 	if err != nil {
-		_ = m.store.SetAccountStatus(id, store.AccountRefreshFailed, err.Error())
+		if !isRefreshConnectionError(err) {
+			_ = m.store.SetAccountStatus(id, store.AccountRefreshFailed, err.Error())
+		}
 		return err
 	}
 	newRefresh := tok.RefreshToken
@@ -129,6 +136,15 @@ func (m *Manager) Refresh(ctx context.Context, client *http.Client, id int64) er
 	}
 	m.backfillIdentityFromIDToken(id, tok.IDToken)
 	return nil
+}
+
+func isRefreshConnectionError(err error) bool {
+	var transportErr *apptransport.Error
+	if errors.As(err, &transportErr) {
+		return true
+	}
+	var networkErr net.Error
+	return errors.As(err, &networkErr)
 }
 
 func (m *Manager) backfillIdentityFromIDToken(id int64, raw string) {

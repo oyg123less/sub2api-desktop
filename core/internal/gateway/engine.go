@@ -9,9 +9,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -23,6 +25,7 @@ import (
 	"sub2api-desktop/core/internal/apicompat"
 	"sub2api-desktop/core/internal/openai"
 	"sub2api-desktop/core/internal/store"
+	apptransport "sub2api-desktop/core/internal/transport"
 )
 
 // defaultUpstreamURL is the ChatGPT Codex responses endpoint.
@@ -116,6 +119,7 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var lastErr string
+	lastStatus := 0
 	attempt := 0
 	for index, acc := range candidates {
 		release := releaseFirst
@@ -131,6 +135,8 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				attempt++
 				meta.Attempt = attempt
 				result = e.forwardOnce(r.Context(), w, &chatReq, acc, cfg, meta)
+			} else if isNetworkOrProxyError(err) {
+				result = forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadGateway, errMsg: "token refresh connection failed: " + err.Error(), retryable: true}
 			} else {
 				result.errMsg = "token refresh failed: " + err.Error()
 			}
@@ -148,14 +154,21 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			until := time.Now().Add(retry)
 			_ = e.store.SetRateLimited(acc.ID, until)
 			lastErr = result.errMsg
+			lastStatus = 0
 			continue // try next account
 		case outcomeAuthFailed:
 			_ = e.store.RecordAccountFailure(acc.ID, result.errMsg)
 			lastErr = result.errMsg
+			lastStatus = 0
 			continue
 		case outcomeClientClosed:
 			return
 		default:
+			if shouldFailoverUpstreamError(result) {
+				lastErr = result.errMsg
+				lastStatus = result.status
+				continue
+			}
 			// Non-retryable upstream/other error: surface immediately if we
 			// have not written a response yet.
 			if !result.headersWritten {
@@ -167,6 +180,10 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	if lastErr == "" {
 		lastErr = "所有账号均不可用（限额或需要重新登录）"
+	}
+	if lastStatus >= http.StatusInternalServerError {
+		writeError(w, lastStatus, lastErr, "upstream_error")
+		return
 	}
 	writeError(w, http.StatusServiceUnavailable, lastErr, "all_accounts_unavailable")
 }
@@ -187,6 +204,7 @@ type forwardResult struct {
 	errMsg         string
 	headersWritten bool
 	retryAfter     time.Duration
+	retryable      bool
 }
 
 type forwardMeta struct {
@@ -207,12 +225,20 @@ func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq
 	}
 	client, err := newHTTPClient(proxy, cfg.CompatProfile, 10*time.Minute)
 	if err != nil {
-		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: err.Error()}
+		e.logForward(acc, meta, http.StatusInternalServerError, 0, 0, time.Since(start), err.Error(), "upstream_network_error", "client_setup_failed")
+		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: err.Error(), retryable: true}
 	}
 	authClient, _ := newHTTPClient(proxy, "standard", 60*time.Second)
 
 	token, err := e.accounts.ValidAccessToken(ctx, authClient, acc)
 	if err != nil {
+		if ctx.Err() != nil {
+			return forwardResult{outcome: outcomeClientClosed}
+		}
+		if isNetworkOrProxyError(err) {
+			e.logForward(acc, meta, http.StatusBadGateway, 0, 0, time.Since(start), err.Error(), "upstream_network_error", "token_refresh_connection_failed")
+			return forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadGateway, errMsg: "token refresh connection failed: " + err.Error(), retryable: true}
+		}
 		return forwardResult{outcome: outcomeAuthFailed, errMsg: "token refresh failed: " + err.Error()}
 	}
 
@@ -247,7 +273,9 @@ func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq
 			e.logForward(acc, meta, 499, 0, 0, time.Since(start), "client cancelled request", "client_cancelled", "request_cancelled")
 			return forwardResult{outcome: outcomeClientClosed}
 		}
-		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadGateway, errMsg: "upstream request failed: " + err.Error()}
+		message := "upstream request failed: " + err.Error()
+		e.logForward(acc, meta, http.StatusBadGateway, 0, 0, time.Since(start), message, "upstream_network_error", "request_failed")
+		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadGateway, errMsg: message, retryable: true}
 	}
 	defer resp.Body.Close()
 
@@ -275,6 +303,20 @@ func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq
 		return e.streamResponse(w, resp.Body, chatReq, acc, start, meta)
 	}
 	return e.aggregateResponse(w, resp.Body, chatReq, acc, start, meta)
+}
+
+func shouldFailoverUpstreamError(result forwardResult) bool {
+	return result.outcome == outcomeUpstreamError && !result.headersWritten &&
+		(result.retryable || result.status >= http.StatusInternalServerError)
+}
+
+func isNetworkOrProxyError(err error) bool {
+	var transportErr *apptransport.Error
+	if errors.As(err, &transportErr) {
+		return true
+	}
+	var networkErr net.Error
+	return errors.As(err, &networkErr)
 }
 
 func (e *Engine) forceRefreshAccount(ctx context.Context, acc *store.Account, cfg store.Settings) (*store.Account, error) {
