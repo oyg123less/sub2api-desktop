@@ -467,21 +467,21 @@ onUnmounted(() => clearInterval(pollTimer));
     <div v-else class="grid grid-2">
       <div v-for="a in accounts" :key="a.id" class="card">
         <div class="row-between" style="margin-bottom: 12px">
-          <div class="flex items-center gap-12">
-            <div class="brand-logo" style="background: linear-gradient(135deg, #d97757, #b8532f)">
+          <div class="flex items-center gap-12" style="min-width: 0; flex: 1">
+            <div class="brand-logo" style="flex-shrink: 0; background: linear-gradient(135deg, #d97757, #b8532f)">
               {{ (a.email || "?").charAt(0).toUpperCase() }}
             </div>
             <div style="min-width: 0">
               <div style="font-weight: 600">{{ a.email || t("common.unknown") }}</div>
               <div class="flex items-center gap-8" style="margin-top: 3px">
                 <span class="badge badge-neutral">{{ t(`accounts.accountType.${a.account_type}`) }}</span>
-                <span class="faint text-sm" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
+                <span class="faint text-sm" style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
                   {{ a.account_type === "api_key" ? a.base_url : (a.plan_type || "ChatGPT") }}
                 </span>
               </div>
             </div>
           </div>
-          <span class="badge" :class="statusBadge(a.status)">
+          <span class="badge" style="flex-shrink: 0" :class="statusBadge(a.status)">
             <span class="badge-dot"></span>
             {{ t("accounts.status." + a.status) }}
           </span>
@@ -496,7 +496,7 @@ onUnmounted(() => clearInterval(pollTimer));
         </div>
 
         <div class="list" style="margin-bottom: 12px">
-          <div class="list-row" style="padding: 7px 0">
+          <div v-if="a.account_type === 'oauth'" class="list-row" style="padding: 7px 0">
             <span class="faint text-sm" style="flex: 1">{{ t("accounts.expiresAt") }}</span>
             <span class="text-sm">{{ fmtDate(a.expires_at) }}</span>
           </div>

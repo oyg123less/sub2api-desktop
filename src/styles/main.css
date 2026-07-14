@@ -298,6 +298,9 @@ a {
 .card + .card {
   margin-top: 16px;
 }
+.grid > .card + .card {
+  margin-top: 0;
+}
 .card-title {
   font-size: 14px;
   font-weight: 600;
