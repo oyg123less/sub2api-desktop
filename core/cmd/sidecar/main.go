@@ -94,6 +94,7 @@ func run(dataDir string, controlPort int, controlToken string, logger *slog.Logg
 	cleanupCtx, stopCleanup := context.WithCancel(context.Background())
 	defer stopCleanup()
 	go maintainLogs(cleanupCtx, st, holder.Get, logger)
+	go engine.MaintainUsageSnapshots(cleanupCtx)
 
 	if controlToken == "" {
 		controlToken = randomToken()
