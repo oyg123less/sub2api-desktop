@@ -241,17 +241,28 @@ func TestChatIncompleteMaxTokensEndsWithLength(t *testing.T) {
 	}
 }
 
-func TestUnsupportedParametersReturnStableCode(t *testing.T) {
+func TestUnsupportedParametersAreIgnored(t *testing.T) {
 	tests := []struct {
-		path string
-		body string
+		path    string
+		body    string
+		ignored string
 	}{
-		{path: "/v1/chat/completions", body: `{"model":"gpt-5.4","messages":[{"role":"user","content":"hi"}],"stop":["END"]}`},
-		{path: "/v1/chat/completions", body: `{"model":"gpt-5.4","messages":[{"role":"user","content":"hi"}],"n":2}`},
-		{path: "/v1/responses", body: `{"model":"gpt-5.4","input":"hi","logprobs":true}`},
+		{path: "/v1/chat/completions", body: `{"model":"gpt-5.4","messages":[{"role":"user","content":"hi"}],"stop":["END"]}`, ignored: "stop"},
+		{path: "/v1/chat/completions", body: `{"model":"gpt-5.4","messages":[{"role":"user","content":"hi"}],"n":2}`, ignored: "n"},
+		{path: "/v1/responses", body: `{"model":"gpt-5.4","input":"hi","logprobs":true}`, ignored: "logprobs"},
 	}
 	for _, tt := range tests {
+		var forwarded map[string]any
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if err := json.NewDecoder(r.Body).Decode(&forwarded); err != nil {
+				t.Errorf("decode upstream request: %v", err)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"r","status":"completed","output":[]}}`+"\n\n")
+		}))
+		t.Setenv("SUB2API_UPSTREAM_URL", upstream.URL)
 		st := newTestStore(t)
+		seedAccount(t, st)
 		engine := gateway.New(st, account.NewManager(st), func() store.Settings { s, _ := st.LoadSettings(); return s }, nil)
 		r := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
 		w := httptest.NewRecorder()
@@ -260,9 +271,13 @@ func TestUnsupportedParametersReturnStableCode(t *testing.T) {
 		} else {
 			engine.ChatCompletions(w, r)
 		}
-		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"code":"unsupported_parameter"`) {
+		if w.Code != http.StatusOK {
 			t.Fatalf("path=%s status=%d body=%s", tt.path, w.Code, w.Body.String())
 		}
+		if _, exists := forwarded[tt.ignored]; exists {
+			t.Fatalf("path=%s forwarded ignored parameter %q: %#v", tt.path, tt.ignored, forwarded)
+		}
+		upstream.Close()
 	}
 }
 

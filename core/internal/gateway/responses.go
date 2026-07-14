@@ -31,12 +31,8 @@ func (e *Engine) Responses(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error(), "invalid_request_error")
 		return
 	}
-	var rawRequest map[string]json.RawMessage
-	if json.Unmarshal(bodyBytes, &rawRequest) == nil {
-		if parameter, unsupported := unsupportedParameter(rawRequest); unsupported {
-			writeErrorCode(w, http.StatusBadRequest, "parameter is not supported by the upstream: "+parameter, "invalid_request_error", "unsupported_parameter")
-			return
-		}
+	for _, key := range []string{"stop", "n", "logprobs", "top_logprobs", "audio", "modalities"} {
+		delete(body, key)
 	}
 
 	cfg := e.settings()

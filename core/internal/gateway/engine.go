@@ -81,13 +81,6 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "failed to read request body", "invalid_request_error")
 		return
 	}
-	var rawRequest map[string]json.RawMessage
-	if err := json.Unmarshal(bodyBytes, &rawRequest); err == nil {
-		if parameter, unsupported := unsupportedParameter(rawRequest); unsupported {
-			writeErrorCode(w, http.StatusBadRequest, "parameter is not supported by the upstream: "+parameter, "invalid_request_error", "unsupported_parameter")
-			return
-		}
-	}
 	var chatReq apicompat.ChatCompletionsRequest
 	if err := json.Unmarshal(bodyBytes, &chatReq); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error(), "invalid_request_error")
@@ -282,23 +275,6 @@ func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq
 		return e.streamResponse(w, resp.Body, chatReq, acc, start, meta)
 	}
 	return e.aggregateResponse(w, resp.Body, chatReq, acc, start, meta)
-}
-
-func unsupportedParameter(request map[string]json.RawMessage) (string, bool) {
-	for _, key := range []string{"stop", "n", "logprobs", "top_logprobs", "audio", "modalities"} {
-		value, exists := request[key]
-		if !exists || string(value) == "null" {
-			continue
-		}
-		if key == "n" && (string(value) == "1" || string(value) == "0") {
-			continue
-		}
-		if key == "logprobs" && string(value) == "false" {
-			continue
-		}
-		return key, true
-	}
-	return "", false
 }
 
 func (e *Engine) forceRefreshAccount(ctx context.Context, acc *store.Account, cfg store.Settings) (*store.Account, error) {
