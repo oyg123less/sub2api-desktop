@@ -72,7 +72,9 @@ func (e *Engine) captureCodexUsage(acc *store.Account, h http.Header) *store.Cod
 	}
 	u := parseCodexUsageHeaders(h)
 	if u != nil {
-		_ = e.store.SetAccountCodexUsage(acc.ID, u)
+		if err := e.store.SetAccountCodexUsage(acc.ID, u); err != nil {
+			e.logger.Warn("persist Codex usage snapshot failed", "account_id", acc.ID, "error", err)
+		}
 	}
 	return u
 }
