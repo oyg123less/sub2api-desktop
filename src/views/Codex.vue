@@ -16,6 +16,7 @@ import { useAppStore } from "../store";
 import {
   codexActiveTab,
   hostKeyAccepted,
+  sshUserForRequest,
   isValidCodexModel,
   remoteForm,
   remoteModelInitialized,
@@ -57,7 +58,7 @@ const modelValid = computed(() => isValidCodexModel(modelDraft.value));
 const remoteSignature = computed(() => JSON.stringify({
   host: remoteForm.value.host.trim(),
   port: Number(remoteForm.value.port),
-  user: remoteForm.value.user.trim(),
+  user: sshUserForRequest(remoteForm.value.host, remoteForm.value.user),
   password: remoteForm.value.password,
 }));
 const configPreview = computed(() => {
@@ -205,7 +206,7 @@ async function testRemoteConnection() {
     const probe = await api.codexRemoteTest({
       host: remoteForm.value.host.trim(),
       port: remoteForm.value.port,
-      user: remoteForm.value.user.trim(),
+      user: sshUserForRequest(remoteForm.value.host, remoteForm.value.user),
       password: remoteForm.value.password,
     });
     remoteProbe.value = probe;
@@ -243,7 +244,7 @@ async function injectRemote() {
       id: remoteForm.value.id,
       host: remoteForm.value.host.trim(),
       port: remoteForm.value.port,
-      user: remoteForm.value.user.trim(),
+      user: sshUserForRequest(remoteForm.value.host, remoteForm.value.user),
       password: remoteForm.value.password,
       model: remoteForm.value.model.trim(),
       remote_port: remoteForm.value.remotePort,
@@ -544,8 +545,9 @@ onBeforeUnmount(() => {
         <div class="remote-fields">
           <div class="field">
             <label class="field-label" for="remote-host">{{ t("codex.host") }}</label>
-            <input id="remote-host" v-model="remoteForm.host" data-test="remote-host" class="input mono" :class="{ 'input-error': remoteErrors.host }" placeholder="user@example.com" />
+            <input id="remote-host" v-model="remoteForm.host" data-test="remote-host" class="input mono" :class="{ 'input-error': remoteErrors.host }" :placeholder="t('codex.hostPlaceholder')" />
             <p v-if="remoteErrors.host" class="field-error">{{ remoteFieldError("host") }}</p>
+            <p class="field-help">{{ t("codex.hostHint") }}</p>
           </div>
           <div class="field compact-field">
             <label class="field-label" for="remote-port">{{ t("codex.port") }}</label>

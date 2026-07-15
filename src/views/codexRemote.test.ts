@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { validateCodexRemoteForm, type CodexRemoteFormValue } from "./codexRemote";
+import {
+  sshUserForRequest,
+  validateCodexRemoteForm,
+  type CodexRemoteFormValue,
+} from "./codexRemote";
 
 const valid: CodexRemoteFormValue = {
   host: "example.test",
@@ -24,5 +28,12 @@ describe("validateCodexRemoteForm", () => {
 
   it("allows an empty password when reinjecting a saved target", () => {
     expect(validateCodexRemoteForm({ ...valid, id: 4, password: "" }).password).toBeUndefined();
+  });
+
+  it("accepts user@host and lets the backend extract its user", () => {
+    const value = { ...valid, host: "root@1.2.3.4", user: "ignored-user" };
+    expect(validateCodexRemoteForm({ ...value, user: "" }).user).toBeUndefined();
+    expect(sshUserForRequest(value.host, value.user)).toBe("");
+    expect(sshUserForRequest("1.2.3.4", "root")).toBe("root");
   });
 });

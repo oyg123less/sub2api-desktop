@@ -36,10 +36,19 @@ export function isValidCodexModel(model: string): boolean {
   return value.startsWith("gpt-5") || value.includes("codex");
 }
 
+export function hasEmbeddedSSHUser(host: string): boolean {
+  const [user, hostname] = host.trim().split("@", 2);
+  return Boolean(user?.trim() && hostname?.trim());
+}
+
+export function sshUserForRequest(host: string, user: string): string {
+  return hasEmbeddedSSHUser(host) ? "" : user.trim();
+}
+
 export function validateCodexRemoteForm(value: CodexRemoteFormValue): CodexRemoteFormErrors {
   const errors: CodexRemoteFormErrors = {};
   if (!value.host.trim()) errors.host = "required";
-  if (!value.user.trim()) errors.user = "required";
+  if (!value.user.trim() && !hasEmbeddedSSHUser(value.host)) errors.user = "required";
   if (!value.id && !value.password) errors.password = "required";
   if (!Number.isInteger(value.port) || value.port < 1 || value.port > 65535) errors.port = "invalid";
   if (!Number.isInteger(value.remotePort) || value.remotePort < 1 || value.remotePort > 65535) errors.remotePort = "invalid";
