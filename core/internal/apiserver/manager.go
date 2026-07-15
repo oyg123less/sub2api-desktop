@@ -21,6 +21,8 @@ type Manager struct {
 	lifecycleMu sync.Mutex
 	mu          sync.Mutex
 	server      *http.Server
+	listener    net.Listener
+	serveDone   chan struct{}
 	running     bool
 	port        int
 	allowLAN    bool
@@ -75,11 +77,15 @@ func (m *Manager) startWithSettings(cfg store.Settings) error {
 	mux := http.NewServeMux()
 	m.handler.Mount(mux)
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 15 * time.Second}
+	done := make(chan struct{})
 	m.server = srv
+	m.listener = ln
+	m.serveDone = done
 	m.running = true
 	m.port = cfg.ListenPort
 	m.allowLAN = cfg.AllowLAN
 	go func() {
+		defer close(done)
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			// Serve exited unexpectedly; mark as stopped.
 			m.mu.Lock()
@@ -100,15 +106,34 @@ func (m *Manager) Stop() error {
 func (m *Manager) stop() error {
 	m.mu.Lock()
 	srv := m.server
+	ln := m.listener
+	done := m.serveDone
 	m.running = false
 	m.server = nil
+	m.listener = nil
+	m.serveDone = nil
 	m.mu.Unlock()
 	if srv == nil {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return srv.Shutdown(ctx)
+	err := srv.Shutdown(ctx)
+	// Shutdown only closes listeners that Serve has already registered;
+	// close ours explicitly and wait for the serve goroutine to exit so
+	// the port is guaranteed to be released before returning.
+	if ln != nil {
+		if closeErr := ln.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) && err == nil {
+			err = closeErr
+		}
+	}
+	if done != nil {
+		select {
+		case <-done:
+		case <-ctx.Done():
+		}
+	}
+	return err
 }
 
 // Restart applies the latest listen settings. If the new address cannot be
