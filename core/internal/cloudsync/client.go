@@ -119,6 +119,47 @@ type cloudErrorResponse struct {
 	Conflicts []remoteVaultItem `json:"conflicts"`
 }
 
+type AdminUser struct {
+	ID            int64  `json:"id"`
+	Email         string `json:"email"`
+	Role          string `json:"role"`
+	EmailVerified int    `json:"email_verified"`
+	Banned        int    `json:"banned"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
+	LastActiveAt  string `json:"last_active_at"`
+	VaultCount    int    `json:"vault_count"`
+}
+
+type AdminSetting struct {
+	Key       string `json:"key"`
+	Value     string `json:"value"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+type AdminAudit struct {
+	ID          int64  `json:"id"`
+	ActorUserID int64  `json:"actor_user_id"`
+	Action      string `json:"action"`
+	TargetType  string `json:"target_type"`
+	TargetID    string `json:"target_id"`
+	Details     string `json:"details"`
+	CreatedAt   string `json:"created_at"`
+}
+
+type AdminStats struct {
+	Users            int `json:"users"`
+	DailyActiveUsers int `json:"daily_active_users"`
+	VaultItems       int `json:"vault_items"`
+}
+
+type AdminOverview struct {
+	Users    []AdminUser    `json:"users"`
+	Settings []AdminSetting `json:"settings"`
+	Audit    []AdminAudit   `json:"audit"`
+	Stats    AdminStats     `json:"stats"`
+}
+
 func (c *cloudClient) register(ctx context.Context, request registerRequest) error {
 	return c.doJSON(ctx, http.MethodPost, "/v1/auth/register", "", request, nil)
 }
@@ -181,6 +222,14 @@ func (c *cloudClient) push(ctx context.Context, accessToken string, items []remo
 }
 
 func (c *cloudClient) doJSON(ctx context.Context, method, path, accessToken string, body, output any) error {
+	return c.doJSONWithHeaders(ctx, method, path, accessToken, body, output, nil)
+}
+
+func (c *cloudClient) doAdminJSON(ctx context.Context, method, path, accessToken, adminKey string, body, output any) error {
+	return c.doJSONWithHeaders(ctx, method, path, accessToken, body, output, map[string]string{"X-Admin-Key": adminKey})
+}
+
+func (c *cloudClient) doJSONWithHeaders(ctx context.Context, method, path, accessToken string, body, output any, extraHeaders map[string]string) error {
 	if !c.configured() {
 		return &CloudError{Status: http.StatusServiceUnavailable, Code: "cloud_not_configured", Message: "Amber Cloud is not configured"}
 	}
@@ -203,6 +252,9 @@ func (c *cloudClient) doJSON(ctx context.Context, method, path, accessToken stri
 	}
 	if accessToken != "" {
 		request.Header.Set("Authorization", "Bearer "+accessToken)
+	}
+	for key, value := range extraHeaders {
+		request.Header.Set(key, value)
 	}
 	response, err := c.http.Do(request)
 	if err != nil {
@@ -238,4 +290,47 @@ func (c *cloudClient) doJSON(ctx context.Context, method, path, accessToken stri
 		}
 	}
 	return nil
+}
+
+func (c *cloudClient) adminOverview(ctx context.Context, accessToken, adminKey string) (AdminOverview, error) {
+	var users struct {
+		Users []AdminUser `json:"users"`
+	}
+	var settings struct {
+		Settings []AdminSetting `json:"settings"`
+	}
+	var audit struct {
+		Audit []AdminAudit `json:"audit"`
+	}
+	var stats AdminStats
+	for _, request := range []struct {
+		path   string
+		output any
+	}{
+		{"/v1/admin/users?limit=100", &users},
+		{"/v1/admin/settings", &settings},
+		{"/v1/admin/stats", &stats},
+		{"/v1/admin/audit?limit=50", &audit},
+	} {
+		if err := c.doAdminJSON(ctx, http.MethodGet, request.path, accessToken, adminKey, nil, request.output); err != nil {
+			return AdminOverview{}, err
+		}
+	}
+	return AdminOverview{Users: users.Users, Settings: settings.Settings, Audit: audit.Audit, Stats: stats}, nil
+}
+
+func (c *cloudClient) adminSetUserBanned(ctx context.Context, accessToken, adminKey string, userID int64, banned bool) error {
+	return c.doAdminJSON(ctx, http.MethodPatch, fmt.Sprintf("/v1/admin/users/%d", userID), accessToken, adminKey, map[string]bool{"banned": banned}, nil)
+}
+
+func (c *cloudClient) adminLogoutUser(ctx context.Context, accessToken, adminKey string, userID int64) error {
+	return c.doAdminJSON(ctx, http.MethodPost, fmt.Sprintf("/v1/admin/users/%d/logout-all", userID), accessToken, adminKey, map[string]any{}, nil)
+}
+
+func (c *cloudClient) adminDeleteUser(ctx context.Context, accessToken, adminKey string, userID int64) error {
+	return c.doAdminJSON(ctx, http.MethodDelete, fmt.Sprintf("/v1/admin/users/%d", userID), accessToken, adminKey, map[string]string{"confirm": "DELETE"}, nil)
+}
+
+func (c *cloudClient) adminUpdateSettings(ctx context.Context, accessToken, adminKey string, settings map[string]bool) error {
+	return c.doAdminJSON(ctx, http.MethodPatch, "/v1/admin/settings", accessToken, adminKey, settings, nil)
 }

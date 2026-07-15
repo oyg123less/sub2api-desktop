@@ -124,13 +124,19 @@ interface RefreshSession {
 
 export async function issueSession(env: Bindings, user: AuthUser) {
   const refreshToken = randomToken();
-  const key = `refresh:${await sha256(refreshToken)}`;
+  const tokenHash = await sha256(refreshToken);
+  const key = `refresh:${tokenHash}`;
+  const userKey = `refresh-user:${user.id}:${tokenHash}`;
   const session: RefreshSession = {
     user_id: user.id,
     session_version: user.sessionVersion,
     created_at: new Date().toISOString(),
   };
-  await env.SESSIONS.put(key, JSON.stringify(session), { expirationTtl: 30 * 24 * 60 * 60 });
+  const options = { expirationTtl: 30 * 24 * 60 * 60 };
+  await Promise.all([
+    env.SESSIONS.put(key, JSON.stringify(session), options),
+    env.SESSIONS.put(userKey, key, options),
+  ]);
   return {
     access_token: await signAccessToken(env, user),
     access_expires_in: 15 * 60,
@@ -144,13 +150,34 @@ export async function consumeRefreshSession(env: Bindings, token: string): Promi
   const key = `refresh:${await sha256(token)}`;
   const session = await env.SESSIONS.get<RefreshSession>(key, "json");
   if (!session) throw new AppError(401, "invalid_refresh_token", "The session has expired.");
-  await env.SESSIONS.delete(key);
+  await Promise.all([
+    env.SESSIONS.delete(key),
+    env.SESSIONS.delete(`refresh-user:${session.user_id}:${key.slice("refresh:".length)}`),
+  ]);
   return session;
 }
 
 export async function deleteRefreshSession(env: Bindings, token: string): Promise<void> {
   if (!token || token.length > 512) return;
-  await env.SESSIONS.delete(`refresh:${await sha256(token)}`);
+  const tokenHash = await sha256(token);
+  const key = `refresh:${tokenHash}`;
+  const session = await env.SESSIONS.get<RefreshSession>(key, "json");
+  await Promise.all([
+    env.SESSIONS.delete(key),
+    ...(session ? [env.SESSIONS.delete(`refresh-user:${session.user_id}:${tokenHash}`)] : []),
+  ]);
+}
+
+export async function revokeUserSessions(env: Bindings, userID: number): Promise<void> {
+  let cursor: string | undefined;
+  do {
+    const page = await env.SESSIONS.list({ prefix: `refresh-user:${userID}:`, cursor });
+    await Promise.all(page.keys.flatMap(({ name }) => {
+      const tokenHash = name.slice(name.lastIndexOf(":") + 1);
+      return [env.SESSIONS.delete(name), env.SESSIONS.delete(`refresh:${tokenHash}`)];
+    }));
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
 }
 
 export function authUserFromRow(row: UserRow): AuthUser {

@@ -326,6 +326,100 @@ func (m *Manager) ChangePassword(ctx context.Context, currentPassword, newPasswo
 	return nil
 }
 
+func (m *Manager) AdminOverview(ctx context.Context, adminKey string) (AdminOverview, error) {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	accessToken, err := m.adminAccess(ctx, adminKey)
+	if err != nil {
+		return AdminOverview{}, err
+	}
+	overview, err := m.client.adminOverview(ctx, accessToken, strings.TrimSpace(adminKey))
+	if err != nil {
+		m.setError(err)
+		return AdminOverview{}, err
+	}
+	m.clearError()
+	return overview, nil
+}
+
+func (m *Manager) AdminSetUserBanned(ctx context.Context, adminKey string, userID int64, banned bool) error {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	accessToken, err := m.adminAccess(ctx, adminKey)
+	if err != nil {
+		return err
+	}
+	if err := m.client.adminSetUserBanned(ctx, accessToken, strings.TrimSpace(adminKey), userID, banned); err != nil {
+		m.setError(err)
+		return err
+	}
+	m.clearError()
+	return nil
+}
+
+func (m *Manager) AdminLogoutUser(ctx context.Context, adminKey string, userID int64) error {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	accessToken, err := m.adminAccess(ctx, adminKey)
+	if err != nil {
+		return err
+	}
+	if err := m.client.adminLogoutUser(ctx, accessToken, strings.TrimSpace(adminKey), userID); err != nil {
+		m.setError(err)
+		return err
+	}
+	m.clearError()
+	return nil
+}
+
+func (m *Manager) AdminDeleteUser(ctx context.Context, adminKey string, userID int64) error {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	accessToken, err := m.adminAccess(ctx, adminKey)
+	if err != nil {
+		return err
+	}
+	if err := m.client.adminDeleteUser(ctx, accessToken, strings.TrimSpace(adminKey), userID); err != nil {
+		m.setError(err)
+		return err
+	}
+	m.clearError()
+	return nil
+}
+
+func (m *Manager) AdminUpdateSettings(ctx context.Context, adminKey string, settings map[string]bool) error {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	accessToken, err := m.adminAccess(ctx, adminKey)
+	if err != nil {
+		return err
+	}
+	if err := m.client.adminUpdateSettings(ctx, accessToken, strings.TrimSpace(adminKey), settings); err != nil {
+		m.setError(err)
+		return err
+	}
+	m.clearError()
+	return nil
+}
+
+func (m *Manager) adminAccess(ctx context.Context, adminKey string) (string, error) {
+	if strings.TrimSpace(adminKey) == "" {
+		return "", errors.New("administrator second factor is required")
+	}
+	if err := m.ensureAccess(ctx); err != nil {
+		return "", err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.session == nil {
+		return "", errors.New("cloud login is required")
+	}
+	if m.session.Role != "admin" {
+		return "", errors.New("administrator role is required")
+	}
+	return m.accessToken, nil
+}
+
 func (m *Manager) Run(ctx context.Context) {
 	timer := time.NewTimer(10 * time.Second)
 	defer timer.Stop()

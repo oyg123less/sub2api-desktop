@@ -63,6 +63,11 @@ type CloudController interface {
 	Logout(context.Context) error
 	Sync(context.Context) error
 	ChangePassword(context.Context, string, string) error
+	AdminOverview(context.Context, string) (cloudsync.AdminOverview, error)
+	AdminSetUserBanned(context.Context, string, int64, bool) error
+	AdminLogoutUser(context.Context, string, int64) error
+	AdminDeleteUser(context.Context, string, int64) error
+	AdminUpdateSettings(context.Context, string, map[string]bool) error
 }
 
 // Control holds control API dependencies.
@@ -152,6 +157,11 @@ func (c *Control) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /control/cloud/logout", h(c.cloudLogout))
 	mux.HandleFunc("POST /control/cloud/sync", h(c.cloudSync))
 	mux.HandleFunc("PUT /control/cloud/master-password", h(c.cloudChangePassword))
+	mux.HandleFunc("POST /control/cloud/admin/overview", h(c.cloudAdminOverview))
+	mux.HandleFunc("PATCH /control/cloud/admin/users/{id}", h(c.cloudAdminSetUserBanned))
+	mux.HandleFunc("POST /control/cloud/admin/users/{id}/logout-all", h(c.cloudAdminLogoutUser))
+	mux.HandleFunc("DELETE /control/cloud/admin/users/{id}", h(c.cloudAdminDeleteUser))
+	mux.HandleFunc("PATCH /control/cloud/admin/settings", h(c.cloudAdminUpdateSettings))
 
 	mux.HandleFunc("GET /control/models", h(c.listModels))
 

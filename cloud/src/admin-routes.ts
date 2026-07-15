@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { requireAdmin, requireAuth } from "./auth-middleware";
 import { AppError, readJSON } from "./errors";
+import { revokeUserSessions } from "./security";
 import type { AppEnv } from "./types";
 
 const admin = new Hono<AppEnv>();
@@ -50,6 +51,7 @@ admin.patch("/users/:id", async (c) => {
   const result = await c.env.DB.prepare(`UPDATE users SET banned=?, session_version=session_version+1, updated_at=? WHERE id=?`)
     .bind(body.banned ? 1 : 0, new Date().toISOString(), targetID).run();
   if (!result.meta.changes) throw new AppError(404, "user_not_found", "The user was not found.");
+  if (body.banned) await revokeUserSessions(c.env, targetID);
   await audit(c.env, actor.id, body.banned ? "user.ban" : "user.unban", "user", String(targetID));
   return c.json({ ok: true });
 });
@@ -59,6 +61,7 @@ admin.post("/users/:id/logout-all", async (c) => {
   const result = await c.env.DB.prepare("UPDATE users SET session_version=session_version+1, updated_at=? WHERE id=?")
     .bind(new Date().toISOString(), targetID).run();
   if (!result.meta.changes) throw new AppError(404, "user_not_found", "The user was not found.");
+  await revokeUserSessions(c.env, targetID);
   await audit(c.env, c.get("auth").id, "user.logout_all", "user", String(targetID));
   return c.json({ ok: true });
 });
@@ -71,6 +74,7 @@ admin.delete("/users/:id", async (c) => {
   if (body.confirm !== "DELETE") throw new AppError(400, "delete_confirmation_required", "Type DELETE to confirm user deletion.");
   const target = await c.env.DB.prepare("SELECT id FROM users WHERE id=?").bind(targetID).first();
   if (!target) throw new AppError(404, "user_not_found", "The user was not found.");
+  await revokeUserSessions(c.env, targetID);
   await audit(c.env, actor.id, "user.delete", "user", String(targetID));
   await c.env.DB.batch([
     c.env.DB.prepare("DELETE FROM vault_items WHERE user_id=?").bind(targetID),

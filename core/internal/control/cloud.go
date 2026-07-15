@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -139,6 +140,142 @@ func (c *Control) cloudChangePassword(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, c.cloud.Status())
 }
 
+func (c *Control) cloudAdminOverview(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		AdminKey string `json:"admin_key"`
+	}
+	if !c.decodeCloudAdminRequest(w, r, &request) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	overview, err := c.cloud.AdminOverview(ctx, request.AdminKey)
+	if err != nil {
+		writeCloudControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, overview)
+}
+
+func (c *Control) cloudAdminSetUserBanned(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		AdminKey string `json:"admin_key"`
+		Banned   *bool  `json:"banned"`
+	}
+	if !c.decodeCloudAdminRequest(w, r, &request) {
+		return
+	}
+	userID, ok := cloudAdminUserID(w, r)
+	if !ok {
+		return
+	}
+	if request.Banned == nil {
+		writeControlError(w, http.StatusBadRequest, "invalid_admin_action", "The banned field is required", false, nil)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if err := c.cloud.AdminSetUserBanned(ctx, request.AdminKey, userID, *request.Banned); err != nil {
+		writeCloudControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (c *Control) cloudAdminLogoutUser(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		AdminKey string `json:"admin_key"`
+	}
+	if !c.decodeCloudAdminRequest(w, r, &request) {
+		return
+	}
+	userID, ok := cloudAdminUserID(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if err := c.cloud.AdminLogoutUser(ctx, request.AdminKey, userID); err != nil {
+		writeCloudControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (c *Control) cloudAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		AdminKey string `json:"admin_key"`
+		Confirm  string `json:"confirm"`
+	}
+	if !c.decodeCloudAdminRequest(w, r, &request) {
+		return
+	}
+	if request.Confirm != "DELETE" {
+		writeControlError(w, http.StatusBadRequest, "delete_confirmation_required", "Type DELETE to confirm user deletion", false, nil)
+		return
+	}
+	userID, ok := cloudAdminUserID(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if err := c.cloud.AdminDeleteUser(ctx, request.AdminKey, userID); err != nil {
+		writeCloudControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (c *Control) cloudAdminUpdateSettings(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		AdminKey     string `json:"admin_key"`
+		Registration *bool  `json:"registration_enabled"`
+		InviteMode   *bool  `json:"invite_mode"`
+	}
+	if !c.decodeCloudAdminRequest(w, r, &request) {
+		return
+	}
+	settings := make(map[string]bool, 2)
+	if request.Registration != nil {
+		settings["registration_enabled"] = *request.Registration
+	}
+	if request.InviteMode != nil {
+		settings["invite_mode"] = *request.InviteMode
+	}
+	if len(settings) == 0 {
+		writeControlError(w, http.StatusBadRequest, "invalid_platform_settings", "No supported settings were provided", false, nil)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if err := c.cloud.AdminUpdateSettings(ctx, request.AdminKey, settings); err != nil {
+		writeCloudControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (c *Control) decodeCloudAdminRequest(w http.ResponseWriter, r *http.Request, target any) bool {
+	if c.cloud == nil {
+		writeControlError(w, http.StatusServiceUnavailable, "cloud_unavailable", "Amber Cloud is unavailable", true, nil)
+		return false
+	}
+	if !decodeCloudRequest(w, r, target) {
+		return false
+	}
+	return true
+}
+
+func cloudAdminUserID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeControlError(w, http.StatusBadRequest, "invalid_user_id", "The user ID is invalid", false, nil)
+		return 0, false
+	}
+	return id, true
+}
+
 func decodeCloudRequest(w http.ResponseWriter, r *http.Request, target any) bool {
 	decoder := json.NewDecoder(io.LimitReader(r.Body, maxCloudControlBody+1))
 	decoder.DisallowUnknownFields()
@@ -165,7 +302,7 @@ func writeCloudControlError(w http.ResponseWriter, err error) {
 	}
 	message := strings.ToLower(err.Error())
 	switch {
-	case strings.Contains(message, "password"), strings.Contains(message, "registration session"), strings.Contains(message, "login is required"):
+	case strings.Contains(message, "password"), strings.Contains(message, "registration session"), strings.Contains(message, "login is required"), strings.Contains(message, "administrator"):
 		writeControlError(w, http.StatusBadRequest, "cloud_validation_failed", err.Error(), false, nil)
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		writeControlError(w, http.StatusGatewayTimeout, "cloud_timeout", "Amber Cloud request timed out", true, nil)
