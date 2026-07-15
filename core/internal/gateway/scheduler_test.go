@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +19,34 @@ func TestSchedulerRoundRobin(t *testing.T) {
 				t.Fatalf("round %d index %d = %d, want %d", i, j, got[j].ID, want[j])
 			}
 		}
+	}
+}
+
+func TestSchedulerConcurrentInFlightAccounting(t *testing.T) {
+	scheduler := NewScheduler()
+	const workers = 64
+	releaseAll := make(chan struct{})
+	var acquired sync.WaitGroup
+	var finished sync.WaitGroup
+	acquired.Add(workers)
+	finished.Add(workers)
+	for index := 0; index < workers; index++ {
+		go func() {
+			defer finished.Done()
+			release := scheduler.Acquire(7)
+			acquired.Done()
+			<-releaseAll
+			release()
+		}()
+	}
+	acquired.Wait()
+	if got := scheduler.InFlight(7); got != workers {
+		t.Fatalf("in-flight = %d, want %d", got, workers)
+	}
+	close(releaseAll)
+	finished.Wait()
+	if got := scheduler.InFlight(7); got != 0 {
+		t.Fatalf("in-flight after release = %d, want 0", got)
 	}
 }
 

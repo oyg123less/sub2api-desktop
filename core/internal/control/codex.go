@@ -37,17 +37,17 @@ func (c *Control) codexStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	st, err := mgr.Status()
+	base := c.codexBaseURL()
+	cfg := c.settings.Get()
+	st, err := mgr.Status(base, cfg.LocalAPIKey)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	base := c.codexBaseURL()
 	model := c.codexModel()
 	if st.Applied && validCodexModel(st.Model) {
 		model = strings.TrimSpace(st.Model)
 	}
-	cfg := c.settings.Get()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"config_path":    st.ConfigPath,
 		"auth_path":      st.AuthPath,
@@ -56,6 +56,8 @@ func (c *Control) codexStatus(w http.ResponseWriter, r *http.Request) {
 		"backup_exists":  st.BackupExists,
 		"backup_at":      st.BackupAt,
 		"backup_source":  st.BackupSource,
+		"stale":          st.Stale,
+		"stale_reason":   st.StaleReason,
 		"base_url":       base,
 		"model":          model,
 		"models":         openai.ModelOptions(),
@@ -124,7 +126,7 @@ func (c *Control) codexFiles(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	st, _ := mgr.Status()
+	st, _ := mgr.Status("", "")
 	cfg := c.settings.Get()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"config_path":    st.ConfigPath,

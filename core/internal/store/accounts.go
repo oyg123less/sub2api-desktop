@@ -15,6 +15,7 @@ func (s *Store) scanAccount(row interface {
 		accessEnc   string
 		refreshEnc  string
 		idTokenEnc  string
+		apiKeyEnc   string
 		expiresAt   int64
 		rateUntil   int64
 		lastUsed    int64
@@ -26,7 +27,7 @@ func (s *Store) scanAccount(row interface {
 		lastSuccess int64
 		nextRetry   int64
 	)
-	if err := row.Scan(&a.ID, &a.Email, &a.ChatGPTAccountID, &a.PlanType,
+	if err := row.Scan(&a.ID, &a.AccountType, &a.BaseURL, &apiKeyEnc, &a.Email, &a.ChatGPTAccountID, &a.PlanType,
 		&accessEnc, &refreshEnc, &idTokenEnc, &expiresAt, &status, &a.StatusReason,
 		&rateUntil, &proxyID, &lastUsed, &createdAt, &updatedAt, &usageJSON,
 		&a.CredentialFingerprint, &lastSuccess, &a.ConsecutiveFailures, &nextRetry); err != nil {
@@ -47,6 +48,12 @@ func (s *Store) scanAccount(row interface {
 	}
 	if a.IDToken, err = s.cipher.Decrypt(idTokenEnc); err != nil {
 		return nil, err
+	}
+	if a.APIKey, err = s.cipher.Decrypt(apiKeyEnc); err != nil {
+		return nil, err
+	}
+	if a.AccountType == "" {
+		a.AccountType = AccountTypeOAuth
 	}
 	a.Status = AccountStatus(status)
 	a.ExpiresAt = unixToTime(expiresAt)
@@ -75,7 +82,7 @@ func (s *Store) scanAccount(row interface {
 	return &a, nil
 }
 
-const accountCols = `id, email, chatgpt_account_id, plan_type, access_token, refresh_token, id_token, expires_at, status, status_reason, rate_limited_until, proxy_id, last_used_at, created_at, updated_at, usage_snapshot, credential_fingerprint, last_success_at, consecutive_failures, next_retry_at`
+const accountCols = `id, account_type, base_url, api_key, email, chatgpt_account_id, plan_type, access_token, refresh_token, id_token, expires_at, status, status_reason, rate_limited_until, proxy_id, last_used_at, created_at, updated_at, usage_snapshot, credential_fingerprint, last_success_at, consecutive_failures, next_retry_at`
 
 // CreateAccount inserts a new account (tokens encrypted).
 func (s *Store) CreateAccount(a *Account) (*Account, error) {
@@ -92,18 +99,25 @@ func (s *Store) CreateAccount(a *Account) (*Account, error) {
 	if err != nil {
 		return nil, err
 	}
+	apiKeyEnc, err := s.cipher.Encrypt(a.APIKey)
+	if err != nil {
+		return nil, err
+	}
+	if a.AccountType == "" {
+		a.AccountType = AccountTypeOAuth
+	}
 	if a.Status == "" {
 		a.Status = AccountActive
 	}
 	if a.CredentialFingerprint == "" {
-		a.CredentialFingerprint = CredentialFingerprint(a.AccessToken, a.RefreshToken)
+		a.CredentialFingerprint = AccountCredentialFingerprint(a.AccountType, a.AccessToken, a.RefreshToken, a.BaseURL, a.APIKey)
 	}
 	res, err := s.db.Exec(`INSERT INTO accounts
-		(email, chatgpt_account_id, plan_type, access_token, refresh_token, id_token, expires_at, status, status_reason, rate_limited_until, proxy_id, last_used_at, created_at, updated_at, usage_snapshot, credential_fingerprint, last_success_at, consecutive_failures, next_retry_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'',?,?,?,?)`,
-		a.Email, a.ChatGPTAccountID, a.PlanType, accessEnc, refreshEnc, idTokenEnc,
+		(account_type, base_url, api_key, email, chatgpt_account_id, plan_type, access_token, refresh_token, id_token, expires_at, status, status_reason, rate_limited_until, proxy_id, last_used_at, created_at, updated_at, usage_snapshot, credential_fingerprint, last_success_at, consecutive_failures, next_retry_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		string(a.AccountType), a.BaseURL, apiKeyEnc, a.Email, a.ChatGPTAccountID, a.PlanType, accessEnc, refreshEnc, idTokenEnc,
 		timeToUnix(a.ExpiresAt), string(a.Status), a.StatusReason, int64(0), a.ProxyID, int64(0),
-		now.Unix(), now.Unix(), a.CredentialFingerprint, timeToUnixPtr(a.LastSuccessAt), a.ConsecutiveFailures, timeToUnixPtr(a.NextRetryAt))
+		now.Unix(), now.Unix(), "", a.CredentialFingerprint, timeToUnixPtr(a.LastSuccessAt), a.ConsecutiveFailures, timeToUnixPtr(a.NextRetryAt))
 	if err != nil {
 		return nil, err
 	}
@@ -183,6 +197,17 @@ func (s *Store) UpdateTokens(id int64, access, refresh, idToken string, expiresA
 	return err
 }
 
+// BackfillAccountIdentity fills identity metadata that was unavailable when the
+// account was created. Existing non-empty values are never overwritten.
+func (s *Store) BackfillAccountIdentity(id int64, email, chatGPTAccountID, planType string) error {
+	_, err := s.db.Exec(`UPDATE accounts SET
+		email=CASE WHEN email='' THEN ? ELSE email END,
+		chatgpt_account_id=CASE WHEN chatgpt_account_id='' THEN ? ELSE chatgpt_account_id END,
+		plan_type=CASE WHEN plan_type='' THEN ? ELSE plan_type END,
+		updated_at=? WHERE id=?`, email, chatGPTAccountID, planType, time.Now().Unix(), id)
+	return err
+}
+
 func timeToUnixPtr(t *time.Time) int64 {
 	if t == nil {
 		return 0
@@ -214,29 +239,44 @@ func (s *Store) TouchAccount(id int64) error {
 // end-to-end upstream response.
 func (s *Store) RecordAccountSuccess(id int64) error {
 	now := time.Now().Unix()
-	_, err := s.db.Exec(`UPDATE accounts SET status=?, status_reason='', rate_limited_until=0,
+	_, err := s.db.Exec(`UPDATE accounts SET
+		status=CASE
+			WHEN status=? THEN status
+			WHEN status=? AND rate_limited_until>? THEN status
+			ELSE ? END,
+		status_reason=CASE
+			WHEN status=? OR (status=? AND rate_limited_until>?) THEN status_reason
+			ELSE '' END,
+		rate_limited_until=CASE
+			WHEN status=? AND rate_limited_until>? THEN rate_limited_until
+			ELSE 0 END,
 		last_success_at=?, consecutive_failures=0, next_retry_at=0, updated_at=? WHERE id=?`,
-		string(AccountActive), now, now, id)
+		string(AccountDisabled), string(AccountRateLimited), now, string(AccountActive),
+		string(AccountDisabled), string(AccountRateLimited), now,
+		string(AccountRateLimited), now, now, now, id)
 	return err
 }
 
 // RecordAccountFailure records an authentication/refresh failure with bounded
 // exponential backoff. Network and upstream protocol errors must not call it.
 func (s *Store) RecordAccountFailure(id int64, reason string) error {
-	var failures int
-	if err := s.db.QueryRow(`SELECT consecutive_failures FROM accounts WHERE id=?`, id).Scan(&failures); err != nil {
+	now := time.Now()
+	result, err := s.db.Exec(`UPDATE accounts SET
+		status=?, status_reason=?,
+		next_retry_at=?+CASE consecutive_failures
+			WHEN 0 THEN 60
+			WHEN 1 THEN 300
+			WHEN 2 THEN 900
+			ELSE 1800 END,
+		consecutive_failures=consecutive_failures+1, updated_at=? WHERE id=?`,
+		string(AccountRefreshFailed), reason, now.Unix(), now.Unix(), id)
+	if err != nil {
 		return err
 	}
-	failures++
-	backoffs := []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute, 30 * time.Minute}
-	idx := failures - 1
-	if idx >= len(backoffs) {
-		idx = len(backoffs) - 1
+	if rows, _ := result.RowsAffected(); rows == 0 {
+		return sql.ErrNoRows
 	}
-	now := time.Now()
-	_, err := s.db.Exec(`UPDATE accounts SET status=?, status_reason=?, consecutive_failures=?, next_retry_at=?, updated_at=? WHERE id=?`,
-		string(AccountRefreshFailed), reason, failures, now.Add(backoffs[idx]).Unix(), now.Unix(), id)
-	return err
+	return nil
 }
 
 // RecoverExpiredRateLimits makes accounts whose retry window elapsed eligible

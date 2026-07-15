@@ -5,6 +5,14 @@ import "time"
 // AccountStatus enumerates the lifecycle states of an OpenAI account.
 type AccountStatus string
 
+// AccountType identifies how an upstream account authenticates.
+type AccountType string
+
+const (
+	AccountTypeOAuth  AccountType = "oauth"
+	AccountTypeAPIKey AccountType = "api_key"
+)
+
 const (
 	AccountActive        AccountStatus = "active"
 	AccountRefreshFailed AccountStatus = "refresh_failed"
@@ -26,10 +34,13 @@ type CodexUsage struct {
 	UpdatedAt                  time.Time `json:"updated_at"`
 }
 
-// Account is a single ChatGPT OAuth account. Token fields are stored encrypted
-// at rest and decrypted only in memory.
+// Account is a single OAuth or API-key upstream account. Credential fields are
+// stored encrypted at rest and decrypted only in memory.
 type Account struct {
 	ID                    int64         `json:"id"`
+	AccountType           AccountType   `json:"account_type"`
+	BaseURL               string        `json:"base_url"`
+	APIKey                string        `json:"-"`
 	Email                 string        `json:"email"`
 	ChatGPTAccountID      string        `json:"chatgpt_account_id"`
 	PlanType              string        `json:"plan_type"`
@@ -71,6 +82,26 @@ type Proxy struct {
 	Username  string    `json:"username,omitempty"`
 	Password  string    `json:"-"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// CodexRemoteTarget is a saved SSH target for remote Codex configuration.
+// Password and APIKey are encrypted at rest and never serialized.
+type CodexRemoteTarget struct {
+	ID            int64     `json:"id"`
+	Name          string    `json:"name"`
+	Host          string    `json:"host"`
+	Port          int       `json:"port"`
+	User          string    `json:"user"`
+	Password      string    `json:"-"`
+	RemotePort    int       `json:"remote_port"`
+	Model         string    `json:"model"`
+	Mode          string    `json:"mode"`
+	BaseURL       string    `json:"base_url,omitempty"`
+	APIKey        string    `json:"-"`
+	TunnelEnabled bool      `json:"tunnel_enabled"`
+	Injected      bool      `json:"injected"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // RequestLog records one proxied request for statistics and diagnostics.

@@ -196,26 +196,92 @@ fn cleanup_migrated_files(dir: &std::path::Path) {
     }
 }
 
+fn canonicalize_allow_missing(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|e| format!("resolve current directory: {e}"))?
+            .join(path)
+    };
+    let mut cursor = absolute.as_path();
+    let mut missing = Vec::new();
+    loop {
+        match std::fs::canonicalize(cursor) {
+            Ok(mut canonical) => {
+                for component in missing.iter().rev() {
+                    canonical.push(component);
+                }
+                return Ok(canonical);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let name = cursor
+                    .file_name()
+                    .ok_or_else(|| format!("unable to resolve path {}", path.display()))?;
+                missing.push(name.to_os_string());
+                cursor = cursor
+                    .parent()
+                    .ok_or_else(|| format!("unable to resolve path {}", path.display()))?;
+            }
+            Err(error) => return Err(format!("canonicalize {}: {error}", path.display())),
+        }
+    }
+}
+
+fn canonical_data_dirs(
+    old_dir: &std::path::Path,
+    new_dir: &std::path::Path,
+) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+    let old = std::fs::canonicalize(old_dir)
+        .map_err(|e| format!("canonicalize current data directory: {e}"))?;
+    let new = canonicalize_allow_missing(new_dir)?;
+    if new != old && (new.starts_with(&old) || old.starts_with(&new)) {
+        return Err(
+            "the new data directory cannot contain or be contained by the current directory"
+                .to_string(),
+        );
+    }
+    Ok((old, new))
+}
+
+fn commit_migration_files(
+    temporary: &std::path::Path,
+    destination: &std::path::Path,
+) -> Result<(), String> {
+    for name in DATA_FILES {
+        let source = temporary.join(name);
+        if source.exists() {
+            if let Err(error) = std::fs::rename(&source, destination.join(name)) {
+                cleanup_migrated_files(destination);
+                return Err(format!("commit migrated {name}: {error}"));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn set_data_dir(app: tauri::AppHandle, path: String) -> Result<DataDirInfo, String> {
-    let new_dir = std::path::PathBuf::from(path.trim());
-    if new_dir.as_os_str().is_empty() {
+    let requested_dir = std::path::PathBuf::from(path.trim());
+    if requested_dir.as_os_str().is_empty() {
         return Err("路径不能为空".to_string());
     }
-    let old_dir = resolve_data_dir(&app);
+    let (old_dir, mut new_dir) = canonical_data_dirs(&resolve_data_dir(&app), &requested_dir)?;
     if new_dir == old_dir {
         return Ok(get_data_dir(app));
     }
+    if DATA_FILES.iter().any(|name| new_dir.join(name).exists()) {
+        return Err("the target already contains Amber data".to_string());
+    }
+    std::fs::create_dir_all(&new_dir).map_err(|e| format!("unable to create directory: {e}"))?;
+    new_dir = std::fs::canonicalize(&new_dir)
+        .map_err(|e| format!("canonicalize target data directory: {e}"))?;
     if new_dir.starts_with(&old_dir) || old_dir.starts_with(&new_dir) {
         return Err(
             "the new data directory cannot contain or be contained by the current directory"
                 .to_string(),
         );
     }
-    if new_dir.join("sub2api.db").exists() || new_dir.join("key").exists() {
-        return Err("the target already contains Amber data".to_string());
-    }
-    std::fs::create_dir_all(&new_dir).map_err(|e| format!("unable to create directory: {e}"))?;
     let probe = new_dir.join(".amber-write-test");
     std::fs::write(&probe, b"ok").map_err(|e| format!("target directory is not writable: {e}"))?;
     std::fs::remove_file(&probe).map_err(|e| format!("target directory cleanup failed: {e}"))?;
@@ -225,7 +291,7 @@ async fn set_data_dir(app: tauri::AppHandle, path: String) -> Result<DataDirInfo
     supervisor::set_migrating(&app);
     supervisor::stop(&app, supervisor::StopIntent::Migration);
     if !supervisor::wait_stopped(&app, Duration::from_secs(5)).await {
-        supervisor::spawn(&app, supervisor::BackendPhase::Starting);
+        supervisor::restart_after_migration_abort(&app);
         return Err("timed out while stopping the backend".to_string());
     }
 
@@ -241,16 +307,10 @@ async fn set_data_dir(app: tauri::AppHandle, path: String) -> Result<DataDirInfo
         supervisor::spawn(&app, supervisor::BackendPhase::Starting);
         return Err(error);
     }
-    for name in DATA_FILES {
-        let source = temporary.join(name);
-        if source.exists() {
-            if let Err(error) = std::fs::rename(&source, new_dir.join(name)) {
-                cleanup_migrated_files(&new_dir);
-                let _ = std::fs::remove_dir_all(&temporary);
-                supervisor::spawn(&app, supervisor::BackendPhase::Starting);
-                return Err(format!("commit migrated {name}: {error}"));
-            }
-        }
+    if let Err(error) = commit_migration_files(&temporary, &new_dir) {
+        let _ = std::fs::remove_dir_all(&temporary);
+        supervisor::spawn(&app, supervisor::BackendPhase::Starting);
+        return Err(error);
     }
     let _ = std::fs::remove_dir_all(&temporary);
 
@@ -269,16 +329,23 @@ async fn set_data_dir(app: tauri::AppHandle, path: String) -> Result<DataDirInfo
     supervisor::spawn(&app, supervisor::BackendPhase::Starting);
     if !supervisor::wait_ready(&app, previous_generation, Duration::from_secs(15)).await {
         supervisor::stop(&app, supervisor::StopIntent::Migration);
-        let _ = supervisor::wait_stopped(&app, Duration::from_secs(5)).await;
+        let stopped = supervisor::wait_stopped(&app, Duration::from_secs(5)).await;
         let restore_error = restore_location_pointer(&app, previous_pointer.as_deref()).err();
-        cleanup_migrated_files(&new_dir);
-        supervisor::spawn(&app, supervisor::BackendPhase::Starting);
+        if stopped {
+            cleanup_migrated_files(&new_dir);
+            supervisor::spawn(&app, supervisor::BackendPhase::Starting);
+        } else {
+            supervisor::restart_after_migration_abort(&app);
+        }
         return Err(match restore_error {
             Some(error) => {
                 format!("new backend did not become ready and pointer rollback failed: {error}")
             }
-            None => "new backend did not become ready; the previous data directory was restored"
-                .to_string(),
+            None if stopped => {
+                "new backend did not become ready; the previous data directory was restored"
+                    .to_string()
+            }
+            None => "new backend did not become ready or stop in time; the previous data directory was restored and migrated files were retained for safety".to_string(),
         });
     }
 
@@ -441,6 +508,88 @@ mod tests {
         std::fs::write(&pointer, b"old").unwrap();
         atomic_replace(&pointer, b"new").unwrap();
         assert_eq!(std::fs::read(&pointer).unwrap(), b"new");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn canonical_paths_reject_nested_and_parent_directories() {
+        let root = std::env::temp_dir().join(format!(
+            "amber-canonical-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let current = root.join("current").join("data");
+        std::fs::create_dir_all(&current).unwrap();
+        let nested = current.join("child").join("..").join("target");
+        assert!(canonical_data_dirs(&current, &nested).is_err());
+        assert!(canonical_data_dirs(&current, &root).is_err());
+        let sibling = root.join("sibling");
+        let (_, canonical_sibling) = canonical_data_dirs(&current, &sibling).unwrap();
+        assert!(canonical_sibling.is_absolute());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn migration_commit_failure_removes_partially_moved_files() {
+        let root = std::env::temp_dir().join(format!(
+            "amber-commit-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let temporary = root.join("temporary");
+        let destination = root.join("destination");
+        std::fs::create_dir_all(&temporary).unwrap();
+        std::fs::create_dir_all(destination.join("key")).unwrap();
+        std::fs::write(temporary.join("sub2api.db"), b"database").unwrap();
+        std::fs::write(temporary.join("key"), b"key").unwrap();
+        assert!(commit_migration_files(&temporary, &destination).is_err());
+        assert!(!destination.join("sub2api.db").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn canonical_paths_ignore_windows_path_casing() {
+        let root = std::env::temp_dir().join(format!(
+            "amber-case-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let current = root.join("MixedCaseData");
+        std::fs::create_dir_all(&current).unwrap();
+        let alias = std::path::PathBuf::from(current.to_string_lossy().to_uppercase());
+        let (canonical_current, canonical_alias) = canonical_data_dirs(&current, &alias).unwrap();
+        assert_eq!(canonical_current, canonical_alias);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_paths_resolve_symlink_aliases() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!(
+            "amber-symlink-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let current = root.join("current");
+        let alias = root.join("alias");
+        std::fs::create_dir_all(&current).unwrap();
+        symlink(&current, &alias).unwrap();
+        let (canonical_current, canonical_alias) = canonical_data_dirs(&current, &alias).unwrap();
+        assert_eq!(canonical_current, canonical_alias);
         let _ = std::fs::remove_dir_all(root);
     }
 }

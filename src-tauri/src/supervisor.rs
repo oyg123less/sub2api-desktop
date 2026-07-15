@@ -184,6 +184,19 @@ pub fn set_migrating(app: &AppHandle) {
     });
 }
 
+// Ensures a backend stopped for migration is brought back after migration
+// aborts. If termination is still pending, handle_terminated performs the
+// restart; otherwise a new process is started immediately.
+pub fn restart_after_migration_abort(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    *state.supervisor.stop_intent.lock().unwrap() = StopIntent::Restart;
+    if is_running(app) {
+        mutate_state(app, |backend| backend.phase = BackendPhase::Restarting);
+    } else {
+        spawn(app, BackendPhase::Starting);
+    }
+}
+
 pub fn spawn(app: &AppHandle, phase: BackendPhase) {
     let state = app.state::<AppState>();
     {

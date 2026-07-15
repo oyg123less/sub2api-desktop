@@ -170,6 +170,46 @@ func TestChatCompletionsNonStreaming(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsOmittedModelReturnsResolvedModel(t *testing.T) {
+	tests := []struct {
+		name   string
+		stream bool
+	}{
+		{name: "streaming", stream: true},
+		{name: "non-streaming", stream: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := httptest.NewServer(mockUpstreamSSE(t, nil))
+			defer upstream.Close()
+			t.Setenv("SUB2API_UPSTREAM_URL", upstream.URL)
+
+			st := newTestStore(t)
+			seedAccount(t, st)
+			cfg, _ := st.LoadSettings()
+			cfg.DefaultModel = "gpt-5"
+			cfg.TLSFingerprint = false
+			_ = st.SaveSettings(cfg)
+			engine := gateway.New(st, account.NewManager(st), func() store.Settings { settings, _ := st.LoadSettings(); return settings }, nil)
+			body := `{"messages":[{"role":"user","content":"hi"}]}`
+			if tt.stream {
+				body = `{"stream":true,"messages":[{"role":"user","content":"hi"}]}`
+			}
+			request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+			response := httptest.NewRecorder()
+
+			engine.ChatCompletions(response, request)
+
+			if response.Code != http.StatusOK {
+				t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
+			}
+			if !strings.Contains(response.Body.String(), `"model":"gpt-5.4"`) || strings.Contains(response.Body.String(), `"model":""`) {
+				t.Fatalf("response did not contain resolved model: %s", response.Body.String())
+			}
+		})
+	}
+}
+
 func TestNoAccountReturns503(t *testing.T) {
 	st := newTestStore(t)
 	mgr := account.NewManager(st)
@@ -180,6 +220,89 @@ func TestNoAccountReturns503(t *testing.T) {
 	engine.ChatCompletions(w, r)
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503, got %d", w.Code)
+	}
+}
+
+func TestAPIKeyAccountUsesBaseURLWithoutOAuthRefresh(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*gateway.Engine, *store.Store) (int, string)
+	}{
+		{
+			name: "chat completions",
+			call: func(engine *gateway.Engine, _ *store.Store) (int, string) {
+				r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-5.4","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+				w := httptest.NewRecorder()
+				engine.ChatCompletions(w, r)
+				return w.Code, w.Body.String()
+			},
+		},
+		{
+			name: "responses",
+			call: func(engine *gateway.Engine, _ *store.Store) (int, string) {
+				r := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.4","stream":true,"input":"hi"}`))
+				w := httptest.NewRecorder()
+				engine.Responses(w, r)
+				return w.Code, w.Body.String()
+			},
+		},
+		{
+			name: "connectivity test",
+			call: func(engine *gateway.Engine, st *store.Store) (int, string) {
+				accounts, err := st.ListAccounts()
+				if err != nil || len(accounts) != 1 {
+					return http.StatusInternalServerError, "failed to load API-key test account"
+				}
+				result := engine.TestAccount(t.Context(), accounts[0], "gpt-5.4", "hi")
+				if !result.OK {
+					return result.Status, result.Error
+				}
+				return result.Status, result.Sample
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured http.Header
+			calls := 0
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				captured = r.Header.Clone()
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp_api","status":"completed","model":"gpt-5.4","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`+"\n\n")
+			}))
+			defer upstream.Close()
+			t.Setenv("SUB2API_UPSTREAM_URL", "http://127.0.0.1:1/should-not-be-used")
+
+			st := newTestStore(t)
+			_, err := st.CreateAccount(&store.Account{
+				AccountType:      store.AccountTypeAPIKey,
+				BaseURL:          upstream.URL,
+				APIKey:           "sk-api-key",
+				ChatGPTAccountID: "must-not-be-forwarded",
+				RefreshToken:     "refresh_must_not_be_used_1234567890",
+				ExpiresAt:        time.Now().Add(-time.Hour),
+				Status:           store.AccountActive,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			engine := gateway.New(st, account.NewManager(st), func() store.Settings { s, _ := st.LoadSettings(); return s }, nil)
+			status, body := tt.call(engine, st)
+			if status != http.StatusOK {
+				t.Fatalf("status = %d body=%s", status, body)
+			}
+			if calls != 1 {
+				t.Fatalf("upstream calls = %d, want 1", calls)
+			}
+			if captured.Get("Authorization") != "Bearer sk-api-key" {
+				t.Fatal("API-key authorization header was not forwarded")
+			}
+			if captured.Get("chatgpt-account-id") != "" {
+				t.Fatalf("unexpected chatgpt-account-id = %q", captured.Get("chatgpt-account-id"))
+			}
+		})
 	}
 }
 
@@ -241,17 +364,28 @@ func TestChatIncompleteMaxTokensEndsWithLength(t *testing.T) {
 	}
 }
 
-func TestUnsupportedParametersReturnStableCode(t *testing.T) {
+func TestUnsupportedParametersAreIgnored(t *testing.T) {
 	tests := []struct {
-		path string
-		body string
+		path    string
+		body    string
+		ignored string
 	}{
-		{path: "/v1/chat/completions", body: `{"model":"gpt-5.4","messages":[{"role":"user","content":"hi"}],"stop":["END"]}`},
-		{path: "/v1/chat/completions", body: `{"model":"gpt-5.4","messages":[{"role":"user","content":"hi"}],"n":2}`},
-		{path: "/v1/responses", body: `{"model":"gpt-5.4","input":"hi","logprobs":true}`},
+		{path: "/v1/chat/completions", body: `{"model":"gpt-5.4","messages":[{"role":"user","content":"hi"}],"stop":["END"]}`, ignored: "stop"},
+		{path: "/v1/chat/completions", body: `{"model":"gpt-5.4","messages":[{"role":"user","content":"hi"}],"n":2}`, ignored: "n"},
+		{path: "/v1/responses", body: `{"model":"gpt-5.4","input":"hi","logprobs":true}`, ignored: "logprobs"},
 	}
 	for _, tt := range tests {
+		var forwarded map[string]any
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if err := json.NewDecoder(r.Body).Decode(&forwarded); err != nil {
+				t.Errorf("decode upstream request: %v", err)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"r","status":"completed","output":[]}}`+"\n\n")
+		}))
+		t.Setenv("SUB2API_UPSTREAM_URL", upstream.URL)
 		st := newTestStore(t)
+		seedAccount(t, st)
 		engine := gateway.New(st, account.NewManager(st), func() store.Settings { s, _ := st.LoadSettings(); return s }, nil)
 		r := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
 		w := httptest.NewRecorder()
@@ -260,9 +394,13 @@ func TestUnsupportedParametersReturnStableCode(t *testing.T) {
 		} else {
 			engine.ChatCompletions(w, r)
 		}
-		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"code":"unsupported_parameter"`) {
+		if w.Code != http.StatusOK {
 			t.Fatalf("path=%s status=%d body=%s", tt.path, w.Code, w.Body.String())
 		}
+		if _, exists := forwarded[tt.ignored]; exists {
+			t.Fatalf("path=%s forwarded ignored parameter %q: %#v", tt.path, tt.ignored, forwarded)
+		}
+		upstream.Close()
 	}
 }
 

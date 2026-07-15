@@ -9,6 +9,9 @@ import (
 type AccountImportMutation struct {
 	Index            int
 	ExistingID       int64
+	AccountType      AccountType
+	BaseURL          string
+	APIKey           string
 	Email            string
 	ChatGPTAccountID string
 	PlanType         string
@@ -60,6 +63,9 @@ func (s *Store) ApplyAccountImports(mutations []AccountImportMutation) ([]Applie
 }
 
 func (s *Store) insertImportedAccount(tx *sql.Tx, mutation AccountImportMutation) (int64, error) {
+	if mutation.AccountType == "" {
+		mutation.AccountType = AccountTypeOAuth
+	}
 	accessEnc, err := s.cipher.Encrypt(mutation.AccessToken)
 	if err != nil {
 		return 0, err
@@ -72,24 +78,27 @@ func (s *Store) insertImportedAccount(tx *sql.Tx, mutation AccountImportMutation
 	if err != nil {
 		return 0, err
 	}
-	chatGPTID := ""
-	if mutation.IdentityVerified {
-		chatGPTID = mutation.ChatGPTAccountID
+	apiKeyEnc, err := s.cipher.Encrypt(mutation.APIKey)
+	if err != nil {
+		return 0, err
 	}
 	status := AccountPending
 	lastSuccess := int64(0)
-	if mutation.LiveValidated {
+	if mutation.LiveValidated || mutation.AccountType == AccountTypeAPIKey {
 		status = AccountActive
-		lastSuccess = time.Now().Unix()
+		if mutation.LiveValidated {
+			lastSuccess = time.Now().Unix()
+		}
 	}
 	now := time.Now().Unix()
 	result, err := tx.Exec(`INSERT INTO accounts
-		(email, chatgpt_account_id, plan_type, access_token, refresh_token, id_token, expires_at, status, status_reason,
+		(account_type, base_url, api_key, email, chatgpt_account_id, plan_type, access_token, refresh_token, id_token, expires_at, status, status_reason,
 		 rate_limited_until, proxy_id, last_used_at, created_at, updated_at, usage_snapshot, credential_fingerprint,
 		 last_success_at, consecutive_failures, next_retry_at)
-		VALUES (?,?,?,?,?,?,?,?,?,0,NULL,0,?,?,'',?,?,0,0)`,
-		mutation.Email, chatGPTID, mutation.PlanType, accessEnc, refreshEnc, idEnc, timeToUnix(mutation.ExpiresAt),
-		string(status), "", now, now, CredentialFingerprint(mutation.AccessToken, mutation.RefreshToken), lastSuccess)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,NULL,0,?,?,'',?,?,0,0)`,
+		string(mutation.AccountType), mutation.BaseURL, apiKeyEnc, mutation.Email, mutation.ChatGPTAccountID, mutation.PlanType,
+		accessEnc, refreshEnc, idEnc, timeToUnix(mutation.ExpiresAt), string(status), "", now, now,
+		AccountCredentialFingerprint(mutation.AccountType, mutation.AccessToken, mutation.RefreshToken, mutation.BaseURL, mutation.APIKey), lastSuccess)
 	if err != nil {
 		return 0, err
 	}
@@ -100,6 +109,15 @@ func (s *Store) updateImportedAccount(tx *sql.Tx, mutation AccountImportMutation
 	existing, err := s.scanAccount(tx.QueryRow(`SELECT `+accountCols+` FROM accounts WHERE id=?`, mutation.ExistingID))
 	if err != nil {
 		return err
+	}
+	if mutation.AccountType == "" {
+		mutation.AccountType = existing.AccountType
+	}
+	if mutation.BaseURL == "" {
+		mutation.BaseURL = existing.BaseURL
+	}
+	if mutation.APIKey == "" {
+		mutation.APIKey = existing.APIKey
 	}
 	accessChanged := mutation.AccessToken != ""
 	if mutation.AccessToken == "" {
@@ -119,9 +137,15 @@ func (s *Store) updateImportedAccount(tx *sql.Tx, mutation AccountImportMutation
 		}
 	}
 	if !mutation.IdentityVerified {
-		mutation.Email = existing.Email
-		mutation.ChatGPTAccountID = existing.ChatGPTAccountID
-		mutation.PlanType = existing.PlanType
+		if existing.Email != "" {
+			mutation.Email = existing.Email
+		}
+		if existing.ChatGPTAccountID != "" {
+			mutation.ChatGPTAccountID = existing.ChatGPTAccountID
+		}
+		if existing.PlanType != "" {
+			mutation.PlanType = existing.PlanType
+		}
 	} else {
 		if mutation.Email == "" {
 			mutation.Email = existing.Email
@@ -145,18 +169,26 @@ func (s *Store) updateImportedAccount(tx *sql.Tx, mutation AccountImportMutation
 	if err != nil {
 		return err
 	}
+	apiKeyEnc, err := s.cipher.Encrypt(mutation.APIKey)
+	if err != nil {
+		return err
+	}
 	status := existing.Status
 	statusReason := existing.StatusReason
 	lastSuccess := timeToUnixPtr(existing.LastSuccessAt)
-	if mutation.LiveValidated {
+	if mutation.LiveValidated || mutation.AccountType == AccountTypeAPIKey {
 		status = AccountActive
 		statusReason = ""
-		lastSuccess = time.Now().Unix()
+		if mutation.LiveValidated {
+			lastSuccess = time.Now().Unix()
+		}
 	}
-	result, err := tx.Exec(`UPDATE accounts SET email=?, chatgpt_account_id=?, plan_type=?, access_token=?, refresh_token=?,
+	result, err := tx.Exec(`UPDATE accounts SET account_type=?, base_url=?, api_key=?, email=?, chatgpt_account_id=?, plan_type=?, access_token=?, refresh_token=?,
 		id_token=?, expires_at=?, status=?, status_reason=?, credential_fingerprint=?, last_success_at=?, updated_at=? WHERE id=?`,
-		mutation.Email, mutation.ChatGPTAccountID, mutation.PlanType, accessEnc, refreshEnc, idEnc, timeToUnix(mutation.ExpiresAt),
-		string(status), statusReason, CredentialFingerprint(mutation.AccessToken, mutation.RefreshToken), lastSuccess, time.Now().Unix(), mutation.ExistingID)
+		string(mutation.AccountType), mutation.BaseURL, apiKeyEnc, mutation.Email, mutation.ChatGPTAccountID, mutation.PlanType,
+		accessEnc, refreshEnc, idEnc, timeToUnix(mutation.ExpiresAt), string(status), statusReason,
+		AccountCredentialFingerprint(mutation.AccountType, mutation.AccessToken, mutation.RefreshToken, mutation.BaseURL, mutation.APIKey),
+		lastSuccess, time.Now().Unix(), mutation.ExistingID)
 	if err != nil {
 		return err
 	}

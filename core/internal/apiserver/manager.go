@@ -18,10 +18,14 @@ type Manager struct {
 	handler  *Handler
 	settings func() store.Settings
 
-	mu      sync.Mutex
-	server  *http.Server
-	running bool
-	port    int
+	lifecycleMu sync.Mutex
+	mu          sync.Mutex
+	server      *http.Server
+	listener    net.Listener
+	serveDone   chan struct{}
+	running     bool
+	port        int
+	allowLAN    bool
 }
 
 // NewManager creates an API server manager.
@@ -49,12 +53,17 @@ func (m *Manager) Port() int {
 
 // Start binds and serves the API. It is safe to call when already running.
 func (m *Manager) Start() error {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	return m.startWithSettings(m.settings())
+}
+
+func (m *Manager) startWithSettings(cfg store.Settings) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.running {
 		return nil
 	}
-	cfg := m.settings()
 	host := "127.0.0.1"
 	if cfg.AllowLAN {
 		host = "0.0.0.0"
@@ -68,10 +77,15 @@ func (m *Manager) Start() error {
 	mux := http.NewServeMux()
 	m.handler.Mount(mux)
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 15 * time.Second}
+	done := make(chan struct{})
 	m.server = srv
+	m.listener = ln
+	m.serveDone = done
 	m.running = true
 	m.port = cfg.ListenPort
+	m.allowLAN = cfg.AllowLAN
 	go func() {
+		defer close(done)
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			// Serve exited unexpectedly; mark as stopped.
 			m.mu.Lock()
@@ -84,15 +98,70 @@ func (m *Manager) Start() error {
 
 // Stop gracefully shuts down the API server.
 func (m *Manager) Stop() error {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	return m.stop()
+}
+
+func (m *Manager) stop() error {
 	m.mu.Lock()
 	srv := m.server
+	ln := m.listener
+	done := m.serveDone
 	m.running = false
 	m.server = nil
+	m.listener = nil
+	m.serveDone = nil
 	m.mu.Unlock()
 	if srv == nil {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return srv.Shutdown(ctx)
+	err := srv.Shutdown(ctx)
+	// Shutdown only closes listeners that Serve has already registered;
+	// close ours explicitly and wait for the serve goroutine to exit so
+	// the port is guaranteed to be released before returning.
+	if ln != nil {
+		if closeErr := ln.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) && err == nil {
+			err = closeErr
+		}
+	}
+	if done != nil {
+		select {
+		case <-done:
+		case <-ctx.Done():
+		}
+	}
+	return err
+}
+
+// Restart applies the latest listen settings. If the new address cannot be
+// bound, the previous listener is restored before the error is returned.
+func (m *Manager) Restart() error {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+
+	m.mu.Lock()
+	wasRunning := m.running
+	previous := store.Settings{ListenPort: m.port, AllowLAN: m.allowLAN}
+	m.mu.Unlock()
+	if !wasRunning {
+		return nil
+	}
+	if err := m.stop(); err != nil {
+		rollbackErr := m.startWithSettings(previous)
+		if rollbackErr != nil {
+			return fmt.Errorf("stop API server for restart: %w (restore previous listener: %v)", err, rollbackErr)
+		}
+		return fmt.Errorf("stop API server for restart: %w", err)
+	}
+	if err := m.startWithSettings(m.settings()); err != nil {
+		rollbackErr := m.startWithSettings(previous)
+		if rollbackErr != nil {
+			return fmt.Errorf("restart API server: %w (restore previous listener: %v)", err, rollbackErr)
+		}
+		return fmt.Errorf("restart API server: %w (previous listener restored)", err)
+	}
+	return nil
 }

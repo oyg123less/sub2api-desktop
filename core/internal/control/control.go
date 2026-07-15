@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"sub2api-desktop/core/internal/account"
+	"sub2api-desktop/core/internal/codexremote"
 	"sub2api-desktop/core/internal/diagnostics"
 	"sub2api-desktop/core/internal/gateway"
 	"sub2api-desktop/core/internal/openai"
@@ -34,6 +35,7 @@ type ServerController interface {
 	Port() int
 	Start() error
 	Stop() error
+	Restart() error
 }
 
 // SettingsAccess abstracts reading and persisting settings, so the control API
@@ -41,6 +43,15 @@ type ServerController interface {
 type SettingsAccess interface {
 	Get() store.Settings
 	Save(store.Settings) error
+}
+
+type CodexRemoteController interface {
+	Probe(context.Context, codexremote.ProbeRequest) (codexremote.Probe, error)
+	Inject(context.Context, codexremote.InjectRequest) (codexremote.TargetStatus, error)
+	Targets() ([]codexremote.TargetStatus, error)
+	SetTunnel(context.Context, int64, bool) (codexremote.TargetStatus, error)
+	Restore(context.Context, int64) (codexremote.TargetStatus, error)
+	Delete(int64) error
 }
 
 // Control holds control API dependencies.
@@ -52,12 +63,14 @@ type Control struct {
 	server      ServerController
 	engine      *gateway.Engine
 	diagnostics *diagnostics.Service
+	updates     *updateChecker
+	remoteCodex CodexRemoteController
 	token       string
 	version     string
 }
 
 // New builds the control API.
-func New(s *store.Store, mgr *account.Manager, settings SettingsAccess, server ServerController, engine *gateway.Engine, diagnosticService *diagnostics.Service, token, version string) *Control {
+func New(s *store.Store, mgr *account.Manager, settings SettingsAccess, server ServerController, engine *gateway.Engine, diagnosticService *diagnostics.Service, remoteCodex CodexRemoteController, token, version string) *Control {
 	return &Control{
 		store:       s,
 		mgr:         mgr,
@@ -66,6 +79,8 @@ func New(s *store.Store, mgr *account.Manager, settings SettingsAccess, server S
 		server:      server,
 		engine:      engine,
 		diagnostics: diagnosticService,
+		updates:     newUpdateChecker(s, settings, version),
+		remoteCodex: remoteCodex,
 		token:       token,
 		version:     version,
 	}
@@ -75,6 +90,7 @@ func New(s *store.Store, mgr *account.Manager, settings SettingsAccess, server S
 func (c *Control) Mount(mux *http.ServeMux) {
 	h := c.authWrap
 	mux.HandleFunc("GET /control/status", h(c.status))
+	mux.HandleFunc("GET /control/update", h(c.latestRelease))
 	mux.HandleFunc("POST /control/server/start", h(c.serverStart))
 	mux.HandleFunc("POST /control/server/stop", h(c.serverStop))
 
@@ -106,6 +122,12 @@ func (c *Control) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /control/codex/restore", h(c.codexRestore))
 	mux.HandleFunc("GET /control/codex/files", h(c.codexFiles))
 	mux.HandleFunc("PUT /control/codex/files", h(c.codexWriteFiles))
+	mux.HandleFunc("POST /control/codex/remote/test", h(c.codexRemoteTest))
+	mux.HandleFunc("POST /control/codex/remote/inject", h(c.codexRemoteInject))
+	mux.HandleFunc("GET /control/codex/remote/targets", h(c.codexRemoteTargets))
+	mux.HandleFunc("POST /control/codex/remote/{id}/tunnel", h(c.codexRemoteTunnel))
+	mux.HandleFunc("POST /control/codex/remote/{id}/restore", h(c.codexRemoteRestore))
+	mux.HandleFunc("DELETE /control/codex/remote/{id}", h(c.codexRemoteDelete))
 
 	mux.HandleFunc("GET /control/models", h(c.listModels))
 
@@ -126,7 +148,11 @@ func WithCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Control-Token, Authorization")
+		allowHeaders := "Content-Type, X-Control-Token, Authorization, X-Import-Preview-SHA256, X-Validate-After-Import, X-Confirm-Clear"
+		if requested := r.Header.Get("Access-Control-Request-Headers"); requested != "" {
+			allowHeaders = requested
+		}
+		w.Header().Set("Access-Control-Allow-Headers", allowHeaders)
 		w.Header().Set("Access-Control-Max-Age", "600")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -245,12 +271,36 @@ func (c *Control) getSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Control) putSettings(w http.ResponseWriter, r *http.Request) {
+	var fields map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&fields); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	encoded, err := json.Marshal(fields)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
 	var in store.Settings
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := json.Unmarshal(encoded, &in); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 	cur := c.settings.Get()
+	for key, values := range map[string]struct {
+		target  *bool
+		current bool
+	}{
+		"allow_lan":           {target: &in.AllowLAN, current: cur.AllowLAN},
+		"inject_instructions": {target: &in.InjectInstr, current: cur.InjectInstr},
+		"auto_start_server":   {target: &in.AutoStartServer, current: cur.AutoStartServer},
+		"tls_fingerprint":     {target: &in.TLSFingerprint, current: cur.TLSFingerprint},
+		"auto_recovery":       {target: &in.AutoRecovery, current: cur.AutoRecovery},
+	} {
+		if _, exists := fields[key]; !exists {
+			*values.target = values.current
+		}
+	}
 	// Preserve the API key unless explicitly regenerated.
 	if in.LocalAPIKey == "" {
 		in.LocalAPIKey = cur.LocalAPIKey
@@ -302,9 +352,13 @@ func (c *Control) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	switch in.CompatProfile {
 	case "standard":
-		in.TLSFingerprint = false
+		if _, provided := fields["compatibility_profile"]; provided {
+			in.TLSFingerprint = false
+		}
 	case "codex":
-		in.TLSFingerprint = true
+		if _, provided := fields["compatibility_profile"]; provided {
+			in.TLSFingerprint = true
+		}
 	default:
 		writeControlError(w, http.StatusBadRequest, "invalid_compatibility_profile", "compatibility profile must be standard or codex", false, nil)
 		return
@@ -312,6 +366,18 @@ func (c *Control) putSettings(w http.ResponseWriter, r *http.Request) {
 	if err := c.settings.Save(in); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
+	}
+	listenChanged := in.ListenPort != cur.ListenPort || in.AllowLAN != cur.AllowLAN
+	if listenChanged && c.server != nil && c.server.Running() {
+		if err := c.server.Restart(); err != nil {
+			rollbackErr := c.settings.Save(cur)
+			message := err.Error()
+			if rollbackErr != nil {
+				message += "; restore settings: " + rollbackErr.Error()
+			}
+			writeControlError(w, http.StatusInternalServerError, "server_restart_failed", message, true, nil)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, c.settings.Get())
 }

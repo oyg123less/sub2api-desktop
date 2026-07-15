@@ -5,8 +5,11 @@ package account
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -14,6 +17,7 @@ import (
 
 	"sub2api-desktop/core/internal/openai"
 	"sub2api-desktop/core/internal/store"
+	apptransport "sub2api-desktop/core/internal/transport"
 )
 
 // Manager coordinates token refresh across concurrent requests.
@@ -21,8 +25,10 @@ type Manager struct {
 	store            *store.Store
 	identityVerifier IdentityVerifier
 
-	mu    sync.Mutex
-	locks map[int64]*sync.Mutex
+	mu           sync.Mutex
+	locks        map[int64]*sync.Mutex
+	previewMu    sync.Mutex
+	previewPlans map[string]cachedImportPreview
 }
 
 // NewManager creates an account manager.
@@ -31,6 +37,7 @@ func NewManager(s *store.Store) *Manager {
 		store:            s,
 		identityVerifier: NewJWTIdentityVerifier(nil, ""),
 		locks:            make(map[int64]*sync.Mutex),
+		previewPlans:     make(map[string]cachedImportPreview),
 	}
 }
 
@@ -52,6 +59,12 @@ const refreshSkew = 5 * time.Minute
 // refreshing it if necessary. It reloads the account from the store after
 // refreshing so callers see the latest tokens.
 func (m *Manager) ValidAccessToken(ctx context.Context, client *http.Client, acc *store.Account) (string, error) {
+	if acc.AccountType == store.AccountTypeAPIKey {
+		if strings.TrimSpace(acc.APIKey) == "" {
+			return "", fmt.Errorf("API-key account has no api_key")
+		}
+		return acc.APIKey, nil
+	}
 	if !acc.ExpiresAt.IsZero() && time.Now().Before(acc.ExpiresAt.Add(-refreshSkew)) {
 		return acc.AccessToken, nil
 	}
@@ -75,7 +88,9 @@ func (m *Manager) ValidAccessToken(ctx context.Context, client *http.Client, acc
 
 	tok, err := m.doRefresh(ctx, client, fresh.RefreshToken)
 	if err != nil {
-		_ = m.store.SetAccountStatus(acc.ID, store.AccountRefreshFailed, err.Error())
+		if !isRefreshConnectionError(err) {
+			_ = m.store.SetAccountStatus(acc.ID, store.AccountRefreshFailed, err.Error())
+		}
 		return "", err
 	}
 
@@ -90,6 +105,7 @@ func (m *Manager) ValidAccessToken(ctx context.Context, client *http.Client, acc
 	if err := m.store.UpdateTokens(acc.ID, tok.AccessToken, newRefresh, tok.IDToken, expiresAt); err != nil {
 		return "", err
 	}
+	m.backfillIdentityFromIDToken(acc.ID, tok.IDToken)
 	updated, err := m.store.GetAccount(acc.ID)
 	if err != nil {
 		return "", err
@@ -114,7 +130,9 @@ func (m *Manager) Refresh(ctx context.Context, client *http.Client, id int64) er
 
 	tok, err := m.doRefresh(ctx, client, acc.RefreshToken)
 	if err != nil {
-		_ = m.store.SetAccountStatus(id, store.AccountRefreshFailed, err.Error())
+		if !isRefreshConnectionError(err) {
+			_ = m.store.SetAccountStatus(id, store.AccountRefreshFailed, err.Error())
+		}
 		return err
 	}
 	newRefresh := tok.RefreshToken
@@ -122,7 +140,38 @@ func (m *Manager) Refresh(ctx context.Context, client *http.Client, id int64) er
 		newRefresh = acc.RefreshToken
 	}
 	expiresAt := time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
-	return m.store.UpdateTokens(id, tok.AccessToken, newRefresh, tok.IDToken, expiresAt)
+	if err := m.store.UpdateTokens(id, tok.AccessToken, newRefresh, tok.IDToken, expiresAt); err != nil {
+		return err
+	}
+	m.backfillIdentityFromIDToken(id, tok.IDToken)
+	return nil
+}
+
+func isRefreshConnectionError(err error) bool {
+	var transportErr *apptransport.Error
+	if errors.As(err, &transportErr) {
+		return true
+	}
+	var networkErr net.Error
+	return errors.As(err, &networkErr)
+}
+
+func (m *Manager) backfillIdentityFromIDToken(id int64, raw string) {
+	if strings.TrimSpace(raw) == "" {
+		return
+	}
+	claims, err := openai.DecodeIDToken(raw)
+	if err != nil {
+		slog.Warn("decode refreshed account identity failed", "account_id", id, "error", err)
+		return
+	}
+	info := claims.GetUserInfo()
+	if info.Email == "" && info.ChatGPTAccountID == "" && info.PlanType == "" {
+		return
+	}
+	if err := m.store.BackfillAccountIdentity(id, info.Email, info.ChatGPTAccountID, info.PlanType); err != nil {
+		slog.Warn("backfill refreshed account identity failed", "account_id", id, "error", err)
+	}
 }
 
 func (m *Manager) doRefresh(ctx context.Context, client *http.Client, refreshToken string) (*openai.TokenResponse, error) {

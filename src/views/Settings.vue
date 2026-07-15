@@ -5,6 +5,7 @@ import Icon from "../components/Icon.vue";
 import CopyField from "../components/CopyField.vue";
 import ConfirmModal from "../components/ConfirmModal.vue";
 import { api, type Settings } from "../api/control";
+import { isUpdateCheckEnabled, setUpdateCheckEnabled } from "../api/update";
 import { useAppStore } from "../store";
 import {
   isTauri,
@@ -24,6 +25,8 @@ const saving = ref(false);
 const regenOpen = ref(false);
 const lanConfirmOpen = ref(false);
 const initialAllowLAN = ref(false);
+const savedListenPort = ref(0);
+const updateChecksEnabled = ref(isUpdateCheckEnabled());
 
 const inTauri = isTauri();
 const dataDir = ref<DataDirInfo | null>(null);
@@ -99,6 +102,7 @@ async function load() {
   try {
     s.value = await api.getSettings();
 		initialAllowLAN.value = s.value.allow_lan;
+    savedListenPort.value = s.value.listen_port;
     s.value.language = normLang(s.value.language || locale.value);
     await loadModels(s.value.default_model);
   } catch (e) {
@@ -115,12 +119,16 @@ async function save(forceLAN = false) {
 		return;
 	}
   saving.value = true;
+  const listenPortChanged = s.value.listen_port !== savedListenPort.value;
   try {
     s.value = await api.saveSettings(s.value);
+		setUpdateCheckEnabled(updateChecksEnabled.value);
 		initialAllowLAN.value = s.value.allow_lan;
+    savedListenPort.value = s.value.listen_port;
     applyLanguage(s.value.language);
     app.toast(t("settings.saved"), "success");
     await app.refreshStatus();
+    if (listenPortChanged) await warnIfCodexStale();
   } catch (e) {
     app.toast((e as Error).message, "error");
   } finally {
@@ -155,8 +163,18 @@ async function confirmRegen() {
     regenOpen.value = false;
     app.toast(t("settings.saved"), "success");
     await app.refreshStatus();
+    await warnIfCodexStale();
   } catch (e) {
     app.toast((e as Error).message, "error");
+  }
+}
+
+async function warnIfCodexStale() {
+  try {
+    const status = await api.codexStatus();
+    if (status.stale) app.toast(t("codex.configStaleSettings"), "warn");
+  } catch {
+    // The settings change already succeeded; the Codex page will retry status.
   }
 }
 
@@ -291,6 +309,16 @@ onMounted(() => {
             <option value="zh">简体中文</option>
             <option value="en">English</option>
           </select>
+        </div>
+        <div class="setting-row">
+          <div class="setting-info">
+            <h4>{{ t("settings.updateChecks") }}</h4>
+            <p>{{ t("settings.updateChecksDesc") }}</p>
+          </div>
+          <label class="switch">
+            <input v-model="updateChecksEnabled" type="checkbox" />
+            <span class="slider"></span>
+          </label>
         </div>
       </div>
 

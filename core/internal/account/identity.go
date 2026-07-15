@@ -22,7 +22,12 @@ import (
 const (
 	openAIIssuer  = "https://auth.openai.com"
 	openAIJWKSURL = "https://auth.openai.com/.well-known/jwks.json"
+
+	WarningJWKSUnreachable  = "jwks_unreachable"
+	WarningSignatureInvalid = "signature_invalid"
 )
+
+var errJWKSUnreachable = errors.New("JWKS unreachable")
 
 type IdentityLevel string
 
@@ -96,7 +101,10 @@ func (v *JWTIdentityVerifier) VerifyIDToken(ctx context.Context, raw string) (Ve
 		}
 	}
 	if err != nil || !token.Valid {
-		return VerifiedIdentity{}, fmt.Errorf("verify ID token: %w", err)
+		if errors.Is(err, errJWKSUnreachable) {
+			return VerifiedIdentity{}, fmt.Errorf("%w: %v", errJWKSUnreachable, err)
+		}
+		return VerifiedIdentity{}, fmt.Errorf("verify ID token signature or claims: %w", err)
 	}
 	return identityFromClaims(claims)
 }
@@ -188,15 +196,15 @@ func (v *JWTIdentityVerifier) refresh(ctx context.Context) error {
 	}
 	response, err := v.client.Do(request)
 	if err != nil {
-		return fmt.Errorf("fetch JWKS: %w", err)
+		return fmt.Errorf("%w: fetch JWKS: %v", errJWKSUnreachable, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("fetch JWKS: HTTP %d", response.StatusCode)
+		return fmt.Errorf("%w: fetch JWKS: HTTP %d", errJWKSUnreachable, response.StatusCode)
 	}
 	var set jsonWebKeySet
 	if err := json.NewDecoder(response.Body).Decode(&set); err != nil {
-		return fmt.Errorf("decode JWKS: %w", err)
+		return fmt.Errorf("%w: decode JWKS: %v", errJWKSUnreachable, err)
 	}
 	keys := map[string]*rsa.PublicKey{}
 	for _, item := range set.Keys {
@@ -221,7 +229,7 @@ func (v *JWTIdentityVerifier) refresh(ctx context.Context) error {
 		keys[item.KID] = &rsa.PublicKey{N: new(big.Int).SetBytes(modulus), E: exponent}
 	}
 	if len(keys) == 0 {
-		return errors.New("JWKS contained no usable RSA keys")
+		return fmt.Errorf("%w: JWKS contained no usable RSA keys", errJWKSUnreachable)
 	}
 	v.mu.Lock()
 	v.keys = keys
@@ -230,6 +238,13 @@ func (v *JWTIdentityVerifier) refresh(ctx context.Context) error {
 	v.retryAfter = time.Time{}
 	v.mu.Unlock()
 	return nil
+}
+
+func identityVerificationWarningCode(err error) string {
+	if errors.Is(err, errJWKSUnreachable) {
+		return WarningJWKSUnreachable
+	}
+	return WarningSignatureInvalid
 }
 
 func cacheMaxAge(header string) time.Duration {

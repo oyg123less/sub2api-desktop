@@ -5,9 +5,36 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf16"
+
+	"sub2api-desktop/core/internal/openai"
+	"sub2api-desktop/core/internal/store"
 )
 
 const testJWT = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.abcdefgh"
+
+func TestParseImportDocumentAPIKeyDefaultsBaseURL(t *testing.T) {
+	entries, err := ParseImportDocument([]byte(`[{"api_key":"sk-example","name":"Example"}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Err != nil {
+		t.Fatal("API-key import entry did not parse")
+	}
+	entry := entries[0].Entry
+	if entry.AccountType != string(store.AccountTypeAPIKey) || entry.BaseURL != openai.CodexResponsesURL || entry.APIKey != "sk-example" {
+		t.Fatal("API-key import entry was not normalized correctly")
+	}
+}
+
+func TestParseImportDocumentExplicitAPIKeyRequiresKey(t *testing.T) {
+	entries, err := ParseImportDocument([]byte(`[{"account_type":"api_key","base_url":"https://api.example.com/v1/responses"}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Err == nil || !strings.Contains(entries[0].Err.Error(), "api_key") {
+		t.Fatalf("missing api_key was not rejected: %#v", entries)
+	}
+}
 
 func TestParseImportDocumentUTF8BOM(t *testing.T) {
 	raw := append([]byte{0xef, 0xbb, 0xbf}, []byte(`[{"access_token":"`+testJWT+`"},{"refreshToken":"refresh_12345678901234567890"}]`)...)

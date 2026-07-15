@@ -6,6 +6,10 @@ import (
 	"strings"
 )
 
+// CodexResponsesURL is the ChatGPT Codex Responses endpoint used by OAuth
+// accounts and as the default endpoint for API-key accounts.
+const CodexResponsesURL = "https://chatgpt.com/backend-api/codex/responses"
+
 // Model represents an OpenAI model
 type Model struct {
 	ID          string `json:"id"`

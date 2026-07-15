@@ -63,14 +63,18 @@ type Status struct {
 	BackupExists bool   `json:"backup_exists"`
 	BackupAt     string `json:"backup_at,omitempty"`
 	BackupSource string `json:"backup_source,omitempty"`
+	Stale        bool   `json:"stale"`
+	StaleReason  string `json:"stale_reason,omitempty"`
 }
 
 func (m *Manager) configPath() string { return filepath.Join(m.dir, configName) }
 func (m *Manager) authPath() string   { return filepath.Join(m.dir, authName) }
 
-// Status inspects the current Codex config.
-func (m *Manager) Status() (Status, error) {
+// Status inspects the current Codex config and optionally compares the
+// configured gateway URL and API key with their current expected values.
+func (m *Manager) Status(expectedBaseURL, expectedAPIKey string) (Status, error) {
 	st := Status{ConfigPath: m.configPath(), AuthPath: m.authPath()}
+	configuredBaseURL := ""
 	data, err := os.ReadFile(m.configPath())
 	switch {
 	case err == nil:
@@ -80,6 +84,11 @@ func (m *Manager) Status() (Status, error) {
 			provider, _ := config["model_provider"].(string)
 			st.Applied = provider == providerID
 			st.Model, _ = config["model"].(string)
+			if providers, ok := config["model_providers"].(map[string]any); ok {
+				if entry, ok := providers[providerID].(map[string]any); ok {
+					configuredBaseURL, _ = entry["base_url"].(string)
+				}
+			}
 		}
 	case os.IsNotExist(err):
 	default:
@@ -95,6 +104,31 @@ func (m *Manager) Status() (Status, error) {
 			st.BackupAt = info.ModTime().UTC().Format(time.RFC3339)
 			st.BackupSource = "configuration before Amber integration"
 		}
+	}
+	if st.Applied {
+		reasons := make([]string, 0, 2)
+		if expectedBaseURL != "" && strings.TrimSpace(configuredBaseURL) != strings.TrimSpace(expectedBaseURL) {
+			reasons = append(reasons, "base_url_mismatch")
+		}
+		if expectedAPIKey != "" {
+			configuredAPIKey := ""
+			authData, authErr := os.ReadFile(m.authPath())
+			switch {
+			case authErr == nil:
+				var auth map[string]any
+				if json.Unmarshal(authData, &auth) == nil {
+					configuredAPIKey, _ = auth["OPENAI_API_KEY"].(string)
+				}
+			case os.IsNotExist(authErr):
+			default:
+				return st, authErr
+			}
+			if configuredAPIKey != expectedAPIKey {
+				reasons = append(reasons, "api_key_mismatch")
+			}
+		}
+		st.Stale = len(reasons) > 0
+		st.StaleReason = strings.Join(reasons, ",")
 	}
 	return st, nil
 }

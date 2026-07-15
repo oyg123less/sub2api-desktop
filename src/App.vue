@@ -1,9 +1,18 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { useI18n } from "vue-i18n";
 import Icon from "./components/Icon.vue";
+import RouteErrorBoundary from "./components/RouteErrorBoundary.vue";
 import Toasts from "./components/Toasts.vue";
+import UpdateModal from "./components/UpdateModal.vue";
+import type { ReleaseInfo } from "./api/control";
+import {
+  checkForUpdate,
+  isUpdateCheckEnabled,
+  UPDATE_CHECK_INTERVAL_MS,
+  UPDATE_PREFERENCE_EVENT,
+} from "./api/update";
 import { useAppStore } from "./store";
 import logoUrl from "./assets/logo.svg";
 import { initializeBackendBridge, restartBackend, subscribeBackendState } from "./tauri";
@@ -11,6 +20,7 @@ import { initializeBackendBridge, restartBackend, subscribeBackendState } from "
 const route = useRoute();
 const { t } = useI18n();
 const app = useAppStore();
+const mainElement = ref<HTMLElement | null>(null);
 
 const nav = [
   { name: "dashboard", to: "/dashboard", icon: "dashboard" },
@@ -25,7 +35,34 @@ const nav = [
 ];
 
 let timer: number | undefined;
+let updateTimer: number | undefined;
 let unsubscribeBackend: (() => void) | undefined;
+const availableUpdate = ref<ReleaseInfo | null>(null);
+const updateOpen = ref(false);
+let updateChecking = false;
+
+async function refreshUpdate(force = false) {
+  const version = app.status?.version;
+  if (!version || updateChecking || !isUpdateCheckEnabled()) return;
+  updateChecking = true;
+  try {
+    availableUpdate.value = await checkForUpdate(version, force);
+    if (!availableUpdate.value) updateOpen.value = false;
+  } catch {
+    // Update checks are intentionally silent.
+  } finally {
+    updateChecking = false;
+  }
+}
+
+function handleUpdatePreference() {
+  if (!isUpdateCheckEnabled()) {
+    availableUpdate.value = null;
+    updateOpen.value = false;
+    return;
+  }
+  void refreshUpdate(true);
+}
 
 const backendPhase = computed(() => app.backend?.phase ?? "stopped");
 const backendColor = computed(() => {
@@ -35,6 +72,16 @@ const backendColor = computed(() => {
   return "var(--text-faint)";
 });
 const backendLabel = computed(() => t(`backend.${backendPhase.value}`));
+const currentVersion = computed(() => app.status?.version || "0.2.4");
+
+watch(() => app.status?.version, (version) => {
+  if (version) void refreshUpdate();
+});
+
+watch(() => route.fullPath, async () => {
+  await nextTick();
+  mainElement.value?.scrollTo({ top: 0, left: 0, behavior: "auto" });
+});
 
 async function retryBackend() {
   try {
@@ -56,9 +103,13 @@ onMounted(async () => {
   }
   if (app.backendReady) await app.refreshStatus();
   timer = window.setInterval(() => app.refreshStatus(), 5000);
+  updateTimer = window.setInterval(() => void refreshUpdate(true), UPDATE_CHECK_INTERVAL_MS);
+  window.addEventListener(UPDATE_PREFERENCE_EVENT, handleUpdatePreference);
 });
 onUnmounted(() => {
   clearInterval(timer);
+  clearInterval(updateTimer);
+  window.removeEventListener(UPDATE_PREFERENCE_EVENT, handleUpdatePreference);
   unsubscribeBackend?.();
 });
 </script>
@@ -105,14 +156,59 @@ onUnmounted(() => {
             <Icon name="refresh" :size="13" />
           </button>
         </div>
-        <div style="margin-top: 6px">v{{ app.status?.version || "0.2.0" }}</div>
+        <div class="version-row">
+          <span>v{{ currentVersion }}</span>
+          <button
+            v-if="availableUpdate"
+            class="update-badge"
+            type="button"
+            @click="updateOpen = true"
+          >
+            {{ t("updates.available", { version: availableUpdate.tag_name }) }}
+          </button>
+        </div>
       </div>
     </aside>
 
-    <main class="main">
-      <RouterView />
+    <main ref="mainElement" class="main">
+      <RouterView v-slot="{ Component }">
+        <RouteErrorBoundary :component="Component" :reset-key="route.fullPath" />
+      </RouterView>
     </main>
 
     <Toasts />
+    <UpdateModal
+      :open="updateOpen"
+      :release="availableUpdate"
+      :current-version="currentVersion"
+      @close="updateOpen = false"
+    />
   </div>
 </template>
+
+<style scoped>
+.version-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 24px;
+  margin-top: 6px;
+}
+.update-badge {
+  max-width: 100%;
+  padding: 2px 6px;
+  border: 1px solid rgba(193, 134, 58, 0.32);
+  border-radius: 6px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 10.5px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.update-badge:hover {
+  border-color: var(--warn);
+}
+</style>

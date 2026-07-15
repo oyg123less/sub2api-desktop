@@ -20,6 +20,9 @@ import (
 )
 
 type ImportEntry struct {
+	AccountType      string `json:"account_type"`
+	BaseURL          string `json:"base_url"`
+	APIKey           string `json:"api_key"`
 	Email            string `json:"email"`
 	AccessToken      string `json:"access_token"`
 	RefreshToken     string `json:"refresh_token"`
@@ -51,15 +54,18 @@ type ImportPreviewSummary struct {
 type ImportPreviewRow struct {
 	Index                  int           `json:"index"`
 	Action                 ImportAction  `json:"action"`
+	AccountType            string        `json:"account_type"`
 	MatchedAccountID       int64         `json:"matched_account_id,omitempty"`
 	EmailMasked            string        `json:"email_masked,omitempty"`
 	ChatGPTAccountIDMasked string        `json:"chatgpt_account_id_masked,omitempty"`
 	HasAccessToken         bool          `json:"has_access_token"`
 	HasRefreshToken        bool          `json:"has_refresh_token"`
 	HasIDToken             bool          `json:"has_id_token"`
+	HasAPIKey              bool          `json:"has_api_key"`
 	IdentityLevel          IdentityLevel `json:"identity_level"`
 	IdentityVerified       bool          `json:"identity_verified"`
 	Warnings               []string      `json:"warnings"`
+	WarningCodes           []string      `json:"warning_codes"`
 	ErrorCode              string        `json:"error_code,omitempty"`
 	ErrorMessage           string        `json:"error_message,omitempty"`
 }
@@ -69,6 +75,13 @@ type ImportPreview struct {
 	Summary       ImportPreviewSummary `json:"summary"`
 	Rows          []ImportPreviewRow   `json:"rows"`
 	plan          []store.AccountImportMutation
+}
+
+const importPreviewTTL = 10 * time.Minute
+
+type cachedImportPreview struct {
+	preview   *ImportPreview
+	expiresAt time.Time
 }
 
 type ImportCommitResult struct {
@@ -98,6 +111,15 @@ func contentHash(raw []byte) string {
 }
 
 func (m *Manager) PreviewImport(ctx context.Context, raw []byte) (*ImportPreview, error) {
+	preview, err := m.buildImportPreview(ctx, raw)
+	if err != nil {
+		return nil, err
+	}
+	m.cacheImportPreview(preview)
+	return preview, nil
+}
+
+func (m *Manager) buildImportPreview(ctx context.Context, raw []byte) (*ImportPreview, error) {
 	parsed, err := ParseImportDocument(raw)
 	if err != nil {
 		return nil, &ImportServiceError{Code: "import_parse_failed", Message: err.Error()}
@@ -108,16 +130,22 @@ func (m *Manager) PreviewImport(ctx context.Context, raw []byte) (*ImportPreview
 		fingerprint string
 		index       int
 	}{}
-	seenFingerprint := map[string]int{}
+	seenFingerprint := map[string]struct {
+		verifiedID string
+		index      int
+	}{}
 
 	for _, parsedEntry := range parsed {
 		entry := parsedEntry.Entry
 		entry.AccessToken = strings.TrimSpace(entry.AccessToken)
 		entry.RefreshToken = strings.TrimSpace(entry.RefreshToken)
 		entry.IDToken = strings.TrimSpace(entry.IDToken)
+		entry.APIKey = strings.TrimSpace(entry.APIKey)
+		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
 		row := ImportPreviewRow{
-			Index: parsedEntry.Index, HasAccessToken: entry.AccessToken != "", HasRefreshToken: entry.RefreshToken != "",
-			HasIDToken: entry.IDToken != "", IdentityLevel: IdentityUnparsed,
+			AccountType: entry.AccountType,
+			Index:       parsedEntry.Index, HasAccessToken: entry.AccessToken != "", HasRefreshToken: entry.RefreshToken != "",
+			HasIDToken: entry.IDToken != "", HasAPIKey: entry.APIKey != "", IdentityLevel: IdentityUnparsed,
 			Warnings: append([]string(nil), parsedEntry.Warnings...),
 		}
 		if parsedEntry.Err != nil {
@@ -126,10 +154,15 @@ func (m *Manager) PreviewImport(ctx context.Context, raw []byte) (*ImportPreview
 			continue
 		}
 
-		identity, identityWarnings := m.resolveImportIdentity(ctx, entry)
-		row.Warnings = append(row.Warnings, identityWarnings...)
-		row.IdentityLevel = identity.Level
-		row.IdentityVerified = identity.Level == IdentitySigned
+		identity := VerifiedIdentity{Level: IdentityUnparsed}
+		if store.AccountType(entry.AccountType) != store.AccountTypeAPIKey {
+			var identityWarnings, identityWarningCodes []string
+			identity, identityWarnings, identityWarningCodes = m.resolveImportIdentity(ctx, entry)
+			row.Warnings = append(row.Warnings, identityWarnings...)
+			row.WarningCodes = append(row.WarningCodes, identityWarningCodes...)
+			row.IdentityLevel = identity.Level
+			row.IdentityVerified = identity.Level == IdentitySigned
+		}
 		displayEmail, displayID := entry.Email, entry.ChatGPTAccountID
 		if identity.Email != "" {
 			displayEmail = identity.Email
@@ -143,14 +176,6 @@ func (m *Manager) PreviewImport(ctx context.Context, raw []byte) (*ImportPreview
 		}
 		row.ChatGPTAccountIDMasked = maskAccountID(displayID)
 
-		fingerprint := store.CredentialFingerprint(entry.AccessToken, entry.RefreshToken)
-		if firstIndex, duplicate := seenFingerprint[fingerprint]; duplicate && fingerprint != "" {
-			row.Action = ImportSkip
-			row.Warnings = append(row.Warnings, fmt.Sprintf("exact credential duplicate of row %d", firstIndex))
-			preview.addRow(row)
-			continue
-		}
-
 		verifiedID := ""
 		if row.IdentityVerified {
 			verifiedID = identity.ChatGPTAccountID
@@ -162,10 +187,39 @@ func (m *Manager) PreviewImport(ctx context.Context, raw []byte) (*ImportPreview
 				entry.PlanType = identity.PlanType
 			}
 		} else {
-			if displayID != "" {
-				row.Warnings = append(row.Warnings, "unverified account identity will not be used for matching")
+			if entry.ChatGPTAccountID == "" {
+				entry.ChatGPTAccountID = identity.ChatGPTAccountID
 			}
-			entry.ChatGPTAccountID = ""
+			if entry.Email == "" {
+				entry.Email = identity.Email
+			}
+			if entry.PlanType == "" {
+				entry.PlanType = identity.PlanType
+			}
+			if entry.ChatGPTAccountID != "" {
+				row.Warnings = append(row.Warnings, "unverified account identity is used for forwarding only and will not be used for matching")
+			}
+		}
+
+		accountType := store.AccountType(entry.AccountType)
+		fingerprint := store.AccountCredentialFingerprint(accountType, entry.AccessToken, entry.RefreshToken, entry.BaseURL, entry.APIKey)
+		if previous, duplicate := seenFingerprint[fingerprint]; duplicate && fingerprint != "" {
+			if previous.verifiedID != "" && verifiedID != "" && previous.verifiedID != verifiedID {
+				row.Action, row.ErrorCode = ImportConflict, "import_duplicate_conflict"
+				row.ErrorMessage = fmt.Sprintf("credential fingerprint is shared by different verified identities in row %d", previous.index)
+			} else {
+				row.Action = ImportSkip
+				switch {
+				case previous.verifiedID != "" && previous.verifiedID == verifiedID:
+					row.Warnings = append(row.Warnings, fmt.Sprintf("same verified identity and credentials as row %d", previous.index))
+				case previous.verifiedID == "" && verifiedID == "":
+					row.Warnings = append(row.Warnings, fmt.Sprintf("credentials match row %d but neither row has a verified identity; conservatively deduplicated", previous.index))
+				default:
+					row.Warnings = append(row.Warnings, fmt.Sprintf("exact credential duplicate of row %d", previous.index))
+				}
+			}
+			preview.addRow(row)
+			continue
 		}
 
 		if previous, duplicate := seenIdentity[verifiedID]; duplicate && verifiedID != "" {
@@ -193,6 +247,7 @@ func (m *Manager) PreviewImport(ctx context.Context, raw []byte) (*ImportPreview
 		}
 
 		mutation := store.AccountImportMutation{
+			AccountType: accountType, BaseURL: entry.BaseURL, APIKey: entry.APIKey,
 			Index: parsedEntry.Index, Email: entry.Email, ChatGPTAccountID: entry.ChatGPTAccountID, PlanType: entry.PlanType,
 			AccessToken: entry.AccessToken, RefreshToken: entry.RefreshToken, IDToken: entry.IDToken,
 			ExpiresAt: parseExpiry(entry.ExpiresAt), IdentityVerified: row.IdentityVerified,
@@ -206,7 +261,10 @@ func (m *Manager) PreviewImport(ctx context.Context, raw []byte) (*ImportPreview
 		}
 		preview.plan = append(preview.plan, mutation)
 		if fingerprint != "" {
-			seenFingerprint[fingerprint] = parsedEntry.Index
+			seenFingerprint[fingerprint] = struct {
+				verifiedID string
+				index      int
+			}{verifiedID: verifiedID, index: parsedEntry.Index}
 		}
 		if verifiedID != "" {
 			seenIdentity[verifiedID] = struct {
@@ -217,6 +275,45 @@ func (m *Manager) PreviewImport(ctx context.Context, raw []byte) (*ImportPreview
 		preview.addRow(row)
 	}
 	return preview, nil
+}
+
+func (m *Manager) cacheImportPreview(preview *ImportPreview) {
+	now := time.Now()
+	m.previewMu.Lock()
+	defer m.previewMu.Unlock()
+	for sha, cached := range m.previewPlans {
+		if !now.Before(cached.expiresAt) {
+			delete(m.previewPlans, sha)
+		}
+	}
+	m.previewPlans[preview.ContentSHA256] = cachedImportPreview{
+		preview: cloneImportPreview(preview), expiresAt: now.Add(importPreviewTTL),
+	}
+}
+
+func (m *Manager) takeCachedImportPreview(sha string) (*ImportPreview, bool) {
+	m.previewMu.Lock()
+	defer m.previewMu.Unlock()
+	cached, ok := m.previewPlans[sha]
+	if !ok {
+		return nil, false
+	}
+	delete(m.previewPlans, sha)
+	if !time.Now().Before(cached.expiresAt) {
+		return nil, false
+	}
+	return cloneImportPreview(cached.preview), true
+}
+
+func cloneImportPreview(source *ImportPreview) *ImportPreview {
+	clone := *source
+	clone.plan = append([]store.AccountImportMutation(nil), source.plan...)
+	clone.Rows = append([]ImportPreviewRow(nil), source.Rows...)
+	for index := range clone.Rows {
+		clone.Rows[index].Warnings = append([]string(nil), source.Rows[index].Warnings...)
+		clone.Rows[index].WarningCodes = append([]string(nil), source.Rows[index].WarningCodes...)
+	}
+	return &clone
 }
 
 func (p *ImportPreview) addRow(row ImportPreviewRow) {
@@ -235,31 +332,32 @@ func (p *ImportPreview) addRow(row ImportPreviewRow) {
 	}
 }
 
-func (m *Manager) resolveImportIdentity(ctx context.Context, entry ImportEntry) (VerifiedIdentity, []string) {
+func (m *Manager) resolveImportIdentity(ctx context.Context, entry ImportEntry) (VerifiedIdentity, []string, []string) {
 	warnings := []string{}
+	warningCodes := []string{}
 	if entry.IDToken != "" {
 		identity, err := m.identityVerifier.VerifyIDToken(ctx, entry.IDToken)
 		if err == nil {
 			if identity.Expired {
 				warnings = append(warnings, "verified ID token is expired")
 			}
-			return identity, warnings
+			return identity, warnings, warningCodes
 		}
 		identity = decodeIdentity(entry.IDToken)
-		warnings = append(warnings, "ID token signature or claims could not be verified")
+		warningCodes = append(warningCodes, identityVerificationWarningCode(err))
 		if identity.Expired {
 			warnings = append(warnings, "ID token is expired")
 		}
-		return identity, warnings
+		return identity, warnings, warningCodes
 	}
 	if entry.AccessToken != "" {
 		identity := decodeIdentity(entry.AccessToken)
 		if identity.Level == IdentityDecoded {
 			warnings = append(warnings, "access token identity is decoded but unverified")
 		}
-		return identity, warnings
+		return identity, warnings, warningCodes
 	}
-	return VerifiedIdentity{Level: IdentityUnparsed}, warnings
+	return VerifiedIdentity{Level: IdentityUnparsed}, warnings, warningCodes
 }
 
 func (m *Manager) matchImportAccount(verifiedID, fingerprint string) (*store.Account, error) {
@@ -295,9 +393,13 @@ func (m *Manager) CommitImport(ctx context.Context, raw []byte, expectedSHA stri
 			},
 		}
 	}
-	preview, err := m.PreviewImport(ctx, raw)
-	if err != nil {
-		return nil, err
+	preview, ok := m.takeCachedImportPreview(actualSHA)
+	if !ok {
+		var err error
+		preview, err = m.buildImportPreview(ctx, raw)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if preview.Summary.Conflict > 0 {
 		return nil, &ImportServiceError{Code: "import_duplicate_conflict", Message: "import contains conflicting credentials for the same verified identity", Details: map[string]any{"conflicts": preview.Summary.Conflict}}
@@ -346,6 +448,9 @@ func (m *Manager) validateImportedAccounts(ctx context.Context, applied []store.
 			account, err := m.store.GetAccount(item.AccountID)
 			if err != nil {
 				addWarning(item.Index, fmt.Sprintf("row %d validation: %v", item.Index, err))
+				continue
+			}
+			if account.AccountType == store.AccountTypeAPIKey {
 				continue
 			}
 			if account.RefreshToken == "" {

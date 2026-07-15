@@ -9,9 +9,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -23,10 +25,8 @@ import (
 	"sub2api-desktop/core/internal/apicompat"
 	"sub2api-desktop/core/internal/openai"
 	"sub2api-desktop/core/internal/store"
+	apptransport "sub2api-desktop/core/internal/transport"
 )
-
-// defaultUpstreamURL is the ChatGPT Codex responses endpoint.
-const defaultUpstreamURL = "https://chatgpt.com/backend-api/codex/responses"
 
 // UpstreamURL returns the effective upstream endpoint, allowing override via the
 // SUB2API_UPSTREAM_URL environment variable (used for tests).
@@ -34,7 +34,49 @@ func UpstreamURL() string {
 	if v := os.Getenv("SUB2API_UPSTREAM_URL"); v != "" {
 		return v
 	}
-	return defaultUpstreamURL
+	return openai.CodexResponsesURL
+}
+
+func upstreamURLForAccount(acc *store.Account) string {
+	if acc != nil && acc.AccountType == store.AccountTypeAPIKey {
+		if baseURL := strings.TrimSpace(acc.BaseURL); baseURL != "" {
+			return apiKeyResponsesURL(baseURL)
+		}
+		return openai.CodexResponsesURL
+	}
+	return UpstreamURL()
+}
+
+// apiKeyResponsesURL resolves the Responses endpoint for an API-key account:
+// a full endpoint ending in "/responses" is used as-is, a base URL ending in a
+// version segment (e.g. "/v1") gets "/responses" appended, and a bare base URL
+// gets "/v1/responses" appended.
+func apiKeyResponsesURL(base string) string {
+	normalized := strings.TrimRight(base, "/")
+	if strings.HasSuffix(normalized, "/responses") {
+		return normalized
+	}
+	segment := normalized
+	if idx := strings.LastIndex(normalized, "/"); idx >= 0 {
+		segment = normalized[idx+1:]
+	}
+	if isVersionSegment(segment) {
+		return normalized + "/responses"
+	}
+	return normalized + "/v1/responses"
+}
+
+func isVersionSegment(s string) bool {
+	s = strings.ToLower(s)
+	if len(s) < 2 || s[0] != 'v' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // Engine holds the dependencies for request forwarding.
@@ -81,13 +123,6 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "failed to read request body", "invalid_request_error")
 		return
 	}
-	var rawRequest map[string]json.RawMessage
-	if err := json.Unmarshal(bodyBytes, &rawRequest); err == nil {
-		if parameter, unsupported := unsupportedParameter(rawRequest); unsupported {
-			writeErrorCode(w, http.StatusBadRequest, "parameter is not supported by the upstream: "+parameter, "invalid_request_error", "unsupported_parameter")
-			return
-		}
-	}
 	var chatReq apicompat.ChatCompletionsRequest
 	if err := json.Unmarshal(bodyBytes, &chatReq); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error(), "invalid_request_error")
@@ -123,6 +158,7 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var lastErr string
+	lastStatus := 0
 	attempt := 0
 	for index, acc := range candidates {
 		release := releaseFirst
@@ -132,12 +168,14 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		attempt++
 		meta := forwardMeta{RequestID: requestID, RequestedModel: requestedModel, ResolvedModel: logModel, Attempt: attempt, Stream: chatReq.Stream}
 		result := e.forwardOnce(r.Context(), w, &chatReq, acc, cfg, meta)
-		if result.outcome == outcomeAuthFailed && acc.RefreshToken != "" {
+		if result.outcome == outcomeAuthFailed && acc.AccountType == store.AccountTypeOAuth && acc.RefreshToken != "" {
 			if refreshed, err := e.forceRefreshAccount(r.Context(), acc, cfg); err == nil {
 				acc = refreshed
 				attempt++
 				meta.Attempt = attempt
 				result = e.forwardOnce(r.Context(), w, &chatReq, acc, cfg, meta)
+			} else if isNetworkOrProxyError(err) {
+				result = forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadGateway, errMsg: "token refresh connection failed: " + err.Error(), retryable: true}
 			} else {
 				result.errMsg = "token refresh failed: " + err.Error()
 			}
@@ -155,14 +193,21 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			until := time.Now().Add(retry)
 			_ = e.store.SetRateLimited(acc.ID, until)
 			lastErr = result.errMsg
+			lastStatus = 0
 			continue // try next account
 		case outcomeAuthFailed:
 			_ = e.store.RecordAccountFailure(acc.ID, result.errMsg)
 			lastErr = result.errMsg
+			lastStatus = 0
 			continue
 		case outcomeClientClosed:
 			return
 		default:
+			if shouldFailoverUpstreamError(result) {
+				lastErr = result.errMsg
+				lastStatus = result.status
+				continue
+			}
 			// Non-retryable upstream/other error: surface immediately if we
 			// have not written a response yet.
 			if !result.headersWritten {
@@ -174,6 +219,10 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	if lastErr == "" {
 		lastErr = "所有账号均不可用（限额或需要重新登录）"
+	}
+	if lastStatus >= http.StatusInternalServerError {
+		writeError(w, lastStatus, lastErr, "upstream_error")
+		return
 	}
 	writeError(w, http.StatusServiceUnavailable, lastErr, "all_accounts_unavailable")
 }
@@ -194,6 +243,7 @@ type forwardResult struct {
 	errMsg         string
 	headersWritten bool
 	retryAfter     time.Duration
+	retryable      bool
 }
 
 type forwardMeta struct {
@@ -202,24 +252,34 @@ type forwardMeta struct {
 	Stream                                   bool
 }
 
+var errBoundProxyUnavailable = errors.New("bound proxy is unavailable")
+
 func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq *apicompat.ChatCompletionsRequest, acc *store.Account, cfg store.Settings, meta forwardMeta) forwardResult {
 	start := time.Now()
 
 	// Resolve proxy + client.
-	var proxy *store.Proxy
-	if acc.ProxyID != nil {
-		if p, err := e.store.GetProxy(*acc.ProxyID); err == nil {
-			proxy = p
-		}
+	proxy, err := e.proxyForAccount(acc)
+	if err != nil {
+		message := errBoundProxyUnavailable.Error()
+		e.logForward(acc, meta, http.StatusBadGateway, 0, 0, time.Since(start), message, "proxy_unavailable", "proxy_resolution_failed")
+		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadGateway, errMsg: message, retryable: true}
 	}
 	client, err := newHTTPClient(proxy, cfg.CompatProfile, 10*time.Minute)
 	if err != nil {
-		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: err.Error()}
+		e.logForward(acc, meta, http.StatusInternalServerError, 0, 0, time.Since(start), err.Error(), "upstream_network_error", "client_setup_failed")
+		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: err.Error(), retryable: true}
 	}
 	authClient, _ := newHTTPClient(proxy, "standard", 60*time.Second)
 
 	token, err := e.accounts.ValidAccessToken(ctx, authClient, acc)
 	if err != nil {
+		if ctx.Err() != nil {
+			return forwardResult{outcome: outcomeClientClosed}
+		}
+		if isNetworkOrProxyError(err) {
+			e.logForward(acc, meta, http.StatusBadGateway, 0, 0, time.Since(start), err.Error(), "upstream_network_error", "token_refresh_connection_failed")
+			return forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadGateway, errMsg: "token refresh connection failed: " + err.Error(), retryable: true}
+		}
 		return forwardResult{outcome: outcomeAuthFailed, errMsg: "token refresh failed: " + err.Error()}
 	}
 
@@ -242,7 +302,7 @@ func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq
 		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: err.Error()}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, UpstreamURL(), bytes.NewReader(upstreamBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURLForAccount(acc), bytes.NewReader(upstreamBody))
 	if err != nil {
 		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: err.Error()}
 	}
@@ -254,7 +314,9 @@ func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq
 			e.logForward(acc, meta, 499, 0, 0, time.Since(start), "client cancelled request", "client_cancelled", "request_cancelled")
 			return forwardResult{outcome: outcomeClientClosed}
 		}
-		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadGateway, errMsg: "upstream request failed: " + err.Error()}
+		message := "upstream request failed: " + err.Error()
+		e.logForward(acc, meta, http.StatusBadGateway, 0, 0, time.Since(start), message, "upstream_network_error", "request_failed")
+		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadGateway, errMsg: message, retryable: true}
 	}
 	defer resp.Body.Close()
 
@@ -284,30 +346,31 @@ func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq
 	return e.aggregateResponse(w, resp.Body, chatReq, acc, start, meta)
 }
 
-func unsupportedParameter(request map[string]json.RawMessage) (string, bool) {
-	for _, key := range []string{"stop", "n", "logprobs", "top_logprobs", "audio", "modalities"} {
-		value, exists := request[key]
-		if !exists || string(value) == "null" {
-			continue
-		}
-		if key == "n" && (string(value) == "1" || string(value) == "0") {
-			continue
-		}
-		if key == "logprobs" && string(value) == "false" {
-			continue
-		}
-		return key, true
+func shouldFailoverUpstreamError(result forwardResult) bool {
+	return result.outcome == outcomeUpstreamError && !result.headersWritten &&
+		(result.retryable || result.status >= http.StatusInternalServerError)
+}
+
+func isNetworkOrProxyError(err error) bool {
+	if errors.Is(err, errBoundProxyUnavailable) {
+		return true
 	}
-	return "", false
+	var transportErr *apptransport.Error
+	if errors.As(err, &transportErr) {
+		return true
+	}
+	var networkErr net.Error
+	return errors.As(err, &networkErr)
 }
 
 func (e *Engine) forceRefreshAccount(ctx context.Context, acc *store.Account, cfg store.Settings) (*store.Account, error) {
 	_ = cfg
-	var proxy *store.Proxy
-	if acc.ProxyID != nil {
-		if p, err := e.store.GetProxy(*acc.ProxyID); err == nil {
-			proxy = p
-		}
+	if acc.AccountType == store.AccountTypeAPIKey {
+		return nil, errors.New("API-key accounts cannot refresh OAuth tokens")
+	}
+	proxy, err := e.proxyForAccount(acc)
+	if err != nil {
+		return nil, err
 	}
 	client, err := newHTTPClient(proxy, "standard", 60*time.Second)
 	if err != nil {
@@ -317,6 +380,18 @@ func (e *Engine) forceRefreshAccount(ctx context.Context, acc *store.Account, cf
 		return nil, err
 	}
 	return e.store.GetAccount(acc.ID)
+}
+
+func (e *Engine) proxyForAccount(acc *store.Account) (*store.Proxy, error) {
+	if acc == nil || acc.ProxyID == nil {
+		return nil, nil
+	}
+	proxy, err := e.store.GetProxy(*acc.ProxyID)
+	if err != nil {
+		e.logger.Warn("bound proxy unavailable", "account_id", acc.ID, "proxy_id", *acc.ProxyID)
+		return nil, fmt.Errorf("%w", errBoundProxyUnavailable)
+	}
+	return proxy, nil
 }
 
 func (e *Engine) logForward(acc *store.Account, meta forwardMeta, status, prompt, completion int, latency time.Duration, message, kind, terminal string) {
@@ -360,7 +435,11 @@ func (e *Engine) selectAccounts() ([]*store.Account, func(), error) {
 		if a.Status == store.AccountRefreshFailed && a.NextRetryAt != nil && now.Before(*a.NextRetryAt) {
 			continue
 		}
-		if strings.TrimSpace(a.AccessToken) == "" && strings.TrimSpace(a.RefreshToken) == "" {
+		if a.AccountType == store.AccountTypeAPIKey {
+			if strings.TrimSpace(a.APIKey) == "" {
+				continue
+			}
+		} else if strings.TrimSpace(a.AccessToken) == "" && strings.TrimSpace(a.RefreshToken) == "" {
 			continue
 		}
 		out = append(out, a)
@@ -409,7 +488,7 @@ func setCodexHeaders(req *http.Request, token string, acc *store.Account, cfg st
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
-	if acc.ChatGPTAccountID != "" {
+	if acc.AccountType != store.AccountTypeAPIKey && acc.ChatGPTAccountID != "" {
 		req.Header.Set("chatgpt-account-id", acc.ChatGPTAccountID)
 	}
 	ua := cfg.UserAgent

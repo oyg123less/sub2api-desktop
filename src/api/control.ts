@@ -105,6 +105,8 @@ export interface CodexUsage {
 
 export interface Account {
   id: number;
+  account_type: "oauth" | "api_key";
+  base_url: string;
   email: string;
   chatgpt_account_id: string;
   plan_type: string;
@@ -174,6 +176,15 @@ export interface RequestLog {
   created_at: string;
 }
 
+export interface ReleaseInfo {
+  tag_name: string;
+  name: string;
+  body: string;
+  html_url: string;
+  published_at: string;
+  checked_at: string;
+}
+
 export interface ModelCatalogResponse {
   models: string[];
   default_model: string;
@@ -233,15 +244,18 @@ export type ImportAction = "create" | "update" | "skip" | "error" | "conflict";
 export interface ImportPreviewRow {
   index: number;
   action: ImportAction;
+  account_type: "oauth" | "api_key";
   matched_account_id?: number;
   email_masked?: string;
   chatgpt_account_id_masked?: string;
   has_access_token: boolean;
   has_refresh_token: boolean;
   has_id_token: boolean;
+  has_api_key: boolean;
   identity_level: "unparsed" | "decoded" | "signed";
   identity_verified: boolean;
   warnings: string[];
+  warning_codes: ("jwks_unreachable" | "signature_invalid")[];
   error_code?: string;
   error_message?: string;
 }
@@ -331,6 +345,7 @@ async function authenticatedDownload(path: string, failureLabel: string): Promis
 // ---- Endpoints ----
 export const api = {
   status: () => req<Status>("GET", "/control/status"),
+  latestRelease: () => req<ReleaseInfo>("GET", "/control/update"),
   startServer: () => req<{ server_running: boolean; port: number }>("POST", "/control/server/start"),
   stopServer: () => req<{ server_running: boolean }>("POST", "/control/server/stop"),
 
@@ -390,6 +405,18 @@ export const api = {
   codexFiles: () => req<CodexFiles>("GET", "/control/codex/files"),
   saveCodexFiles: (config: string, auth: string) =>
     req<CodexFiles>("PUT", "/control/codex/files", { config, auth }),
+  codexRemoteTest: (target: CodexRemoteConnectionInput) =>
+    req<CodexRemoteProbe>("POST", "/control/codex/remote/test", target),
+  codexRemoteInject: (target: CodexRemoteInjectInput) =>
+    req<CodexRemoteTarget>("POST", "/control/codex/remote/inject", target),
+  codexRemoteTargets: () =>
+    req<{ targets: CodexRemoteTarget[] }>("GET", "/control/codex/remote/targets"),
+  codexRemoteSetTunnel: (id: number, enabled: boolean) =>
+    req<CodexRemoteTarget>("POST", `/control/codex/remote/${id}/tunnel`, { enabled }),
+  codexRemoteRestore: (id: number) =>
+    req<CodexRemoteTarget>("POST", `/control/codex/remote/${id}/restore`),
+  codexRemoteDelete: (id: number) =>
+    req<{ ok: boolean }>("DELETE", `/control/codex/remote/${id}`),
 };
 
 export interface CodexStatus {
@@ -399,7 +426,9 @@ export interface CodexStatus {
   config_exists: boolean;
   backup_exists: boolean;
 	backup_at?: string;
-	backup_source?: string;
+  backup_source?: string;
+  stale: boolean;
+  stale_reason?: string;
   base_url: string;
   model: string;
   models: string[];
@@ -414,4 +443,51 @@ export interface CodexFiles {
   auth_content: string;
   config_default: string;
   auth_default: string;
+}
+
+export interface CodexRemoteProbe {
+  os: string;
+  home: string;
+  codex_dir: string;
+  host_key_fingerprint: string;
+  known: boolean;
+}
+
+export interface CodexRemoteTarget {
+  id: number;
+  name: string;
+  host: string;
+  port: number;
+  user: string;
+  remote_port: number;
+  model: string;
+  mode: "tunnel" | "direct";
+  base_url?: string;
+  saved: boolean;
+  injected: boolean;
+  tunnel_enabled: boolean;
+  tunnel_status: "connected" | "down" | "disabled" | "not_injected" | "injected_direct";
+  last_error?: string;
+  config_preview: string;
+  auth_preview: string;
+  updated_at: string;
+}
+
+export interface CodexRemoteConnectionInput {
+  id?: number;
+  name?: string;
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+}
+
+export interface CodexRemoteInjectInput extends CodexRemoteConnectionInput {
+  model: string;
+  remote_port: number;
+  mode: "tunnel" | "direct";
+  base_url: string;
+  api_key: string;
+  save: boolean;
+  accept_host_key: boolean;
 }

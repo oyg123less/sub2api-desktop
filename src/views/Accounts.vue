@@ -107,6 +107,13 @@ const importPreview = ref<ImportPreview | null>(null);
 const importResult = ref<ImportCommitResult | null>(null);
 const validateAfterImport = ref(true);
 
+// API-key account flow
+const apiKeyOpen = ref(false);
+const apiKeyAdding = ref(false);
+const apiKeyName = ref("");
+const apiKeyBaseURL = ref("https://chatgpt.com/backend-api/codex/responses");
+const apiKeyValue = ref("");
+
 const importExample = `[
   {
     "email": "you@example.com",
@@ -131,6 +138,60 @@ function openImport() {
 function closeImport() {
   if (importing.value) return;
   importOpen.value = false;
+}
+
+function openAPIKey() {
+  apiKeyName.value = "";
+  apiKeyBaseURL.value = "https://chatgpt.com/backend-api/codex/responses";
+  apiKeyValue.value = "";
+  apiKeyOpen.value = true;
+}
+
+function closeAPIKey() {
+  if (apiKeyAdding.value) return;
+  apiKeyValue.value = "";
+  apiKeyOpen.value = false;
+}
+
+async function addAPIKey() {
+  const baseURL = apiKeyBaseURL.value.trim();
+  const key = apiKeyValue.value.trim();
+  if (!baseURL || !key) {
+    app.toast(t("accounts.apiKeyRequired"), "error");
+    return;
+  }
+  try {
+    const parsed = new URL(baseURL);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error();
+  } catch {
+    app.toast(t("accounts.apiKeyURLInvalid"), "error");
+    return;
+  }
+
+  apiKeyAdding.value = true;
+  try {
+    const raw = JSON.stringify([{
+      account_type: "api_key",
+      base_url: baseURL,
+      api_key: key,
+      name: apiKeyName.value.trim(),
+    }]);
+    const preview = await api.previewImport(raw);
+    const row = preview.rows[0];
+    if (!row || row.action === "error" || row.action === "conflict") {
+      throw new Error(row?.error_message || t("accounts.apiKeyAddFailed"));
+    }
+    await api.commitImport(raw, preview.content_sha256, false);
+    apiKeyValue.value = "";
+    apiKeyOpen.value = false;
+    app.toast(t("accounts.apiKeyAdded"), "success");
+    await load();
+    await app.refreshStatus();
+  } catch (error) {
+    app.toast((error as Error).message, "error");
+  } finally {
+    apiKeyAdding.value = false;
+  }
 }
 
 function decodeFileForPreview(bytes: Uint8Array): string {
@@ -376,7 +437,10 @@ onUnmounted(() => clearInterval(pollTimer));
         <p class="page-desc">{{ t("accounts.desc") }}</p>
 				<p class="faint text-sm">{{ t(`accounts.strategy.${accountStrategy}`) }}</p>
       </div>
-      <div class="flex gap-8">
+      <div class="flex gap-8" style="flex-wrap: wrap; justify-content: flex-end">
+        <button class="btn btn-ghost" @click="openAPIKey">
+          <Icon name="key" :size="16" /> {{ t("accounts.addAPIKey") }}
+        </button>
         <button class="btn btn-ghost" @click="openImport">
           <Icon name="upload" :size="16" /> {{ t("accounts.import") }}
         </button>
@@ -395,21 +459,29 @@ onUnmounted(() => clearInterval(pollTimer));
       <button class="btn btn-primary mt-16" @click="startLogin">
         <Icon name="plus" :size="16" /> {{ t("accounts.login") }}
       </button>
+      <button class="btn btn-ghost mt-8" @click="openAPIKey">
+        <Icon name="key" :size="16" /> {{ t("accounts.addAPIKey") }}
+      </button>
     </div>
 
     <div v-else class="grid grid-2">
       <div v-for="a in accounts" :key="a.id" class="card">
         <div class="row-between" style="margin-bottom: 12px">
-          <div class="flex items-center gap-12">
-            <div class="brand-logo" style="background: linear-gradient(135deg, #d97757, #b8532f)">
+          <div class="flex items-center gap-12" style="min-width: 0; flex: 1">
+            <div class="brand-logo" style="flex-shrink: 0; background: linear-gradient(135deg, #d97757, #b8532f)">
               {{ (a.email || "?").charAt(0).toUpperCase() }}
             </div>
-            <div>
+            <div style="min-width: 0">
               <div style="font-weight: 600">{{ a.email || t("common.unknown") }}</div>
-              <div class="faint text-sm">{{ a.plan_type || "ChatGPT" }}</div>
+              <div class="flex items-center gap-8" style="margin-top: 3px">
+                <span class="badge badge-neutral">{{ t(`accounts.accountType.${a.account_type}`) }}</span>
+                <span class="faint text-sm" style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
+                  {{ a.account_type === "api_key" ? a.base_url : (a.plan_type || "ChatGPT") }}
+                </span>
+              </div>
             </div>
           </div>
-          <span class="badge" :class="statusBadge(a.status)">
+          <span class="badge" style="flex-shrink: 0" :class="statusBadge(a.status)">
             <span class="badge-dot"></span>
             {{ t("accounts.status." + a.status) }}
           </span>
@@ -418,17 +490,17 @@ onUnmounted(() => clearInterval(pollTimer));
         <div
           v-if="a.status === 'refresh_failed'"
           class="text-sm"
-          style="color: var(--danger); margin-bottom: 10px"
+          style="color: var(--danger); margin-bottom: 10px; overflow-wrap: anywhere"
         >
           {{ a.status_reason || "" }}
         </div>
 
         <div class="list" style="margin-bottom: 12px">
-          <div class="list-row" style="padding: 7px 0">
+          <div v-if="a.account_type === 'oauth'" class="list-row" style="padding: 7px 0">
             <span class="faint text-sm" style="flex: 1">{{ t("accounts.expiresAt") }}</span>
             <span class="text-sm">{{ fmtDate(a.expires_at) }}</span>
           </div>
-          <div class="list-row" style="padding: 7px 0">
+          <div v-if="a.account_type === 'oauth'" class="list-row" style="padding: 7px 0">
             <span class="faint text-sm" style="flex: 1">{{ t("accounts.lastUsed") }}</span>
             <span class="text-sm">{{ fmtDate(a.last_used_at) }}</span>
           </div>
@@ -450,7 +522,7 @@ onUnmounted(() => clearInterval(pollTimer));
           </div>
         </div>
 
-        <div v-if="a.codex_usage" class="usage-windows">
+        <div v-if="a.account_type === 'oauth' && a.codex_usage" class="usage-windows">
           <div v-for="(w, wi) in usageWindows(a.codex_usage)" :key="wi" class="usage-window">
             <div class="usage-window-head">
               <span class="faint text-sm">{{ w.label }}</span>
@@ -496,14 +568,14 @@ onUnmounted(() => clearInterval(pollTimer));
 
         <div class="flex gap-8">
           <button
-            v-if="a.status === 'refresh_failed'"
+            v-if="a.account_type === 'oauth' && a.status === 'refresh_failed'"
             class="btn btn-primary btn-sm"
             style="flex: 1"
             @click="reLogin"
           >
             <Icon name="refresh" :size="14" /> {{ t("accounts.relogin") }}
           </button>
-          <button v-else class="btn btn-ghost btn-sm" style="flex: 1" @click="refreshToken(a)">
+          <button v-else-if="a.account_type === 'oauth'" class="btn btn-ghost btn-sm" style="flex: 1" @click="refreshToken(a)">
             <Icon name="refresh" :size="14" /> {{ t("common.refresh") }}
           </button>
           <button class="btn btn-danger btn-sm" @click="deleteTarget = a">
@@ -597,6 +669,36 @@ onUnmounted(() => clearInterval(pollTimer));
       </div>
     </Teleport>
 
+    <!-- API-key account modal -->
+    <Teleport to="body">
+      <div v-if="apiKeyOpen" class="modal-backdrop" @click.self="closeAPIKey">
+        <div class="modal" role="dialog" aria-modal="true" tabindex="-1" @keydown.esc="closeAPIKey">
+          <h3 class="modal-title">{{ t("accounts.addAPIKey") }}</h3>
+          <p class="modal-desc">{{ t("accounts.apiKeyHint") }}</p>
+          <div class="field">
+            <label class="field-label">{{ t("accounts.apiKeyBaseURL") }}</label>
+            <input v-model="apiKeyBaseURL" class="input mono" type="url" spellcheck="false" />
+          </div>
+          <div class="field">
+            <label class="field-label">{{ t("accounts.apiKey") }}</label>
+            <input v-model="apiKeyValue" class="input mono" type="password" autocomplete="new-password" spellcheck="false" />
+          </div>
+          <div class="field">
+            <label class="field-label">{{ t("accounts.apiKeyName") }}</label>
+            <input v-model="apiKeyName" class="input" type="text" :placeholder="t('accounts.apiKeyNamePlaceholder')" />
+          </div>
+          <div class="modal-actions">
+            <button class="btn btn-ghost" :disabled="apiKeyAdding" @click="closeAPIKey">{{ t("common.cancel") }}</button>
+            <button class="btn btn-primary" :disabled="apiKeyAdding" @click="addAPIKey">
+              <Icon v-if="apiKeyAdding" name="refresh" class="spin" :size="14" />
+              <Icon v-else name="key" :size="14" />
+              {{ t("common.add") }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
     <!-- Import modal -->
     <Teleport to="body">
       <div v-if="importOpen" class="modal-backdrop" @click.self="closeImport">
@@ -663,16 +765,19 @@ onUnmounted(() => clearInterval(pollTimer));
                     <td><span class="badge" :class="`import-action-${row.action}`">{{ t(`accounts.importAction.${row.action}`) }}</span></td>
                     <td>
                       <div>{{ row.email_masked || row.chatgpt_account_id_masked || "-" }}</div>
-                      <small v-if="row.identity_verified" class="text-success">{{ t("accounts.importVerified") }}</small>
+                      <small v-if="row.account_type === 'api_key'" class="text-success">{{ t("accounts.accountType.api_key") }}</small>
+                      <small v-else-if="row.identity_verified" class="text-success">{{ t("accounts.importVerified") }}</small>
                       <small v-else class="faint">{{ t("accounts.importPending") }}</small>
                     </td>
                     <td class="import-credentials">
                       <span :class="{ active: row.has_access_token }">A</span>
                       <span :class="{ active: row.has_refresh_token }">R</span>
                       <span :class="{ active: row.has_id_token }">I</span>
+                      <span :class="{ active: row.has_api_key }">K</span>
                     </td>
                     <td class="import-message">
                       <div v-if="row.error_message" class="text-danger">{{ row.error_message }}</div>
+                      <div v-for="code in row.warning_codes" :key="code">{{ t(`accounts.importWarning.${code}`) }}</div>
                       <div v-for="warning in row.warnings" :key="warning">{{ warning }}</div>
                     </td>
                   </tr>

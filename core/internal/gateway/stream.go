@@ -20,19 +20,28 @@ func (e *Engine) streamResponse(w http.ResponseWriter, body io.Reader, chatReq *
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
+	streamStarted := false
+	startStream := func() {
+		if streamStarted {
+			return
+		}
+		streamStarted = true
+		w.WriteHeader(http.StatusOK)
+		flusher.Flush()
+	}
 
+	model := responseModel(meta)
 	state := apicompat.NewResponsesEventToChatState()
-	state.Model = meta.RequestedModel
+	state.Model = model
 	state.IncludeUsage = chatReq.StreamOptions != nil && chatReq.StreamOptions.IncludeUsage
 
 	write := func(chunk apicompat.ChatCompletionsChunk) bool {
-		chunk.Model = meta.RequestedModel
+		chunk.Model = model
 		sse, err := apicompat.ChatChunkToSSE(chunk)
 		if err != nil {
 			return false
 		}
+		startStream()
 		if _, err := io.WriteString(w, sse); err != nil {
 			return false
 		}
@@ -50,10 +59,13 @@ func (e *Engine) streamResponse(w http.ResponseWriter, body io.Reader, chatReq *
 		}
 		terminal.observe(evt)
 		if terminal.errorKind != "" {
-			writeStreamError(w, terminal.errorKind, terminal.message)
-			flusher.Flush()
 			prompt, completion := usageCounts(state.Usage)
 			e.logForward(acc, meta, terminal.status, prompt, completion, time.Since(start), terminal.message, terminal.errorKind, terminal.event)
+			if !streamStarted {
+				return forwardResult{outcome: outcomeUpstreamError, status: terminal.status, errMsg: terminal.message, retryable: true}
+			}
+			writeStreamError(w, terminal.errorKind, terminal.message)
+			flusher.Flush()
 			return forwardResult{outcome: outcomeUpstreamError, status: terminal.status, errMsg: terminal.message, headersWritten: true}
 		}
 		for _, chunk := range apicompat.ResponsesEventToChatChunks(evt, state) {
@@ -64,12 +76,16 @@ func (e *Engine) streamResponse(w http.ResponseWriter, body io.Reader, chatReq *
 		}
 	}
 	if err := terminal.finish(sc.Err()); err != nil {
-		writeStreamError(w, terminal.errorKind, terminal.message)
-		flusher.Flush()
 		prompt, completion := usageCounts(state.Usage)
 		e.logForward(acc, meta, terminal.status, prompt, completion, time.Since(start), terminal.message, terminal.errorKind, terminal.event)
+		if !streamStarted {
+			return forwardResult{outcome: outcomeUpstreamError, status: terminal.status, errMsg: terminal.message, retryable: true}
+		}
+		writeStreamError(w, terminal.errorKind, terminal.message)
+		flusher.Flush()
 		return forwardResult{outcome: outcomeUpstreamError, status: terminal.status, errMsg: terminal.message, headersWritten: true}
 	}
+	startStream()
 	_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	flusher.Flush()
 
@@ -81,8 +97,9 @@ func (e *Engine) streamResponse(w http.ResponseWriter, body io.Reader, chatReq *
 // aggregateResponse consumes the upstream SSE and assembles a single
 // non-streaming Chat Completions response.
 func (e *Engine) aggregateResponse(w http.ResponseWriter, body io.Reader, chatReq *apicompat.ChatCompletionsRequest, acc *store.Account, start time.Time, meta forwardMeta) forwardResult {
+	model := responseModel(meta)
 	state := apicompat.NewResponsesEventToChatState()
-	state.Model = meta.RequestedModel
+	state.Model = model
 	state.IncludeUsage = true
 
 	var content strings.Builder
@@ -163,7 +180,7 @@ func (e *Engine) aggregateResponse(w http.ResponseWriter, body io.Reader, chatRe
 		ID:      state.ID,
 		Object:  "chat.completion",
 		Created: state.Created,
-		Model:   meta.RequestedModel,
+		Model:   model,
 		Choices: []apicompat.ChatChoice{{
 			Index:        0,
 			Message:      msg,
@@ -176,6 +193,13 @@ func (e *Engine) aggregateResponse(w http.ResponseWriter, body io.Reader, chatRe
 	writeJSON(w, http.StatusOK, resp)
 	e.logForward(acc, meta, http.StatusOK, prompt, completion, time.Since(start), "", "", terminal.event)
 	return forwardResult{outcome: outcomeSuccess, headersWritten: true}
+}
+
+func responseModel(meta forwardMeta) string {
+	if strings.TrimSpace(meta.RequestedModel) == "" {
+		return meta.ResolvedModel
+	}
+	return meta.RequestedModel
 }
 
 func usageCounts(u *apicompat.ChatUsage) (int, int) {
