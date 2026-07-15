@@ -29,6 +29,7 @@ const nav = [
   { name: "statistics", to: "/statistics", icon: "statistics" },
   { name: "diagnostics", to: "/diagnostics", icon: "bolt" },
   { name: "settings", to: "/settings", icon: "settings" },
+  { name: "cloud", to: "/cloud", icon: "cloud" },
   { name: "codex", to: "/codex", icon: "terminal" },
   { name: "shop", to: "/shop", icon: "cart" },
   { name: "docs", to: "/docs", icon: "docs" },

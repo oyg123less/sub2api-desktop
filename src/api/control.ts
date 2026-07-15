@@ -176,6 +176,64 @@ export interface RequestLog {
   created_at: string;
 }
 
+export interface CloudConflict {
+  id: number;
+  kind: "account" | "proxy" | "codex_remote" | "settings";
+  client_uid: string;
+  resolution: "local_won" | "remote_won";
+  details?: string;
+  created_at: string;
+}
+
+export interface CloudStatus {
+  configured: boolean;
+  authenticated: boolean;
+  pending_verification: boolean;
+  email?: string;
+  role?: "user" | "admin";
+  turnstile_site_key?: string;
+  last_sync_at?: string;
+  pending_items: number;
+  syncing: boolean;
+  last_error?: string;
+  conflicts: CloudConflict[];
+}
+
+export interface CloudAdminUser {
+  id: number;
+  email: string;
+  role: "user" | "admin";
+  email_verified: number;
+  banned: number;
+  created_at: string;
+  updated_at: string;
+  last_active_at?: string;
+  vault_count: number;
+}
+
+export interface CloudAdminSetting {
+  key: "registration_enabled" | "invite_mode";
+  value: string;
+  updated_at: string;
+}
+
+export interface CloudAdminAudit {
+  id: number;
+  actor_user_id: number;
+  action: string;
+  target_type: string;
+  target_id: string;
+  details: string;
+  created_at: string;
+}
+
+export interface CloudAdminOverview {
+  users: CloudAdminUser[];
+  settings: CloudAdminSetting[];
+  audit: CloudAdminAudit[];
+  stats: { users: number; daily_active_users: number; vault_items: number };
+}
+
 export interface ReleaseInfo {
   tag_name: string;
   name: string;
@@ -352,6 +410,28 @@ export const api = {
   getSettings: () => req<Settings>("GET", "/control/settings"),
   saveSettings: (s: Partial<Settings>) => req<Settings>("PUT", "/control/settings", s),
   regenerateKey: () => req<{ local_api_key: string }>("POST", "/control/settings/regenerate-key"),
+
+  cloudStatus: () => req<CloudStatus>("GET", "/control/cloud/status"),
+  cloudRegister: (input: { email: string; password: string; turnstile_token: string; recovery_acknowledged: boolean }) =>
+    req<{ ok: boolean; verification_required: boolean }>("POST", "/control/cloud/register", input),
+  cloudVerifyEmail: (email: string, code: string) =>
+    req<CloudStatus>("POST", "/control/cloud/verify-email", { email, code }),
+  cloudLogin: (email: string, password: string) =>
+    req<CloudStatus>("POST", "/control/cloud/login", { email, password }),
+  cloudLogout: () => req<CloudStatus>("POST", "/control/cloud/logout"),
+  cloudSync: () => req<CloudStatus>("POST", "/control/cloud/sync"),
+  cloudChangePassword: (currentPassword: string, newPassword: string) =>
+    req<CloudStatus>("PUT", "/control/cloud/master-password", { current_password: currentPassword, new_password: newPassword }),
+  cloudAdminOverview: (adminKey: string) =>
+    req<CloudAdminOverview>("POST", "/control/cloud/admin/overview", { admin_key: adminKey }),
+  cloudAdminSetUserBanned: (adminKey: string, userId: number, banned: boolean) =>
+    req<{ ok: boolean }>("PATCH", `/control/cloud/admin/users/${userId}`, { admin_key: adminKey, banned }),
+  cloudAdminLogoutUser: (adminKey: string, userId: number) =>
+    req<{ ok: boolean }>("POST", `/control/cloud/admin/users/${userId}/logout-all`, { admin_key: adminKey }),
+  cloudAdminDeleteUser: (adminKey: string, userId: number) =>
+    req<{ ok: boolean }>("DELETE", `/control/cloud/admin/users/${userId}`, { admin_key: adminKey, confirm: "DELETE" }),
+  cloudAdminUpdateSettings: (adminKey: string, settings: { registration_enabled?: boolean; invite_mode?: boolean }) =>
+    req<{ ok: boolean }>("PATCH", "/control/cloud/admin/settings", { admin_key: adminKey, ...settings }),
 
   listAccounts: () => req<{ accounts: Account[]; usage: Record<string, AccountUsage> }>("GET", "/control/accounts"),
   importAccounts: (rawText: string) =>
