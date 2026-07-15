@@ -60,6 +60,9 @@ type Account struct {
 	NextRetryAt           *time.Time    `json:"next_retry_at,omitempty"`
 	CreatedAt             time.Time     `json:"created_at"`
 	UpdatedAt             time.Time     `json:"updated_at"`
+	ClientUID             string        `json:"client_uid"`
+	SyncVersion           int           `json:"-"`
+	SyncDirty             bool          `json:"-"`
 }
 
 // ProxyType enumerates supported proxy protocols.
@@ -74,14 +77,18 @@ const (
 // Proxy is an outbound proxy that can be bound to accounts. Credentials are
 // stored encrypted at rest.
 type Proxy struct {
-	ID        int64     `json:"id"`
-	Name      string    `json:"name"`
-	Type      ProxyType `json:"type"`
-	Host      string    `json:"host"`
-	Port      int       `json:"port"`
-	Username  string    `json:"username,omitempty"`
-	Password  string    `json:"-"`
-	CreatedAt time.Time `json:"created_at"`
+	ID          int64     `json:"id"`
+	Name        string    `json:"name"`
+	Type        ProxyType `json:"type"`
+	Host        string    `json:"host"`
+	Port        int       `json:"port"`
+	Username    string    `json:"username,omitempty"`
+	Password    string    `json:"-"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	ClientUID   string    `json:"client_uid"`
+	SyncVersion int       `json:"-"`
+	SyncDirty   bool      `json:"-"`
 }
 
 // CodexRemoteTarget is a saved SSH target for remote Codex configuration.
@@ -102,6 +109,9 @@ type CodexRemoteTarget struct {
 	Injected      bool      `json:"injected"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
+	ClientUID     string    `json:"client_uid"`
+	SyncVersion   int       `json:"-"`
+	SyncDirty     bool      `json:"-"`
 }
 
 // RequestLog records one proxied request for statistics and diagnostics.

@@ -23,6 +23,7 @@ import (
 
 	"sub2api-desktop/core/internal/account"
 	"sub2api-desktop/core/internal/apiserver"
+	"sub2api-desktop/core/internal/cloudsync"
 	"sub2api-desktop/core/internal/codexremote"
 	"sub2api-desktop/core/internal/config"
 	"sub2api-desktop/core/internal/control"
@@ -41,6 +42,8 @@ func main() {
 		controlPort  = flag.Int("control-port", 0, "control API port (0 = random free port)")
 		controlToken = flag.String("control-token", "", "control API token (generated if empty)")
 		showVersion  = flag.Bool("version", false, "print version and exit")
+		cloudURL     = flag.String("cloud-url", os.Getenv("AMBER_CLOUD_API_URL"), "Amber Cloud API URL")
+		turnstileKey = flag.String("turnstile-site-key", os.Getenv("AMBER_TURNSTILE_SITE_KEY"), "public Turnstile site key")
 	)
 	flag.Parse()
 
@@ -52,13 +55,13 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
-	if err := run(*dataDir, *controlPort, *controlToken, logger); err != nil {
+	if err := run(*dataDir, *controlPort, *controlToken, *cloudURL, *turnstileKey, logger); err != nil {
 		logger.Error("sidecar exited with error", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(dataDir string, controlPort int, controlToken string, logger *slog.Logger) error {
+func run(dataDir string, controlPort int, controlToken, cloudURL, turnstileSiteKey string, logger *slog.Logger) error {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
 	}
@@ -98,18 +101,23 @@ func run(dataDir string, controlPort int, controlToken string, logger *slog.Logg
 		return fmt.Errorf("init Codex remote manager: %w", err)
 	}
 	defer remoteCodex.Close()
+	cloudManager := cloudsync.NewManager(st, holder, cloudURL, turnstileSiteKey, nil, logger)
+	cloudManager.SetAppliedHook(remoteCodex.ReloadSaved)
+	defer cloudManager.Close()
 	diagnosticService := diagnostics.New(st, holder.Get, apiManager, dataDir, version)
 	cleanupCtx, stopCleanup := context.WithCancel(context.Background())
 	defer stopCleanup()
 	go maintainLogs(cleanupCtx, st, holder.Get, logger)
 	go engine.MaintainUsageSnapshots(cleanupCtx)
 	go remoteCodex.RestoreSaved(cleanupCtx)
+	go cloudManager.Run(cleanupCtx)
 
 	if controlToken == "" {
 		controlToken = randomToken()
 	}
 
 	ctrl := control.New(st, mgr, holder, apiManager, engine, diagnosticService, remoteCodex, controlToken, version)
+	ctrl.SetCloudController(cloudManager)
 
 	// Control API listener (loopback only).
 	controlLn, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", controlPort))

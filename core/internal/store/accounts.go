@@ -26,11 +26,13 @@ func (s *Store) scanAccount(row interface {
 		usageJSON   string
 		lastSuccess int64
 		nextRetry   int64
+		syncDirty   int
 	)
 	if err := row.Scan(&a.ID, &a.AccountType, &a.BaseURL, &apiKeyEnc, &a.Email, &a.ChatGPTAccountID, &a.PlanType,
 		&accessEnc, &refreshEnc, &idTokenEnc, &expiresAt, &status, &a.StatusReason,
 		&rateUntil, &proxyID, &lastUsed, &createdAt, &updatedAt, &usageJSON,
-		&a.CredentialFingerprint, &lastSuccess, &a.ConsecutiveFailures, &nextRetry); err != nil {
+		&a.CredentialFingerprint, &lastSuccess, &a.ConsecutiveFailures, &nextRetry,
+		&a.ClientUID, &a.SyncVersion, &syncDirty); err != nil {
 		return nil, err
 	}
 	if usageJSON != "" {
@@ -59,6 +61,7 @@ func (s *Store) scanAccount(row interface {
 	a.ExpiresAt = unixToTime(expiresAt)
 	a.CreatedAt = unixToTime(createdAt)
 	a.UpdatedAt = unixToTime(updatedAt)
+	a.SyncDirty = syncDirty != 0
 	if proxyID.Valid {
 		v := proxyID.Int64
 		a.ProxyID = &v
@@ -82,7 +85,7 @@ func (s *Store) scanAccount(row interface {
 	return &a, nil
 }
 
-const accountCols = `id, account_type, base_url, api_key, email, chatgpt_account_id, plan_type, access_token, refresh_token, id_token, expires_at, status, status_reason, rate_limited_until, proxy_id, last_used_at, created_at, updated_at, usage_snapshot, credential_fingerprint, last_success_at, consecutive_failures, next_retry_at`
+const accountCols = `id, account_type, base_url, api_key, email, chatgpt_account_id, plan_type, access_token, refresh_token, id_token, expires_at, status, status_reason, rate_limited_until, proxy_id, last_used_at, created_at, updated_at, usage_snapshot, credential_fingerprint, last_success_at, consecutive_failures, next_retry_at, client_uid, sync_version, sync_dirty`
 
 // CreateAccount inserts a new account (tokens encrypted).
 func (s *Store) CreateAccount(a *Account) (*Account, error) {

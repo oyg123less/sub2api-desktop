@@ -16,7 +16,7 @@ import (
 	appcrypto "sub2api-desktop/core/internal/crypto"
 )
 
-const CurrentSchemaVersion = 6
+const CurrentSchemaVersion = 7
 
 type migration struct {
 	version int
@@ -31,6 +31,7 @@ var migrations = []migration{
 	{version: 4, name: "v0.2.2 api-key accounts", apply: migrateV022APIKeyAccounts},
 	{version: 5, name: "v0.2.3 Codex remote targets", apply: migrateV023CodexRemoteTargets},
 	{version: 6, name: "v0.2.4 Codex direct remote targets", apply: migrateV024CodexDirectTargets},
+	{version: 7, name: "v0.3.0 cloud sync metadata", apply: migrateV030CloudSync},
 }
 
 func databaseExists(path string) bool {
@@ -264,6 +265,149 @@ func migrateV024CodexDirectTargets(tx *sql.Tx, _ *appcrypto.Cipher) error {
 	}
 	for _, column := range columns {
 		if err := addColumnIfMissing(tx, "codex_remote_targets", column.name, column.declaration); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateV030CloudSync(tx *sql.Tx, _ *appcrypto.Cipher) error {
+	for table, columns := range map[string][]struct{ name, declaration string }{
+		"accounts": {
+			{"client_uid", `TEXT NOT NULL DEFAULT ''`},
+			{"sync_version", `INTEGER NOT NULL DEFAULT 0`},
+			{"sync_dirty", `INTEGER NOT NULL DEFAULT 1`},
+		},
+		"proxies": {
+			{"client_uid", `TEXT NOT NULL DEFAULT ''`},
+			{"sync_version", `INTEGER NOT NULL DEFAULT 0`},
+			{"sync_dirty", `INTEGER NOT NULL DEFAULT 1`},
+			{"updated_at", `INTEGER NOT NULL DEFAULT 0`},
+		},
+		"codex_remote_targets": {
+			{"client_uid", `TEXT NOT NULL DEFAULT ''`},
+			{"sync_version", `INTEGER NOT NULL DEFAULT 0`},
+			{"sync_dirty", `INTEGER NOT NULL DEFAULT 1`},
+		},
+	} {
+		for _, column := range columns {
+			if err := addColumnIfMissing(tx, table, column.name, column.declaration); err != nil {
+				return err
+			}
+		}
+	}
+
+	uuidExpr := `lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' ||
+		substr(lower(hex(randomblob(2))), 2) || '-' ||
+		substr('89ab', 1 + abs(random()) % 4, 1) || substr(lower(hex(randomblob(2))), 2) || '-' ||
+		lower(hex(randomblob(6)))`
+	for _, table := range []string{"accounts", "proxies", "codex_remote_targets"} {
+		if _, err := tx.Exec(`UPDATE ` + table + ` SET client_uid=` + uuidExpr + ` WHERE client_uid=''`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_` + table + `_client_uid ON ` + table + `(client_uid)`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE proxies SET updated_at=created_at WHERE updated_at=0`); err != nil {
+		return err
+	}
+
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS cloud_sync_runtime (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		)`,
+		`INSERT INTO cloud_sync_runtime(key,value) VALUES('applying','0') ON CONFLICT(key) DO NOTHING`,
+		`CREATE TABLE IF NOT EXISTS cloud_sync_tombstones (
+			kind TEXT NOT NULL,
+			client_uid TEXT NOT NULL,
+			sync_version INTEGER NOT NULL DEFAULT 0,
+			updated_at INTEGER NOT NULL,
+			PRIMARY KEY(kind,client_uid)
+		)`,
+		`CREATE TABLE IF NOT EXISTS cloud_sync_settings (
+			id INTEGER PRIMARY KEY CHECK(id=1),
+			client_uid TEXT NOT NULL UNIQUE,
+			sync_version INTEGER NOT NULL DEFAULT 0,
+			sync_dirty INTEGER NOT NULL DEFAULT 1,
+			updated_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO cloud_sync_settings(id,client_uid,updated_at)
+			SELECT 1, ` + uuidExpr + `, unixepoch() WHERE NOT EXISTS(SELECT 1 FROM cloud_sync_settings WHERE id=1)`,
+		`CREATE TABLE IF NOT EXISTS cloud_session (
+			id INTEGER PRIMARY KEY CHECK(id=1),
+			user_id INTEGER NOT NULL,
+			email TEXT NOT NULL,
+			role TEXT NOT NULL DEFAULT 'user',
+			salt_kdf TEXT NOT NULL,
+			salt_auth TEXT NOT NULL,
+			wrapped_vault_key TEXT NOT NULL,
+			vault_key_cipher TEXT NOT NULL,
+			refresh_token_cipher TEXT NOT NULL,
+			sync_cursor TEXT NOT NULL DEFAULT '',
+			last_sync_at INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS cloud_sync_conflicts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			kind TEXT NOT NULL,
+			client_uid TEXT NOT NULL,
+			resolution TEXT NOT NULL,
+			details TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cloud_sync_conflicts_created ON cloud_sync_conflicts(created_at DESC,id DESC)`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+
+	triggers := []string{
+		`CREATE TRIGGER IF NOT EXISTS accounts_cloud_insert AFTER INSERT ON accounts
+		WHEN NEW.client_uid='' BEGIN
+			UPDATE accounts SET client_uid=` + uuidExpr + `,sync_dirty=1 WHERE id=NEW.id;
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS proxies_cloud_insert AFTER INSERT ON proxies
+		WHEN NEW.client_uid='' BEGIN
+			UPDATE proxies SET client_uid=` + uuidExpr + `,sync_dirty=1,updated_at=CASE WHEN NEW.updated_at=0 THEN unixepoch() ELSE NEW.updated_at END WHERE id=NEW.id;
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS codex_remote_cloud_insert AFTER INSERT ON codex_remote_targets
+		WHEN NEW.client_uid='' BEGIN
+			UPDATE codex_remote_targets SET client_uid=` + uuidExpr + `,sync_dirty=1 WHERE id=NEW.id;
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS accounts_cloud_dirty AFTER UPDATE OF
+			account_type,base_url,api_key,email,chatgpt_account_id,plan_type,access_token,refresh_token,id_token,expires_at,status,proxy_id
+			ON accounts WHEN (SELECT value FROM cloud_sync_runtime WHERE key='applying')<>'1'
+		BEGIN UPDATE accounts SET sync_dirty=1 WHERE id=NEW.id; END`,
+		`CREATE TRIGGER IF NOT EXISTS proxies_cloud_dirty AFTER UPDATE OF name,type,host,port,username,password ON proxies
+			WHEN (SELECT value FROM cloud_sync_runtime WHERE key='applying')<>'1'
+		BEGIN UPDATE proxies SET sync_dirty=1,updated_at=unixepoch() WHERE id=NEW.id; END`,
+		`CREATE TRIGGER IF NOT EXISTS codex_remote_cloud_dirty AFTER UPDATE OF
+			name,host,port,user,password_cipher,remote_port,model,mode,base_url,api_key_cipher,tunnel_enabled,injected
+			ON codex_remote_targets WHEN (SELECT value FROM cloud_sync_runtime WHERE key='applying')<>'1'
+		BEGIN UPDATE codex_remote_targets SET sync_dirty=1 WHERE id=NEW.id; END`,
+		`CREATE TRIGGER IF NOT EXISTS accounts_cloud_delete BEFORE DELETE ON accounts
+			WHEN (SELECT value FROM cloud_sync_runtime WHERE key='applying')<>'1'
+		BEGIN INSERT INTO cloud_sync_tombstones(kind,client_uid,sync_version,updated_at)
+			VALUES('account',OLD.client_uid,OLD.sync_version,unixepoch())
+			ON CONFLICT(kind,client_uid) DO UPDATE SET sync_version=MAX(sync_version,excluded.sync_version),updated_at=excluded.updated_at; END`,
+		`CREATE TRIGGER IF NOT EXISTS proxies_cloud_delete BEFORE DELETE ON proxies
+			WHEN (SELECT value FROM cloud_sync_runtime WHERE key='applying')<>'1'
+		BEGIN INSERT INTO cloud_sync_tombstones(kind,client_uid,sync_version,updated_at)
+			VALUES('proxy',OLD.client_uid,OLD.sync_version,unixepoch())
+			ON CONFLICT(kind,client_uid) DO UPDATE SET sync_version=MAX(sync_version,excluded.sync_version),updated_at=excluded.updated_at; END`,
+		`CREATE TRIGGER IF NOT EXISTS codex_remote_cloud_delete BEFORE DELETE ON codex_remote_targets
+			WHEN (SELECT value FROM cloud_sync_runtime WHERE key='applying')<>'1'
+		BEGIN INSERT INTO cloud_sync_tombstones(kind,client_uid,sync_version,updated_at)
+			VALUES('codex_remote',OLD.client_uid,OLD.sync_version,unixepoch())
+			ON CONFLICT(kind,client_uid) DO UPDATE SET sync_version=MAX(sync_version,excluded.sync_version),updated_at=excluded.updated_at; END`,
+	}
+	for _, trigger := range triggers {
+		if _, err := tx.Exec(trigger); err != nil {
 			return err
 		}
 	}

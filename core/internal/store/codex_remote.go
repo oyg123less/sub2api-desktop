@@ -6,16 +6,17 @@ import (
 	"time"
 )
 
-const codexRemoteTargetCols = `id, name, host, port, user, password_cipher, remote_port, model, mode, base_url, api_key_cipher, tunnel_enabled, injected, created_at, updated_at`
+const codexRemoteTargetCols = `id, name, host, port, user, password_cipher, remote_port, model, mode, base_url, api_key_cipher, tunnel_enabled, injected, created_at, updated_at, client_uid, sync_version, sync_dirty`
 
 func (s *Store) scanCodexRemoteTarget(row interface{ Scan(...any) error }) (*CodexRemoteTarget, error) {
 	var target CodexRemoteTarget
 	var passwordCipher, apiKeyCipher string
 	var tunnelEnabled, injected int
 	var createdAt, updatedAt int64
+	var syncDirty int
 	if err := row.Scan(&target.ID, &target.Name, &target.Host, &target.Port, &target.User, &passwordCipher,
 		&target.RemotePort, &target.Model, &target.Mode, &target.BaseURL, &apiKeyCipher,
-		&tunnelEnabled, &injected, &createdAt, &updatedAt); err != nil {
+		&tunnelEnabled, &injected, &createdAt, &updatedAt, &target.ClientUID, &target.SyncVersion, &syncDirty); err != nil {
 		return nil, err
 	}
 	password, err := s.cipher.Decrypt(passwordCipher)
@@ -37,6 +38,7 @@ func (s *Store) scanCodexRemoteTarget(row interface{ Scan(...any) error }) (*Cod
 	target.Injected = injected != 0
 	target.CreatedAt = unixToTime(createdAt)
 	target.UpdatedAt = unixToTime(updatedAt)
+	target.SyncDirty = syncDirty != 0
 	return &target, nil
 }
 

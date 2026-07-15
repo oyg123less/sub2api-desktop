@@ -14,8 +14,11 @@ func (s *Store) scanProxy(row interface {
 		typ       string
 		passEnc   string
 		createdAt int64
+		updatedAt int64
+		syncDirty int
 	)
-	if err := row.Scan(&p.ID, &p.Name, &typ, &p.Host, &p.Port, &p.Username, &passEnc, &createdAt); err != nil {
+	if err := row.Scan(&p.ID, &p.Name, &typ, &p.Host, &p.Port, &p.Username, &passEnc, &createdAt,
+		&p.ClientUID, &p.SyncVersion, &syncDirty, &updatedAt); err != nil {
 		return nil, err
 	}
 	pass, err := s.cipher.Decrypt(passEnc)
@@ -25,10 +28,12 @@ func (s *Store) scanProxy(row interface {
 	p.Type = ProxyType(typ)
 	p.Password = pass
 	p.CreatedAt = unixToTime(createdAt)
+	p.UpdatedAt = unixToTime(updatedAt)
+	p.SyncDirty = syncDirty != 0
 	return &p, nil
 }
 
-const proxyCols = `id, name, type, host, port, username, password, created_at`
+const proxyCols = `id, name, type, host, port, username, password, created_at, client_uid, sync_version, sync_dirty, updated_at`
 
 // CreateProxy inserts a proxy (password encrypted).
 func (s *Store) CreateProxy(p *Proxy) (*Proxy, error) {

@@ -65,6 +65,59 @@ func NewManager(st targetStore, knownHostsPath string, localAddress func() strin
 	return manager, nil
 }
 
+// ReloadSaved merges cloud-synced target records into the runtime manager and
+// starts routing only for newly discovered saved tunnel targets.
+func (m *Manager) ReloadSaved(ctx context.Context) error {
+	if m.store == nil {
+		return nil
+	}
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	targets, err := m.store.ListCodexRemoteTargets()
+	if err != nil {
+		return err
+	}
+	seen := make(map[int64]bool, len(targets))
+	var startIDs []int64
+	var removed []*tunnel
+	m.mu.Lock()
+	for _, target := range targets {
+		seen[target.ID] = true
+		if target.Mode == "" {
+			target.Mode = ModeTunnel
+		}
+		target.APIKey = ""
+		if current := m.targets[target.ID]; current != nil {
+			current.record = target
+			current.saved = true
+			continue
+		}
+		m.targets[target.ID] = &runtimeTarget{record: target, saved: true}
+		if target.Mode != ModeDirect && target.Injected && target.TunnelEnabled {
+			startIDs = append(startIDs, target.ID)
+		}
+	}
+	for id, current := range m.targets {
+		if current.saved && !seen[id] {
+			if current.tunnel != nil {
+				removed = append(removed, current.tunnel)
+			}
+			delete(m.targets, id)
+		}
+	}
+	m.mu.Unlock()
+	for _, active := range removed {
+		closeActiveTunnel(active)
+	}
+	for _, id := range startIDs {
+		if err := m.enableTunnel(ctx, id); err != nil {
+			m.setLastError(id, err.Error())
+			m.logger.Warn("start cloud-synced Codex tunnel failed", "target_id", id, "error", err)
+		}
+	}
+	return nil
+}
+
 func (m *Manager) Probe(ctx context.Context, request ProbeRequest) (Probe, error) {
 	request, err := normalizeProbeRequest(request)
 	if err != nil {

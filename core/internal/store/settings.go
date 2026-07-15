@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"strconv"
+	"time"
 
 	"sub2api-desktop/core/internal/openai"
 )
@@ -199,6 +200,15 @@ func (s *Store) SaveSettings(v Settings) error {
 	}
 	for k, val := range kv {
 		if err := s.setKV(k, val); err != nil {
+			return err
+		}
+	}
+	applying, err := s.cloudApplying()
+	if err != nil {
+		return err
+	}
+	if !applying {
+		if _, err := s.db.Exec(`UPDATE cloud_sync_settings SET sync_dirty=1,updated_at=? WHERE id=1`, time.Now().Unix()); err != nil {
 			return err
 		}
 	}

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"sub2api-desktop/core/internal/account"
+	"sub2api-desktop/core/internal/cloudsync"
 	"sub2api-desktop/core/internal/codexremote"
 	"sub2api-desktop/core/internal/diagnostics"
 	"sub2api-desktop/core/internal/gateway"
@@ -54,6 +55,16 @@ type CodexRemoteController interface {
 	Delete(int64) error
 }
 
+type CloudController interface {
+	Status() cloudsync.Status
+	Register(context.Context, cloudsync.RegisterInput) error
+	VerifyEmail(context.Context, string, string) error
+	Login(context.Context, string, string) error
+	Logout(context.Context) error
+	Sync(context.Context) error
+	ChangePassword(context.Context, string, string) error
+}
+
 // Control holds control API dependencies.
 type Control struct {
 	store       *store.Store
@@ -65,8 +76,13 @@ type Control struct {
 	diagnostics *diagnostics.Service
 	updates     *updateChecker
 	remoteCodex CodexRemoteController
+	cloud       CloudController
 	token       string
 	version     string
+}
+
+func (c *Control) SetCloudController(controller CloudController) {
+	c.cloud = controller
 }
 
 // New builds the control API.
@@ -128,6 +144,14 @@ func (c *Control) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /control/codex/remote/{id}/tunnel", h(c.codexRemoteTunnel))
 	mux.HandleFunc("POST /control/codex/remote/{id}/restore", h(c.codexRemoteRestore))
 	mux.HandleFunc("DELETE /control/codex/remote/{id}", h(c.codexRemoteDelete))
+
+	mux.HandleFunc("GET /control/cloud/status", h(c.cloudStatus))
+	mux.HandleFunc("POST /control/cloud/register", h(c.cloudRegister))
+	mux.HandleFunc("POST /control/cloud/verify-email", h(c.cloudVerifyEmail))
+	mux.HandleFunc("POST /control/cloud/login", h(c.cloudLogin))
+	mux.HandleFunc("POST /control/cloud/logout", h(c.cloudLogout))
+	mux.HandleFunc("POST /control/cloud/sync", h(c.cloudSync))
+	mux.HandleFunc("PUT /control/cloud/master-password", h(c.cloudChangePassword))
 
 	mux.HandleFunc("GET /control/models", h(c.listModels))
 
