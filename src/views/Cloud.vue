@@ -30,7 +30,7 @@ const turnstile = ref<InstanceType<typeof TurnstileWidget> | null>(null);
 const adminOpen = ref(false);
 const adminKey = ref("");
 const adminOverview = ref<CloudAdminOverview | null>(null);
-const adminTab = ref<"users" | "settings" | "stats" | "audit">("users");
+const adminTab = ref<"users" | "shares" | "settings" | "stats" | "audit">("users");
 const adminBusy = ref("");
 const adminSearch = ref("");
 const registrationEnabled = ref(true);
@@ -169,6 +169,7 @@ function applyAdminOverview(value: CloudAdminOverview) {
   adminOverview.value = {
     ...value,
     users: Array.isArray(value.users) ? value.users : [],
+    shares: Array.isArray(value.shares) ? value.shares : [],
     settings: Array.isArray(value.settings) ? value.settings : [],
     audit: Array.isArray(value.audit) ? value.audit : [],
   };
@@ -279,6 +280,19 @@ async function saveAdminSettings() {
     });
     await refreshAdmin();
     app.toast(t("cloud.adminSettingsSaved"), "success");
+  } catch (error) {
+    app.toast((error as Error).message, "error");
+  } finally {
+    adminBusy.value = "";
+  }
+}
+
+async function setAdminShareRevoked(shareId: number, revoked: boolean) {
+  adminBusy.value = `share-${shareId}`;
+  try {
+    await api.cloudAdminSetShareRevoked(adminKey.value, shareId, revoked);
+    await refreshAdmin();
+    app.toast(t(revoked ? "cloud.adminShareRevoked" : "cloud.adminShareRestored"), "success");
   } catch (error) {
     app.toast((error as Error).message, "error");
   } finally {
@@ -410,10 +424,30 @@ onMounted(load);
         <template v-else>
           <div class="admin-boundary" role="note"><Icon name="warn" :size="18" /><p><strong>{{ t("cloud.adminBoundaryTitle") }}</strong> {{ t("cloud.adminBoundaryDesc") }}</p></div>
           <div class="admin-tabs" role="tablist" :aria-label="t('cloud.adminTitle')">
-            <button v-for="tab in (['users', 'settings', 'stats', 'audit'] as const)" :key="tab" type="button" role="tab" :aria-selected="adminTab === tab" :class="{ active: adminTab === tab }" @click="adminTab = tab">{{ t(`cloud.adminTab.${tab}`) }}</button>
+            <button v-for="tab in (['users', 'shares', 'settings', 'stats', 'audit'] as const)" :key="tab" type="button" role="tab" :aria-selected="adminTab === tab" :class="{ active: adminTab === tab }" @click="adminTab = tab">{{ t(`cloud.adminTab.${tab}`) }}</button>
           </div>
 
-          <div v-if="adminTab === 'users'" class="admin-view">
+          <div v-if="adminTab === 'shares'" class="admin-view">
+            <div><h3>{{ t("cloud.adminSharesTitle") }}</h3><p>{{ t("cloud.adminSharesDesc") }}</p></div>
+            <div class="admin-table-wrap">
+              <table class="admin-table admin-share-table">
+                <thead><tr><th>{{ t("cloud.adminShareOwner") }}</th><th>{{ t("cloud.adminShareCode") }}</th><th>{{ t("cloud.adminStatus") }}</th><th>{{ t("cloud.adminShareUsage") }}</th><th>{{ t("cloud.adminShareExpiry") }}</th><th class="admin-actions-heading">{{ t("cloud.adminActions") }}</th></tr></thead>
+                <tbody>
+                  <tr v-for="share in adminOverview.shares" :key="share.id">
+                    <td><strong>{{ share.owner_email }}</strong><small>#{{ share.owner_id }}</small></td>
+                    <td class="mono">{{ share.share_code }}</td>
+                    <td><span class="badge" :class="share.revoked ? 'badge-danger' : 'badge-success'">{{ t(share.revoked ? "cloud.adminShareRevokedStatus" : "cloud.adminShareActive") }}</span></td>
+                    <td>{{ share.used_requests }} / {{ share.quota_requests || "∞" }}</td>
+                    <td>{{ formatTime(share.expires_at) }}</td>
+                    <td class="admin-row-actions"><button class="btn btn-sm" :class="share.revoked ? 'btn-ghost' : 'btn-danger'" type="button" :disabled="adminBusy !== ''" @click="setAdminShareRevoked(share.id, !Boolean(share.revoked))">{{ t(share.revoked ? "cloud.adminShareRestore" : "cloud.adminShareRevoke") }}</button></td>
+                  </tr>
+                  <tr v-if="adminOverview.shares.length === 0"><td colspan="6" class="admin-empty">{{ t("cloud.adminNoShares") }}</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div v-else-if="adminTab === 'users'" class="admin-view">
             <div class="admin-view-toolbar"><div><h3>{{ t("cloud.adminUsersTitle") }}</h3><p>{{ t("cloud.adminUsersDesc") }}</p></div><input v-model="adminSearch" data-test="cloud-admin-search" class="input admin-search" type="search" :placeholder="t('cloud.adminSearch')" /></div>
             <div class="admin-table-wrap">
               <table class="admin-table">
@@ -449,6 +483,9 @@ onMounted(load);
               <div><span>{{ t("cloud.adminTotalUsers") }}</span><strong>{{ adminOverview.stats.users }}</strong></div>
               <div><span>{{ t("cloud.adminDailyActive") }}</span><strong>{{ adminOverview.stats.daily_active_users }}</strong></div>
               <div><span>{{ t("cloud.adminVaultItems") }}</span><strong>{{ adminOverview.stats.vault_items }}</strong></div>
+              <div><span>{{ t("cloud.adminActiveShares") }}</span><strong>{{ adminOverview.stats.active_shares }}</strong></div>
+              <div><span>{{ t("cloud.adminShareRequests") }}</span><strong>{{ adminOverview.stats.share_requests }}</strong></div>
+              <div><span>{{ t("cloud.adminShareErrorRate") }}</span><strong>{{ ((adminOverview.stats.share_error_rate || 0) * 100).toFixed(1) }}%</strong></div>
             </div>
           </div>
 

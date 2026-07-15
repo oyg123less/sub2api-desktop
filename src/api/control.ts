@@ -121,6 +121,7 @@ export interface Account {
   next_retry_at?: string | null;
   codex_usage?: CodexUsage | null;
   created_at: string;
+  client_uid: string;
 }
 
 export interface Proxy {
@@ -229,9 +230,45 @@ export interface CloudAdminAudit {
 
 export interface CloudAdminOverview {
   users: CloudAdminUser[];
+  shares: CloudAdminShare[];
   settings: CloudAdminSetting[];
   audit: CloudAdminAudit[];
-  stats: { users: number; daily_active_users: number; vault_items: number };
+  stats: { users: number; daily_active_users: number; vault_items: number; active_shares: number; share_requests: number; share_error_rate: number };
+}
+
+export interface CloudAdminShare {
+  id: number;
+  owner_id: number;
+  owner_email: string;
+  account_uid: string;
+  share_code: string;
+  quota_requests: number;
+  used_requests: number;
+  expires_at?: string;
+  revoked: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CloudShare {
+  id: number;
+  account_uid: string;
+  share_code: string;
+  quota_requests: number;
+  used_requests: number;
+  expires_at?: string;
+  revoked: boolean;
+  created_at: string;
+  updated_at: string;
+  base_url: string;
+}
+
+export interface CloudShareUsage {
+  id: number;
+  ts: string;
+  model?: string;
+  status: number;
+  latency_ms: number;
 }
 
 export interface ReleaseInfo {
@@ -432,6 +469,15 @@ export const api = {
     req<{ ok: boolean }>("DELETE", `/control/cloud/admin/users/${userId}`, { admin_key: adminKey, confirm: "DELETE" }),
   cloudAdminUpdateSettings: (adminKey: string, settings: { registration_enabled?: boolean; invite_mode?: boolean }) =>
     req<{ ok: boolean }>("PATCH", "/control/cloud/admin/settings", { admin_key: adminKey, ...settings }),
+  cloudAdminSetShareRevoked: (adminKey: string, shareId: number, revoked: boolean) =>
+    req<{ ok: boolean }>("PATCH", `/control/cloud/admin/shares/${shareId}`, { admin_key: adminKey, revoked }),
+  cloudShares: () => req<{ shares: CloudShare[] }>("GET", "/control/cloud/shares"),
+  cloudCreateShare: (input: { account_id: number; quota_requests: number; expires_at: string; consent: boolean }) =>
+    req<{ share: CloudShare; guest_key: string }>("POST", "/control/cloud/shares", input),
+  cloudUpdateShare: (shareId: number, updates: { revoked?: boolean; quota_requests?: number; expires_at?: string }) =>
+    req<CloudShare>("PATCH", `/control/cloud/shares/${shareId}`, updates),
+  cloudShareUsage: (shareId: number) =>
+    req<{ usage: CloudShareUsage[] }>("GET", `/control/cloud/shares/${shareId}/usage`),
 
   listAccounts: () => req<{ accounts: Account[]; usage: Record<string, AccountUsage> }>("GET", "/control/accounts"),
   importAccounts: (rawText: string) =>
