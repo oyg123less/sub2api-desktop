@@ -623,7 +623,7 @@ onBeforeUnmount(() => {
           </div>
           <div v-if="remoteForm.mode === 'direct'" class="field direct-api-key-field">
             <label class="field-label" for="remote-api-key">{{ t("codex.directAPIKey") }}</label>
-            <input id="remote-api-key" v-model="remoteForm.apiKey" data-test="remote-api-key" class="input mono" :class="{ 'input-error': remoteErrors.apiKey }" type="password" autocomplete="new-password" spellcheck="false" :placeholder="t('codex.directAPIKeyPlaceholder')" />
+            <input id="remote-api-key" v-model="remoteForm.apiKey" data-test="remote-api-key" class="input mono" :class="{ 'input-error': remoteErrors.apiKey }" type="password" autocomplete="new-password" spellcheck="false" :placeholder="t(remoteForm.id && remoteForm.id > 0 ? 'codex.savedDirectAPIKeyPlaceholder' : 'codex.directAPIKeyPlaceholder')" />
             <p v-if="remoteErrors.apiKey" class="field-error">{{ remoteFieldError("apiKey") }}</p>
           </div>
         </div>

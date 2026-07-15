@@ -70,13 +70,15 @@ func (c *Control) codexRemoteInject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		request.APIKey = strings.TrimSpace(request.APIKey)
-		if request.APIKey == "" {
+		if request.APIKey == "" && request.ID <= 0 {
 			writeControlError(w, http.StatusBadRequest, "invalid_request", "api_key is required for direct mode", false, nil)
 			return
 		}
 		request.BaseURL = baseURL
 		request.Config = codexcfg.RenderConfig(baseURL, request.Model)
-		request.Auth = codexcfg.RenderAuth(request.APIKey)
+		if request.APIKey != "" {
+			request.Auth = codexcfg.RenderAuth(request.APIKey)
+		}
 	default:
 		writeControlError(w, http.StatusBadRequest, "invalid_request", "mode must be tunnel or direct", false, nil)
 		return

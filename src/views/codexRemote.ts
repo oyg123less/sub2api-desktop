@@ -84,7 +84,7 @@ export function validateCodexRemoteForm(value: CodexRemoteFormValue): CodexRemot
   if (value.mode === "direct") {
     if (!value.baseUrl.trim()) errors.baseUrl = "required";
     else if (!isValidDirectBaseURL(value.baseUrl)) errors.baseUrl = "invalid";
-    if (!value.apiKey.trim()) errors.apiKey = "required";
+    if (!value.apiKey.trim() && (!value.id || value.id <= 0)) errors.apiKey = "required";
   } else if (!Number.isInteger(value.remotePort) || value.remotePort < 1 || value.remotePort > 65535) {
     errors.remotePort = "invalid";
   }

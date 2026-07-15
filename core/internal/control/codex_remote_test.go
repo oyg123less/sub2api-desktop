@@ -59,6 +59,21 @@ func TestCodexRemoteDirectInjectValidationAndRendering(t *testing.T) {
 		}
 	})
 
+	t.Run("saved target reuses key", func(t *testing.T) {
+		remote := &remoteControllerStub{target: codexremote.TargetStatus{ID: 7, Mode: codexremote.ModeDirect}}
+		control := &Control{remoteCodex: remote, settings: settings}
+		request := httptest.NewRequest(http.MethodPost, "/control/codex/remote/inject", strings.NewReader(
+			`{"id":7,"host":"example.test","user":"deploy","mode":"direct","base_url":"https://api.example.test/v1","model":"gpt-5.6-sol"}`))
+		response := httptest.NewRecorder()
+		control.codexRemoteInject(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status = %d, body=%s", response.Code, response.Body.String())
+		}
+		if remote.lastInject.APIKey != "" || remote.lastInject.Auth != "" || remote.lastInject.Config == "" {
+			t.Fatal("saved direct reinject request was not deferred to the manager")
+		}
+	})
+
 	for _, test := range []struct {
 		name string
 		body string
@@ -67,6 +82,7 @@ func TestCodexRemoteDirectInjectValidationAndRendering(t *testing.T) {
 		{name: "missing host", body: `{"mode":"direct","base_url":"https:///v1","api_key":"key","model":"gpt-5.6-sol"}`},
 		{name: "userinfo", body: `{"mode":"direct","base_url":"https://key@api.example.test/v1","api_key":"key","model":"gpt-5.6-sol"}`},
 		{name: "missing api key", body: `{"mode":"direct","base_url":"https://api.example.test/v1","model":"gpt-5.6-sol"}`},
+		{name: "unsaved target missing api key", body: `{"id":-1,"mode":"direct","base_url":"https://api.example.test/v1","model":"gpt-5.6-sol"}`},
 		{name: "invalid mode", body: `{"mode":"other","model":"gpt-5.6-sol"}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {

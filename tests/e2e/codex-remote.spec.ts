@@ -3,6 +3,7 @@ import { expect, test } from "@playwright/test";
 test("injects tunnel and direct remote targets without exposing credentials", async ({ page }, testInfo) => {
   let targets: Record<string, unknown>[] = [];
   let directInject: Record<string, unknown> | null = null;
+  let directReinject: Record<string, unknown> | null = null;
   await page.addInitScript(() => {
     localStorage.setItem("s2a_control_port", "45678");
     localStorage.setItem("s2a_control_token", "fixture-control-token");
@@ -49,7 +50,8 @@ test("injects tunnel and direct remote targets without exposing credentials", as
     if (path === "/control/codex/remote/inject") {
       const body = request.postDataJSON() as Record<string, unknown>;
       if (body.mode === "direct") {
-        directInject = body;
+        if (body.api_key) directInject = body;
+        else directReinject = body;
         const target = {
           id: 2,
           name: "deploy@direct.example.test",
@@ -68,7 +70,9 @@ test("injects tunnel and direct remote targets without exposing credentials", as
           auth_preview: "{\"OPENAI_API_KEY\":\"********\"}",
           updated_at: new Date().toISOString(),
         };
-        targets.push(target);
+        const index = targets.findIndex((item) => item.id === target.id);
+        if (index >= 0) targets[index] = target;
+        else targets.push(target);
         return json(target);
       }
       const target = {
@@ -131,6 +135,18 @@ test("injects tunnel and direct remote targets without exposing credentials", as
     api_key: "fixture-direct-key",
   });
   await expect(page.locator("body")).not.toContainText("fixture-direct-key");
+
+  const directReinjectButton = directCard.getByRole("button", { name: "Reinject" });
+  await expect(directReinjectButton).toHaveCount(1);
+  await directReinjectButton.click();
+  await expect(page.locator('[data-test="remote-api-key"]')).toHaveAttribute("placeholder", "Leave blank to use the saved API Key");
+  await page.locator('[data-test="remote-inject"]').click();
+  expect(directReinject).toMatchObject({
+    id: 2,
+    mode: "direct",
+    base_url: "https://api.example.test/v1",
+    api_key: "",
+  });
   const dimensions = await page.evaluate(() => ({
     scrollWidth: document.documentElement.scrollWidth,
     clientWidth: document.documentElement.clientWidth,

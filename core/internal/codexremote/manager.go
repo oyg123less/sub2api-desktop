@@ -133,11 +133,17 @@ func (m *Manager) Inject(ctx context.Context, request InjectRequest) (TargetStat
 		connectionOwned = false
 	}
 
+	apiKeyForStorage := request.APIKey
+	if request.reuseAPIKey {
+		apiKeyForStorage = ""
+	}
 	record := &store.CodexRemoteTarget{
 		Name: request.Name, Host: request.Host, Port: request.Port, User: request.User, Password: request.Password,
-		RemotePort: request.RemotePort, Model: request.Model, Mode: request.Mode, BaseURL: request.BaseURL, APIKey: request.APIKey,
+		RemotePort: request.RemotePort, Model: request.Model, Mode: request.Mode, BaseURL: request.BaseURL, APIKey: apiKeyForStorage,
 		TunnelEnabled: request.Mode == ModeTunnel, Injected: true,
 	}
+	request.APIKey = ""
+	request.Auth = ""
 	existingID := int64(0)
 	saved := request.Save
 	if existing != nil {
@@ -380,9 +386,28 @@ func (m *Manager) normalizeInjectRequest(request InjectRequest) (InjectRequest, 
 	case ModeDirect:
 		request.BaseURL = strings.TrimRight(strings.TrimSpace(request.BaseURL), "/")
 		request.APIKey = strings.TrimSpace(request.APIKey)
-		if request.BaseURL == "" || request.APIKey == "" {
+		if request.BaseURL == "" {
 			return InjectRequest{}, nil, codedError("invalid_target", nil)
 		}
+		if request.APIKey == "" {
+			if existing == nil || !existing.saved || existing.record.ID <= 0 || m.store == nil {
+				return InjectRequest{}, nil, codedError("invalid_target", nil)
+			}
+			persisted, err := m.store.GetCodexRemoteTarget(existing.record.ID)
+			if err != nil {
+				if errors.Is(err, store.ErrNotFound) {
+					return InjectRequest{}, nil, codedError("target_not_found", err)
+				}
+				return InjectRequest{}, nil, err
+			}
+			request.APIKey = strings.TrimSpace(persisted.APIKey)
+			persisted.APIKey = ""
+			if request.APIKey == "" {
+				return InjectRequest{}, nil, codedError("invalid_target", nil)
+			}
+			request.reuseAPIKey = true
+		}
+		request.Auth = codexcfg.RenderAuth(request.APIKey)
 	default:
 		return InjectRequest{}, nil, codedError("invalid_target", nil)
 	}

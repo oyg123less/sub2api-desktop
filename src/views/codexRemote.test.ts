@@ -49,6 +49,12 @@ describe("validateCodexRemoteForm", () => {
     expect(validateCodexRemoteForm({ ...direct, baseUrl: "https://api.example.test/v1", apiKey: "key" })).toEqual({});
   });
 
+  it("allows a saved direct target to reuse its API key", () => {
+    const direct = { ...valid, id: 7, password: "", mode: "direct" as const, baseUrl: "https://api.example.test/v1", apiKey: "" };
+    expect(validateCodexRemoteForm(direct)).toEqual({});
+    expect(validateCodexRemoteForm({ ...direct, id: -1 }).apiKey).toBe("required");
+  });
+
   it("keeps tunnel validation independent from direct-only fields", () => {
     expect(validateCodexRemoteForm({ ...valid, baseUrl: "invalid", apiKey: "" })).toEqual({});
     expect(validateCodexRemoteForm({ ...valid, remotePort: 0 }).remotePort).toBe("invalid");

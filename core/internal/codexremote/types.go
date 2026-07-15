@@ -86,6 +86,7 @@ type InjectRequest struct {
 	APIKey        string `json:"api_key"`
 	Config        string `json:"-"`
 	Auth          string `json:"-"`
+	reuseAPIKey   bool
 }
 
 type TargetStatus struct {

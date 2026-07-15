@@ -47,13 +47,80 @@ func (s *memoryTargetStore) CreateCodexRemoteTarget(target *store.CodexRemoteTar
 func (s *memoryTargetStore) UpdateCodexRemoteTarget(target *store.CodexRemoteTarget) (*store.CodexRemoteTarget, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.targets[target.ID]; !ok {
+	existing, ok := s.targets[target.ID]
+	if !ok {
 		return nil, store.ErrNotFound
 	}
 	updated := cloneTarget(target)
+	if updated.Mode == ModeDirect && updated.APIKey == "" {
+		updated.APIKey = existing.APIKey
+	}
 	updated.UpdatedAt = time.Now()
 	s.targets[updated.ID] = cloneTarget(updated)
 	return cloneTarget(updated), nil
+}
+
+func TestManagerReusesSavedDirectAPIKey(t *testing.T) {
+	storage := newMemoryTargetStore()
+	const apiKey = "fixture-saved-direct-key"
+	created, err := storage.CreateCodexRemoteTarget(&store.CodexRemoteTarget{
+		Name: "saved-direct", Host: "example.test", Port: 22, User: "deploy", Password: "fixture-password",
+		RemotePort: 8080, Model: "gpt-5.6", Mode: ModeDirect, BaseURL: "https://api.example.test/v1",
+		APIKey: apiKey, Injected: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewManager(storage, filepath.Join(t.TempDir(), "known_hosts"), func() string { return "127.0.0.1:1" }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	operations := &lifecycleRemote{}
+	listenCalls := 0
+	manager.dial = func(context.Context, ProbeRequest, bool, bool) (*dialResult, error) {
+		return &dialResult{connection: &scriptedConnection{listen: func(string, string) (net.Listener, error) {
+			listenCalls++
+			return nil, errors.New("direct mode attempted to create a tunnel")
+		}}}, nil
+	}
+	manager.remote = func(remoteConnection) remoteOperations { return operations }
+
+	request := InjectRequest{
+		ID: created.ID, Host: created.Host, Port: created.Port, User: created.User, Mode: ModeDirect,
+		BaseURL: created.BaseURL, Model: created.Model, Save: true,
+		Config: codexcfg.RenderConfig(created.BaseURL, created.Model),
+	}
+	reinjected, err := manager.Inject(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operations.mu.Lock()
+	lastAuth := operations.lastAuth
+	operations.mu.Unlock()
+	if lastAuth != codexcfg.RenderAuth(apiKey) {
+		t.Fatal("saved direct API key was not reused for reinjection")
+	}
+	if listenCalls != 0 || reinjected.TunnelStatus != StatusInjectedDirect {
+		t.Fatalf("reinject status = %#v, listen calls = %d", reinjected, listenCalls)
+	}
+	manager.mu.Lock()
+	runtimeAPIKey := manager.targets[created.ID].record.APIKey
+	manager.mu.Unlock()
+	if runtimeAPIKey != "" {
+		t.Fatal("reused API key remained in the runtime target")
+	}
+	persisted, err := storage.GetCodexRemoteTarget(created.ID)
+	if err != nil || persisted.APIKey != apiKey {
+		t.Fatalf("persisted API key was not preserved: target=%#v err=%v", persisted, err)
+	}
+	encoded, err := json.Marshal(reinjected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), apiKey) {
+		t.Fatal("reinject response exposed the reused API key")
+	}
 }
 
 func (s *memoryTargetStore) GetCodexRemoteTarget(id int64) (*store.CodexRemoteTarget, error) {
