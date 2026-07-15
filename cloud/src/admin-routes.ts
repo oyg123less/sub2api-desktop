@@ -77,6 +77,8 @@ admin.delete("/users/:id", async (c) => {
   await revokeUserSessions(c.env, targetID);
   await audit(c.env, actor.id, "user.delete", "user", String(targetID));
   await c.env.DB.batch([
+    c.env.DB.prepare("DELETE FROM share_usage_log WHERE grant_id IN (SELECT id FROM share_grants WHERE owner_id=?)").bind(targetID),
+    c.env.DB.prepare("DELETE FROM share_grants WHERE owner_id=?").bind(targetID),
     c.env.DB.prepare("DELETE FROM vault_items WHERE user_id=?").bind(targetID),
     c.env.DB.prepare("DELETE FROM users WHERE id=?").bind(targetID),
   ]);
@@ -104,12 +106,42 @@ admin.patch("/settings", async (c) => {
 });
 
 admin.get("/stats", async (c) => {
-  const [users, active, vault] = await Promise.all([
+  const [users, active, vault, shares, requests, failed] = await Promise.all([
     c.env.DB.prepare("SELECT COUNT(*) AS count FROM users").first<{ count: number }>(),
     c.env.DB.prepare("SELECT COUNT(*) AS count FROM users WHERE last_active_at>=datetime('now','-1 day')").first<{ count: number }>(),
     c.env.DB.prepare("SELECT COUNT(*) AS count FROM vault_items WHERE deleted=0").first<{ count: number }>(),
+    c.env.DB.prepare("SELECT COUNT(*) AS count FROM share_grants WHERE revoked=0").first<{ count: number }>(),
+    c.env.DB.prepare("SELECT COUNT(*) AS count FROM share_usage_log").first<{ count: number }>(),
+    c.env.DB.prepare("SELECT COUNT(*) AS count FROM share_usage_log WHERE status>=400").first<{ count: number }>(),
   ]);
-  return c.json({ users: users?.count ?? 0, daily_active_users: active?.count ?? 0, vault_items: vault?.count ?? 0 });
+  const requestCount = requests?.count ?? 0;
+  return c.json({
+    users: users?.count ?? 0,
+    daily_active_users: active?.count ?? 0,
+    vault_items: vault?.count ?? 0,
+    active_shares: shares?.count ?? 0,
+    share_requests: requestCount,
+    share_error_rate: requestCount ? (failed?.count ?? 0) / requestCount : 0,
+  });
+});
+
+admin.get("/shares", async (c) => {
+  const limit = Math.min(Math.max(Number(c.req.query("limit") || 100), 1), 100);
+  const result = await c.env.DB.prepare(`SELECT s.id,s.owner_id,u.email AS owner_email,s.account_uid,s.share_code,
+    s.quota_requests,s.used_requests,s.expires_at,s.revoked,s.created_at,s.updated_at
+    FROM share_grants s JOIN users u ON u.id=s.owner_id ORDER BY s.created_at DESC,s.id DESC LIMIT ?`).bind(limit).all();
+  return c.json({ shares: result.results });
+});
+
+admin.patch("/shares/:id", async (c) => {
+  const id = positiveID(c.req.param("id"));
+  const body = await readJSON<{ revoked?: unknown }>(c);
+  if (typeof body.revoked !== "boolean") throw new AppError(400, "invalid_admin_action", "The revoked field must be a boolean.");
+  const result = await c.env.DB.prepare("UPDATE share_grants SET revoked=?,updated_at=? WHERE id=?")
+    .bind(body.revoked ? 1 : 0, new Date().toISOString(), id).run();
+  if (!result.meta.changes) throw new AppError(404, "share_not_found", "The share was not found.");
+  await audit(c.env, c.get("auth").id, body.revoked ? "share.revoke" : "share.restore", "share", String(id));
+  return c.json({ ok: true });
 });
 
 admin.get("/audit", async (c) => {

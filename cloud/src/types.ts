@@ -7,6 +7,7 @@ export interface Bindings {
   TURNSTILE_SECRET: string;
   RESEND_API_KEY?: string;
   ADMIN_API_KEY?: string;
+  SHARE_KMS_KEY?: string;
   ENVIRONMENT?: "development" | "test" | "production";
   MAILER_MODE?: "console" | "resend";
   RESEND_FROM?: string;

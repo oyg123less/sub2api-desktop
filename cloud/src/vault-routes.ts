@@ -97,6 +97,12 @@ vault.put("/batch", async (c) => {
   });
   await c.env.DB.batch(statements);
 
+  const deletedAccounts = items.filter((item) => item.kind === "account" && item.deleted);
+  if (deletedAccounts.length) {
+    await c.env.DB.batch(deletedAccounts.map((item) => c.env.DB.prepare(`UPDATE share_grants
+      SET revoked=1,updated_at=? WHERE owner_id=? AND account_uid=? AND revoked=0`).bind(now, user.id, item.client_uid)));
+  }
+
   const updated: VaultRow[] = [];
   for (const item of items) {
     const row = await c.env.DB.prepare(`SELECT id, kind, client_uid, ciphertext, version, deleted, updated_at

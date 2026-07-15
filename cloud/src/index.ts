@@ -3,6 +3,8 @@ import adminRoutes from "./admin-routes";
 import authRoutes from "./auth-routes";
 import { AppError, errorResponse } from "./errors";
 import { randomToken } from "./security";
+import shareGateway from "./share-gateway";
+import shareRoutes from "./share-routes";
 import type { AppEnv } from "./types";
 import vaultRoutes from "./vault-routes";
 
@@ -22,6 +24,8 @@ app.get("/health", (c) => c.json({ ok: true, service: "amber-cloud", version: "0
 app.route("/v1/auth", authRoutes);
 app.route("/v1/vault", vaultRoutes);
 app.route("/v1/admin", adminRoutes);
+app.route("/v1/shares", shareRoutes);
+app.route("/v1", shareGateway);
 
 app.notFound((c) => errorResponse(c, 404, "not_found", "The requested endpoint does not exist."));
 app.onError((error, c) => {

@@ -91,11 +91,26 @@ describe("administrator boundaries", () => {
     });
     expect(blockedRegistration.status).toBe(503);
 
+    const now = new Date().toISOString();
+    const insertedShare = await env.DB.prepare(`INSERT INTO share_grants
+      (owner_id,account_uid,token_cipher,share_code,guest_key_hash,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?)`).bind(
+        targetRow?.id, "018f1f46-7a19-7cc2-88cb-f577e51d3111", "v1.test", "ADMIN01X", "admin-test-guest-hash", now, now,
+      ).run();
+    const revokeShare = await SELF.fetch(`https://amber.test/v1/admin/shares/${insertedShare.meta.last_row_id}`, {
+      method: "PATCH", headers, body: JSON.stringify({ revoked: true }),
+    });
+    expect(revokeShare.status).toBe(200);
+    const revokedShare = await env.DB.prepare("SELECT revoked FROM share_grants WHERE id=?")
+      .bind(insertedShare.meta.last_row_id).first<{ revoked: number }>();
+    expect(revokedShare?.revoked).toBe(1);
+
     const audit = await SELF.fetch("https://amber.test/v1/admin/audit", { headers });
     expect(audit.status).toBe(200);
     const auditBody = JSON.stringify(await audit.json());
     expect(auditBody).toContain("user.ban");
     expect(auditBody).toContain("platform.settings.update");
+    expect(auditBody).toContain("share.revoke");
     expect(auditBody).not.toContain("auth_hash");
     expect(auditBody).not.toContain("wrapped_vault_key");
   });

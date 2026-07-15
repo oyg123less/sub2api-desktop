@@ -17,6 +17,7 @@ export default defineConfig({
           JWT_SECRET: "test-jwt-secret-that-is-at-least-32-bytes-long",
           TURNSTILE_SECRET: "test-turnstile-secret",
           ADMIN_API_KEY: "test-admin-second-factor-at-least-32-bytes",
+          SHARE_KMS_KEY: "Hx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8",
         },
       },
     }),
