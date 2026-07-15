@@ -70,7 +70,7 @@ const backendColor = computed(() => {
   return "var(--text-faint)";
 });
 const backendLabel = computed(() => t(`backend.${backendPhase.value}`));
-const currentVersion = computed(() => app.status?.version || "0.2.3");
+const currentVersion = computed(() => app.status?.version || "0.2.4");
 
 watch(() => app.status?.version, (version) => {
   if (version) void refreshUpdate();
