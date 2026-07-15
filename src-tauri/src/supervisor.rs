@@ -222,13 +222,25 @@ pub fn spawn(app: &AppHandle, phase: BackendPhase) {
 
     let data_dir = resolve_data_dir(app);
     let _ = std::fs::create_dir_all(&data_dir);
+    let mut sidecar_args = vec![
+        "--data-dir".to_string(),
+        data_dir.to_string_lossy().to_string(),
+        "--control-port".to_string(),
+        "0".to_string(),
+    ];
+    let cloud_url = option_env!("AMBER_CLOUD_API_URL")
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("https://amber-cloud-api.484486528.workers.dev");
+    let turnstile_site_key = option_env!("AMBER_TURNSTILE_SITE_KEY")
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("0x4AAAAAAD2nL5YiyV2OjkNf");
+    sidecar_args.extend(["--cloud-url".to_string(), cloud_url.trim().to_string()]);
+    sidecar_args.extend([
+        "--turnstile-site-key".to_string(),
+        turnstile_site_key.trim().to_string(),
+    ]);
     let sidecar = match app.shell().sidecar("sub2api-sidecar") {
-        Ok(command) => command.args([
-            "--data-dir".to_string(),
-            data_dir.to_string_lossy().to_string(),
-            "--control-port".to_string(),
-            "0".to_string(),
-        ]),
+        Ok(command) => command.args(sidecar_args),
         Err(error) => {
             *state.supervisor.active_run.lock().unwrap() = 0;
             fail(app, format!("failed to resolve sidecar: {error}"));

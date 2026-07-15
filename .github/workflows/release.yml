@@ -12,6 +12,9 @@ permissions:
 jobs:
   build-windows:
     runs-on: windows-latest
+    env:
+      AMBER_CLOUD_API_URL: ${{ vars.AMBER_CLOUD_API_URL }}
+      AMBER_TURNSTILE_SITE_KEY: ${{ vars.AMBER_TURNSTILE_SITE_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -55,6 +58,11 @@ jobs:
           npm ci
           npm run build
           npm test
+          Push-Location cloud
+          npm ci
+          npm run typecheck
+          npm test
+          Pop-Location
           cargo fmt --manifest-path src-tauri/Cargo.toml --check
           cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
           cargo test --manifest-path src-tauri/Cargo.toml

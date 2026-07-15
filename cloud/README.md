@@ -26,6 +26,8 @@ npx wrangler secret put ADMIN_API_KEY
 
 `JWT_SECRET` and `ADMIN_API_KEY` must be independent random values of at least 32 bytes. M2 will additionally require `SHARE_KMS_KEY`. Set `RESEND_FROM` to a verified Resend sender and `TURNSTILE_HOSTNAME` to the production desktop registration host when deploying.
 
+The checked-in `RESEND_FROM` uses Resend's `onboarding@resend.dev` test sender. That sender is intentionally limited and normally delivers only to the Resend account owner's email address. Replace it with a verified sender domain before opening registration to other users.
+
 ## Local development
 
 Copy `.dev.vars.example` to `.dev.vars`, use non-production credentials, and run:
