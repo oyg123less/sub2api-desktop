@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   sshUserForRequest,
+  remoteForm,
   validateCodexRemoteForm,
   type CodexRemoteFormValue,
 } from "./codexRemote";
@@ -12,6 +13,9 @@ const valid: CodexRemoteFormValue = {
   password: "secret",
   model: "gpt-5.6",
   remotePort: 8080,
+  mode: "tunnel",
+  baseUrl: "",
+  apiKey: "",
 };
 
 describe("validateCodexRemoteForm", () => {
@@ -35,5 +39,32 @@ describe("validateCodexRemoteForm", () => {
     expect(validateCodexRemoteForm({ ...value, user: "" }).user).toBeUndefined();
     expect(sshUserForRequest(value.host, value.user)).toBe("");
     expect(sshUserForRequest("1.2.3.4", "root")).toBe("root");
+  });
+
+  it("requires a valid Base URL and API key in direct mode", () => {
+    const direct = { ...valid, mode: "direct" as const, remotePort: Number.NaN };
+    expect(validateCodexRemoteForm(direct)).toMatchObject({ baseUrl: "required", apiKey: "required" });
+    expect(validateCodexRemoteForm({ ...direct, baseUrl: "ftp://api.example.test", apiKey: "key" }).baseUrl).toBe("invalid");
+    expect(validateCodexRemoteForm({ ...direct, baseUrl: "https://key@api.example.test/v1", apiKey: "key" }).baseUrl).toBe("invalid");
+    expect(validateCodexRemoteForm({ ...direct, baseUrl: "https://api.example.test/v1", apiKey: "key" })).toEqual({});
+  });
+
+  it("keeps tunnel validation independent from direct-only fields", () => {
+    expect(validateCodexRemoteForm({ ...valid, baseUrl: "invalid", apiKey: "" })).toEqual({});
+    expect(validateCodexRemoteForm({ ...valid, remotePort: 0 }).remotePort).toBe("invalid");
+  });
+
+  it("keeps direct mode drafts in module-level state", () => {
+    remoteForm.value.mode = "direct";
+    remoteForm.value.baseUrl = "https://draft.example.test/v1";
+    remoteForm.value.apiKey = "draft-key";
+    expect(remoteForm.value).toMatchObject({
+      mode: "direct",
+      baseUrl: "https://draft.example.test/v1",
+      apiKey: "draft-key",
+    });
+    remoteForm.value.mode = "tunnel";
+    remoteForm.value.baseUrl = "";
+    remoteForm.value.apiKey = "";
   });
 });

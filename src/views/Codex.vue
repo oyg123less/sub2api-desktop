@@ -192,7 +192,13 @@ function remoteFieldError(field: CodexRemoteFormField): string {
   if (!error) return "";
   if (error === "required") return t("codex.fieldRequired");
   if (field === "model") return t("codex.modelInvalid");
+  if (field === "baseUrl") return t("codex.baseURLInvalid");
   return t("codex.portInvalid");
+}
+
+function selectRemoteMode(mode: "tunnel" | "direct") {
+  remoteForm.value.mode = mode;
+  remoteErrors.value = {};
 }
 
 async function testRemoteConnection() {
@@ -248,6 +254,9 @@ async function injectRemote() {
       password: remoteForm.value.password,
       model: remoteForm.value.model.trim(),
       remote_port: remoteForm.value.remotePort,
+      mode: remoteForm.value.mode,
+      base_url: remoteForm.value.mode === "direct" ? remoteForm.value.baseUrl.trim() : "",
+      api_key: remoteForm.value.mode === "direct" ? remoteForm.value.apiKey.trim() : "",
       save: remoteForm.value.save,
       accept_host_key: hostKeyAccepted.value,
     });
@@ -256,11 +265,14 @@ async function injectRemote() {
     else targets.value.push(target);
     remoteForm.value.id = target.id;
     remoteForm.value.password = "";
+    remoteForm.value.mode = target.mode || remoteForm.value.mode;
+    remoteForm.value.baseUrl = target.base_url || "";
+    remoteForm.value.apiKey = "";
     remoteForm.value.save = target.saved;
     remoteProbe.value = null;
     testedSignature.value = "";
     hostKeyAccepted.value = false;
-    app.toast(t("codex.injectSuccess"), "success");
+    app.toast(t(target.mode === "direct" ? "codex.injectSuccessDirect" : "codex.injectSuccess"), "success");
   } catch (error) {
     app.toast((error as Error).message, "error");
   } finally {
@@ -276,6 +288,9 @@ function newRemoteTarget() {
     password: "",
     model: st.value?.model || "gpt-5.6",
     remotePort: 8080,
+    mode: "tunnel",
+    baseUrl: "",
+    apiKey: "",
     save: true,
   };
   remoteErrors.value = {};
@@ -293,6 +308,9 @@ function reinjectTarget(target: CodexRemoteTarget) {
     password: "",
     model: target.model,
     remotePort: target.remote_port,
+    mode: target.mode || "tunnel",
+    baseUrl: target.base_url || "",
+    apiKey: "",
     save: target.saved,
   };
   remoteErrors.value = {};
@@ -359,7 +377,7 @@ function targetStatusLabel(target: CodexRemoteTarget): string {
 }
 
 function targetStatusClass(target: CodexRemoteTarget): string {
-  if (target.tunnel_status === "connected") return "badge-success";
+  if (target.tunnel_status === "connected" || target.tunnel_status === "injected_direct") return "badge-success";
   if (target.tunnel_status === "down") return "badge-danger";
   return "badge-neutral";
 }
@@ -542,6 +560,29 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
+        <div class="remote-mode-selector" role="radiogroup" :aria-label="t('codex.injectMode')">
+          <button
+            type="button"
+            data-test="remote-mode-tunnel"
+            :class="{ active: remoteForm.mode === 'tunnel' }"
+            :aria-checked="remoteForm.mode === 'tunnel'"
+            role="radio"
+            @click="selectRemoteMode('tunnel')"
+          >
+            <Icon name="link" :size="14" /> {{ t("codex.modeTunnel") }}
+          </button>
+          <button
+            type="button"
+            data-test="remote-mode-direct"
+            :class="{ active: remoteForm.mode === 'direct' }"
+            :aria-checked="remoteForm.mode === 'direct'"
+            role="radio"
+            @click="selectRemoteMode('direct')"
+          >
+            <Icon name="external" :size="14" /> {{ t("codex.modeDirect") }}
+          </button>
+        </div>
+
         <div class="remote-fields">
           <div class="field">
             <label class="field-label" for="remote-host">{{ t("codex.host") }}</label>
@@ -569,17 +610,28 @@ onBeforeUnmount(() => {
             <input id="remote-model" v-model="remoteForm.model" data-test="remote-model" class="input mono" :class="{ 'input-error': remoteErrors.model }" list="codex-model-options" />
             <p v-if="remoteErrors.model" class="field-error">{{ remoteFieldError("model") }}</p>
           </div>
-          <div class="field compact-field">
+          <div v-if="remoteForm.mode === 'tunnel'" class="field compact-field">
             <label class="field-label" for="remote-forward-port">{{ t("codex.remotePort") }}</label>
             <input id="remote-forward-port" v-model.number="remoteForm.remotePort" data-test="remote-forward-port" class="input mono" :class="{ 'input-error': remoteErrors.remotePort }" type="number" min="1" max="65535" />
             <p v-if="remoteErrors.remotePort" class="field-error">{{ remoteFieldError("remotePort") }}</p>
+          </div>
+          <div v-else class="field direct-base-field">
+            <label class="field-label" for="remote-base-url">{{ t("codex.directBaseURL") }}</label>
+            <input id="remote-base-url" v-model="remoteForm.baseUrl" data-test="remote-base-url" class="input mono" :class="{ 'input-error': remoteErrors.baseUrl }" type="url" spellcheck="false" placeholder="https://api.example.com/v1" />
+            <p v-if="remoteErrors.baseUrl" class="field-error">{{ remoteFieldError("baseUrl") }}</p>
+            <p class="field-help">{{ t("codex.directBaseURLHint") }}</p>
+          </div>
+          <div v-if="remoteForm.mode === 'direct'" class="field direct-api-key-field">
+            <label class="field-label" for="remote-api-key">{{ t("codex.directAPIKey") }}</label>
+            <input id="remote-api-key" v-model="remoteForm.apiKey" data-test="remote-api-key" class="input mono" :class="{ 'input-error': remoteErrors.apiKey }" type="password" autocomplete="new-password" spellcheck="false" :placeholder="t('codex.directAPIKeyPlaceholder')" />
+            <p v-if="remoteErrors.apiKey" class="field-error">{{ remoteFieldError("apiKey") }}</p>
           </div>
         </div>
 
         <div class="remote-form-footer">
           <label class="remember-check">
             <input v-model="remoteForm.save" type="checkbox" />
-            <span>{{ t("codex.rememberTarget") }}</span>
+            <span>{{ t(remoteForm.mode === "direct" ? "codex.rememberDirectTarget" : "codex.rememberTarget") }}</span>
           </label>
           <div class="action-row">
             <button class="btn btn-ghost" data-test="remote-test" :disabled="remoteBusy !== null" @click="testRemoteConnection">
@@ -626,13 +678,18 @@ onBeforeUnmount(() => {
                 <p>{{ target.user }}@{{ target.host }}:{{ target.port }} · {{ target.model }}</p>
               </div>
             </div>
-            <span class="badge" :class="targetStatusClass(target)">
-              <span class="badge-dot"></span>{{ targetStatusLabel(target) }}
-            </span>
+            <div class="target-badges">
+              <span class="badge mode-badge" :class="{ 'mode-badge-direct': target.mode === 'direct' }">
+                {{ t(target.mode === "direct" ? "codex.modeBadgeDirect" : "codex.modeBadgeTunnel") }}
+              </span>
+              <span class="badge" :class="targetStatusClass(target)">
+                <span class="badge-dot"></span>{{ targetStatusLabel(target) }}
+              </span>
+            </div>
           </div>
 
           <div class="target-controls">
-            <div class="route-control">
+            <div v-if="target.mode !== 'direct'" class="route-control">
               <label class="switch">
                 <input
                   type="checkbox"
@@ -646,6 +703,14 @@ onBeforeUnmount(() => {
               <div>
                 <strong>{{ t("codex.routeToggle") }}</strong>
                 <span>{{ t("codex.routeToggleDesc", { port: target.remote_port }) }}</span>
+              </div>
+            </div>
+            <div v-else class="route-control direct-route-control">
+              <Icon name="external" :size="17" />
+              <div>
+                <strong>{{ t("codex.directBaseURL") }}</strong>
+                <span>{{ target.base_url }}</span>
+                <small>{{ t("codex.directAPIKeyMasked") }}</small>
               </div>
             </div>
             <div class="target-actions">
@@ -952,11 +1017,46 @@ onBeforeUnmount(() => {
 .remote-form-panel {
   padding-bottom: 16px;
 }
+.remote-mode-selector {
+  width: min(100%, 520px);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px;
+  margin-top: 16px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+}
+.remote-mode-selector button {
+  min-width: 0;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.remote-mode-selector button.active {
+  background: var(--bg-card);
+  color: var(--text);
+  box-shadow: 0 1px 4px rgba(50, 43, 34, 0.1);
+}
 .remote-fields {
   display: grid;
   grid-template-columns: minmax(180px, 1.3fr) minmax(100px, 0.45fr) minmax(150px, 0.8fr);
   gap: 0 14px;
   margin-top: 18px;
+}
+.direct-base-field {
+  grid-column: span 2;
 }
 .remote-fields .field {
   min-width: 0;
@@ -1075,6 +1175,21 @@ onBeforeUnmount(() => {
   border-top: 1px solid var(--border-soft);
   border-bottom: 1px solid var(--border-soft);
 }
+.target-badges {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.mode-badge {
+  background: var(--bg-hover);
+  color: var(--text-dim);
+}
+.mode-badge-direct {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
 .route-control {
   min-width: 0;
   display: flex;
@@ -1092,6 +1207,16 @@ onBeforeUnmount(() => {
   color: var(--text-faint);
   font-size: 11.5px;
   overflow-wrap: anywhere;
+}
+.direct-route-control > .icon {
+  flex: 0 0 auto;
+  color: var(--primary);
+}
+.direct-route-control small {
+  margin-top: 2px;
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 11px;
 }
 .target-actions {
   display: flex;
@@ -1168,9 +1293,18 @@ onBeforeUnmount(() => {
     align-items: flex-start;
     flex-direction: column;
   }
+  .direct-base-field {
+    grid-column: span 2;
+  }
+  .direct-api-key-field {
+    grid-column: span 2;
+  }
 }
 @media (max-width: 720px) {
   .codex-tabs {
+    width: 100%;
+  }
+  .remote-mode-selector {
     width: 100%;
   }
   .local-summary-head,
@@ -1198,6 +1332,9 @@ onBeforeUnmount(() => {
   }
   .target-head .badge {
     align-self: flex-start;
+  }
+  .target-badges {
+    justify-content: flex-start;
   }
   .target-actions {
     justify-content: flex-start;

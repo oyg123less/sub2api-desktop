@@ -1,6 +1,8 @@
 import { ref } from "vue";
 import type { CodexRemoteProbe } from "../api/control";
 
+export type CodexRemoteMode = "tunnel" | "direct";
+
 export interface CodexRemoteFormValue {
   id?: number;
   host: string;
@@ -9,9 +11,20 @@ export interface CodexRemoteFormValue {
   password: string;
   model: string;
   remotePort: number;
+  mode: CodexRemoteMode;
+  baseUrl: string;
+  apiKey: string;
 }
 
-export type CodexRemoteFormField = "host" | "port" | "user" | "password" | "model" | "remotePort";
+export type CodexRemoteFormField =
+  | "host"
+  | "port"
+  | "user"
+  | "password"
+  | "model"
+  | "remotePort"
+  | "baseUrl"
+  | "apiKey";
 
 // Module-level state so the Codex view keeps its drafts and connection test
 // result when the user navigates away and back. Held in memory only.
@@ -23,6 +36,9 @@ export const remoteForm = ref<CodexRemoteFormValue & { save: boolean }>({
   password: "",
   model: "gpt-5.6",
   remotePort: 8080,
+  mode: "tunnel",
+  baseUrl: "",
+  apiKey: "",
   save: true,
 });
 export const remoteModelInitialized = ref(false);
@@ -45,13 +61,33 @@ export function sshUserForRequest(host: string, user: string): string {
   return hasEmbeddedSSHUser(host) ? "" : user.trim();
 }
 
+export function isValidDirectBaseURL(value: string): boolean {
+  try {
+    const parsed = new URL(value.trim());
+    return (
+      (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+      Boolean(parsed.host) &&
+      !parsed.username &&
+      !parsed.password
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function validateCodexRemoteForm(value: CodexRemoteFormValue): CodexRemoteFormErrors {
   const errors: CodexRemoteFormErrors = {};
   if (!value.host.trim()) errors.host = "required";
   if (!value.user.trim() && !hasEmbeddedSSHUser(value.host)) errors.user = "required";
   if (!value.id && !value.password) errors.password = "required";
   if (!Number.isInteger(value.port) || value.port < 1 || value.port > 65535) errors.port = "invalid";
-  if (!Number.isInteger(value.remotePort) || value.remotePort < 1 || value.remotePort > 65535) errors.remotePort = "invalid";
+  if (value.mode === "direct") {
+    if (!value.baseUrl.trim()) errors.baseUrl = "required";
+    else if (!isValidDirectBaseURL(value.baseUrl)) errors.baseUrl = "invalid";
+    if (!value.apiKey.trim()) errors.apiKey = "required";
+  } else if (!Number.isInteger(value.remotePort) || value.remotePort < 1 || value.remotePort > 65535) {
+    errors.remotePort = "invalid";
+  }
   if (!value.model.trim()) errors.model = "required";
   else if (!isValidCodexModel(value.model)) errors.model = "invalid";
   return errors;

@@ -1,7 +1,8 @@
 import { expect, test } from "@playwright/test";
 
-test("tests SSH, confirms the host key, and injects a remote target", async ({ page }, testInfo) => {
+test("injects tunnel and direct remote targets without exposing credentials", async ({ page }, testInfo) => {
   let targets: Record<string, unknown>[] = [];
+  let directInject: Record<string, unknown> | null = null;
   await page.addInitScript(() => {
     localStorage.setItem("s2a_control_port", "45678");
     localStorage.setItem("s2a_control_token", "fixture-control-token");
@@ -46,7 +47,31 @@ test("tests SSH, confirms the host key, and injects a remote target", async ({ p
       });
     }
     if (path === "/control/codex/remote/inject") {
-      targets = [{
+      const body = request.postDataJSON() as Record<string, unknown>;
+      if (body.mode === "direct") {
+        directInject = body;
+        const target = {
+          id: 2,
+          name: "deploy@direct.example.test",
+          host: "direct.example.test",
+          port: 22,
+          user: "deploy",
+          remote_port: 8080,
+          model: "gpt-5.6",
+          mode: "direct",
+          base_url: body.base_url,
+          saved: true,
+          injected: true,
+          tunnel_enabled: false,
+          tunnel_status: "injected_direct",
+          config_preview: `model = \"gpt-5.6\"\nbase_url = \"${body.base_url}\"`,
+          auth_preview: "{\"OPENAI_API_KEY\":\"********\"}",
+          updated_at: new Date().toISOString(),
+        };
+        targets.push(target);
+        return json(target);
+      }
+      const target = {
         id: 1,
         name: "deploy@example.test",
         host: "example.test",
@@ -54,6 +79,7 @@ test("tests SSH, confirms the host key, and injects a remote target", async ({ p
         user: "deploy",
         remote_port: 8080,
         model: "gpt-5.6",
+        mode: "tunnel",
         saved: true,
         injected: true,
         tunnel_enabled: true,
@@ -61,10 +87,11 @@ test("tests SSH, confirms the host key, and injects a remote target", async ({ p
         config_preview: "model = \"gpt-5.6\"",
         auth_preview: "{\"OPENAI_API_KEY\":\"********\"}",
         updated_at: new Date().toISOString(),
-      }];
-      return json(targets[0]);
+      };
+      targets = [target];
+      return json(target);
     }
-    if (path === "/control/status") return json({ version: "0.2.3", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "", lan_addresses: [], local_api_key: "", account_count: 1, schema_version: 5 });
+    if (path === "/control/status") return json({ version: "0.2.3", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "", lan_addresses: [], local_api_key: "", account_count: 1, schema_version: 6 });
     return route.fulfill({ status: 404, contentType: "application/json", body: "{}" });
   });
 
@@ -79,6 +106,31 @@ test("tests SSH, confirms the host key, and injects a remote target", async ({ p
   await page.locator('[data-test="remote-inject"]').click();
   await expect(page.locator('[data-target-id="1"]')).toContainText("deploy@example.test");
   await expect(page.locator('[data-target-id="1"]')).toContainText("Tunnel connected");
+
+  await page.getByRole("button", { name: "New target" }).click();
+  await page.locator('[data-test="remote-mode-direct"]').click();
+  await expect(page.locator('[data-test="remote-forward-port"]')).toHaveCount(0);
+  await page.locator('[data-test="remote-host"]').fill("direct.example.test");
+  await page.locator('[data-test="remote-user"]').fill("deploy");
+  await page.locator('[data-test="remote-password"]').fill("fixture-password");
+  await page.locator('[data-test="remote-base-url"]').fill("https://api.example.test/v1");
+  await page.locator('[data-test="remote-api-key"]').fill("fixture-direct-key");
+  await page.locator('[data-test="remote-test"]').click();
+  await page.getByRole("button", { name: "Trust and continue" }).click();
+  await page.locator('[data-test="remote-inject"]').click();
+
+  const directCard = page.locator('[data-target-id="2"]');
+  await expect(directCard).toContainText("Direct");
+  await expect(directCard).toContainText("Injected (direct)");
+  await expect(directCard).toContainText("https://api.example.test/v1");
+  await expect(directCard.locator(".switch")).toHaveCount(0);
+  await expect(page.locator('[data-test="remote-api-key"]')).toHaveValue("");
+  expect(directInject).toMatchObject({
+    mode: "direct",
+    base_url: "https://api.example.test/v1",
+    api_key: "fixture-direct-key",
+  });
+  await expect(page.locator("body")).not.toContainText("fixture-direct-key");
   const dimensions = await page.evaluate(() => ({
     scrollWidth: document.documentElement.scrollWidth,
     clientWidth: document.documentElement.clientWidth,

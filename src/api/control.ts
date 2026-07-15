@@ -461,10 +461,12 @@ export interface CodexRemoteTarget {
   user: string;
   remote_port: number;
   model: string;
+  mode: "tunnel" | "direct";
+  base_url?: string;
   saved: boolean;
   injected: boolean;
   tunnel_enabled: boolean;
-  tunnel_status: "connected" | "down" | "disabled" | "not_injected";
+  tunnel_status: "connected" | "down" | "disabled" | "not_injected" | "injected_direct";
   last_error?: string;
   config_preview: string;
   auth_preview: string;
@@ -483,6 +485,9 @@ export interface CodexRemoteConnectionInput {
 export interface CodexRemoteInjectInput extends CodexRemoteConnectionInput {
   model: string;
   remote_port: number;
+  mode: "tunnel" | "direct";
+  base_url: string;
+  api_key: string;
   save: boolean;
   accept_host_key: boolean;
 }
