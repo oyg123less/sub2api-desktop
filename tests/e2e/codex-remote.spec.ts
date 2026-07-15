@@ -1,41 +1,49 @@
 import { expect, test } from "@playwright/test";
 
-test("injects tunnel and direct remote targets without exposing credentials", async ({ page }, testInfo) => {
-  let targets: Record<string, unknown>[] = [];
-  let directInject: Record<string, unknown> | null = null;
-  let directReinject: Record<string, unknown> | null = null;
+const codexStatus = {
+  config_path: "/home/local/.codex/config.toml",
+  auth_path: "/home/local/.codex/auth.json",
+  applied: false,
+  config_exists: false,
+  backup_exists: false,
+  base_url: "http://127.0.0.1:8080/v1",
+  model: "gpt-5.6",
+  models: ["gpt-5.6"],
+  config_preview: "model = \"gpt-5.6\"",
+  auth_preview: "{\"OPENAI_API_KEY\":\"********\"}",
+};
+
+const codexFiles = {
+  config_path: "/home/local/.codex/config.toml",
+  auth_path: "/home/local/.codex/auth.json",
+  config_content: "",
+  auth_content: "",
+  config_default: "model = \"gpt-5.6\"",
+  auth_default: "{}",
+};
+
+async function initializeFixture(page: import("@playwright/test").Page) {
   await page.addInitScript(() => {
     localStorage.setItem("s2a_control_port", "45678");
     localStorage.setItem("s2a_control_token", "fixture-control-token");
     localStorage.setItem("s2a_lang", "en");
   });
+}
+
+test("injects tunnel and direct remote targets without exposing credentials", async ({ page }, testInfo) => {
+  let targets: Record<string, unknown>[] = [];
+  let directInject: Record<string, unknown> | null = null;
+  let directReinject: Record<string, unknown> | null = null;
+  await initializeFixture(page);
   await page.route("http://127.0.0.1:45678/control/**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     const json = (value: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(value) });
     if (path === "/control/codex/status") {
-      return json({
-        config_path: "/home/local/.codex/config.toml",
-        auth_path: "/home/local/.codex/auth.json",
-        applied: false,
-        config_exists: false,
-        backup_exists: false,
-        base_url: "http://127.0.0.1:8080/v1",
-        model: "gpt-5.6",
-        models: ["gpt-5.6"],
-        config_preview: "model = \"gpt-5.6\"",
-        auth_preview: "{\"OPENAI_API_KEY\":\"********\"}",
-      });
+      return json(codexStatus);
     }
     if (path === "/control/codex/files") {
-      return json({
-        config_path: "/home/local/.codex/config.toml",
-        auth_path: "/home/local/.codex/auth.json",
-        config_content: "",
-        auth_content: "",
-        config_default: "model = \"gpt-5.6\"",
-        auth_default: "{}",
-      });
+      return json(codexFiles);
     }
     if (path === "/control/codex/remote/targets") return json({ targets });
     if (path === "/control/codex/remote/test") {
@@ -154,4 +162,58 @@ test("injects tunnel and direct remote targets without exposing credentials", as
   expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
   await page.waitForTimeout(3400);
   await page.screenshot({ path: testInfo.outputPath("codex-remote.png"), fullPage: true });
+});
+
+test("keeps remote setup visible for null and legacy target responses", async ({ page }) => {
+  let targetResponse: unknown = { targets: null };
+  await initializeFixture(page);
+  await page.route("http://127.0.0.1:45678/control/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const json = (value: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(value) });
+    if (path === "/control/codex/status") return json(codexStatus);
+    if (path === "/control/codex/files") return json(codexFiles);
+    if (path === "/control/codex/remote/targets") return json(targetResponse);
+    if (path === "/control/status") return json({ version: "0.2.4", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "", lan_addresses: [], local_api_key: "", account_count: 0, schema_version: 6 });
+    return route.fulfill({ status: 404, contentType: "application/json", body: "{}" });
+  });
+
+  await page.goto("/#/codex");
+  await page.locator('[data-test="tab-remote"]').click();
+  await expect(page.locator('[data-test="remote-targets"]')).toBeVisible();
+  await expect(page.getByText("No remote targets yet")).toBeVisible();
+  await expect(page.locator('[data-test="route-error"]')).toHaveCount(0);
+
+  targetResponse = {
+    targets: [null, {
+      id: 9,
+      host: "legacy.example.test",
+      user: "deploy",
+      port: 22,
+      model: "gpt-5.6",
+      tunnel_status: "future_status",
+    }],
+  };
+  await page.locator('[data-test="remote-targets"]').getByRole("button", { name: "Refresh" }).click();
+  const legacyTarget = page.locator('[data-target-id="9"]');
+  await expect(legacyTarget).toContainText("deploy@legacy.example.test");
+  await expect(legacyTarget).toContainText("Tunnel");
+  await expect(legacyTarget).toContainText("Not injected");
+});
+
+test("shows a retry state when Codex initialization is unavailable", async ({ page }) => {
+  await initializeFixture(page);
+  await page.route("http://127.0.0.1:45678/control/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/control/status") {
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ version: "0.2.4", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "", lan_addresses: [], local_api_key: "", account_count: 0, schema_version: 6 }) });
+    }
+    return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { message: "fixture unavailable" } }) });
+  });
+
+  await page.goto("/#/codex");
+  await expect(page.getByRole("heading", { name: "Codex setup" })).toBeVisible();
+  await expect(page.locator('[data-test="tab-remote"]')).toBeVisible();
+  await expect(page.getByText("Codex configuration failed to load")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
+  await expect(page.locator('[data-test="route-error"]')).toHaveCount(0);
 });

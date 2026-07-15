@@ -1,10 +1,40 @@
 import { describe, expect, it } from "vitest";
 import {
+  normalizeCodexRemoteTargets,
   sshUserForRequest,
   remoteForm,
   validateCodexRemoteForm,
   type CodexRemoteFormValue,
 } from "./codexRemote";
+
+describe("normalizeCodexRemoteTargets", () => {
+  it("treats null and malformed list responses as empty", () => {
+    expect(normalizeCodexRemoteTargets(null)).toEqual([]);
+    expect(normalizeCodexRemoteTargets({ targets: null })).toEqual([]);
+    expect(normalizeCodexRemoteTargets({ targets: [null, { id: 0 }] })).toEqual([]);
+  });
+
+  it("normalizes legacy targets and unknown statuses", () => {
+    expect(normalizeCodexRemoteTargets({
+      targets: [{
+        id: 4,
+        host: "legacy.example.test",
+        user: "deploy",
+        port: "22",
+        model: "gpt-5.6",
+        tunnel_status: "future_status",
+      }],
+    })).toEqual([expect.objectContaining({
+      id: 4,
+      name: "deploy@legacy.example.test",
+      mode: "tunnel",
+      port: 22,
+      remote_port: 8080,
+      tunnel_status: "not_injected",
+      tunnel_enabled: false,
+    })]);
+  });
+});
 
 const valid: CodexRemoteFormValue = {
   host: "example.test",

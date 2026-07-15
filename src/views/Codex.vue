@@ -18,6 +18,8 @@ import {
   hostKeyAccepted,
   sshUserForRequest,
   isValidCodexModel,
+  normalizeCodexRemoteTarget,
+  normalizeCodexRemoteTargets,
   remoteForm,
   remoteModelInitialized,
   remoteProbe,
@@ -34,6 +36,7 @@ const activeTab = codexActiveTab;
 const st = ref<CodexStatus | null>(null);
 const files = ref<CodexFiles | null>(null);
 const loading = ref(true);
+const loadError = ref(false);
 const busy = ref(false);
 const savingFiles = ref(false);
 const restoreOpen = ref(false);
@@ -77,15 +80,15 @@ watch(remoteSignature, () => {
 });
 
 async function load() {
+  loading.value = true;
+  loadError.value = false;
   try {
-    const [status, localFiles, remoteTargets] = await Promise.all([
+    const [status, localFiles] = await Promise.all([
       api.codexStatus(),
       api.codexFiles(),
-      api.codexRemoteTargets(),
     ]);
     st.value = status;
     files.value = localFiles;
-    targets.value = remoteTargets.targets;
     modelDraft.value = status.model;
     if (!remoteModelInitialized.value) {
       remoteForm.value.model = status.model;
@@ -93,7 +96,9 @@ async function load() {
     }
     configDraft.value = localFiles.config_content || localFiles.config_default;
     authDraft.value = localFiles.auth_content || localFiles.auth_default;
+    await loadTargets(true);
   } catch (error) {
+    loadError.value = true;
     app.toast((error as Error).message, "error");
   } finally {
     loading.value = false;
@@ -102,7 +107,7 @@ async function load() {
 
 async function loadTargets(silent = false) {
   try {
-    targets.value = (await api.codexRemoteTargets()).targets;
+    targets.value = normalizeCodexRemoteTargets(await api.codexRemoteTargets());
   } catch (error) {
     if (!silent) app.toast((error as Error).message, "error");
   }
@@ -246,7 +251,7 @@ async function injectRemote() {
   }
   remoteBusy.value = "inject";
   try {
-    const target = await api.codexRemoteInject({
+    const response = await api.codexRemoteInject({
       id: remoteForm.value.id,
       host: remoteForm.value.host.trim(),
       port: remoteForm.value.port,
@@ -260,6 +265,8 @@ async function injectRemote() {
       save: remoteForm.value.save,
       accept_host_key: hostKeyAccepted.value,
     });
+    const target = normalizeCodexRemoteTarget(response);
+    if (!target) throw new Error(t("codex.invalidTargetResponse"));
     const index = targets.value.findIndex((item) => item.id === target.id || item.id === remoteForm.value.id);
     if (index >= 0) targets.value.splice(index, 1, target);
     else targets.value.push(target);
@@ -367,9 +374,11 @@ async function confirmRemoteDelete() {
 }
 
 function replaceTarget(target: CodexRemoteTarget) {
-  const index = targets.value.findIndex((item) => item.id === target.id);
-  if (index >= 0) targets.value.splice(index, 1, target);
-  else targets.value.push(target);
+  const normalized = normalizeCodexRemoteTarget(target);
+  if (!normalized) return;
+  const index = targets.value.findIndex((item) => item.id === normalized.id);
+  if (index >= 0) targets.value.splice(index, 1, normalized);
+  else targets.value.push(normalized);
 }
 
 function targetStatusLabel(target: CodexRemoteTarget): string {
@@ -427,6 +436,17 @@ onBeforeUnmount(() => {
     </div>
 
     <div v-if="loading" class="codex-loading">{{ t("common.loading") }}</div>
+
+    <section v-else-if="loadError" class="codex-panel codex-load-error" role="alert">
+      <Icon name="warn" :size="22" />
+      <div>
+        <strong>{{ t("codex.loadFailed") }}</strong>
+        <p>{{ t("codex.loadFailedDesc") }}</p>
+      </div>
+      <button class="btn btn-primary btn-sm" type="button" @click="load">
+        <Icon name="refresh" :size="14" /> {{ t("common.retry") }}
+      </button>
+    </section>
 
     <template v-else-if="st && activeTab === 'local'">
       <section class="codex-panel local-summary">
@@ -844,6 +864,18 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   color: var(--text-faint);
+}
+.codex-load-error {
+  min-height: 220px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  color: var(--danger);
+}
+.codex-load-error p {
+  margin: 4px 0 0;
+  color: var(--text-dim);
 }
 .codex-panel {
   min-width: 0;
@@ -1301,6 +1333,9 @@ onBeforeUnmount(() => {
   }
 }
 @media (max-width: 720px) {
+  .codex-load-error {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .codex-tabs {
     width: 100%;
   }

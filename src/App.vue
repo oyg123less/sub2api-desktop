@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { useI18n } from "vue-i18n";
 import Icon from "./components/Icon.vue";
+import RouteErrorBoundary from "./components/RouteErrorBoundary.vue";
 import Toasts from "./components/Toasts.vue";
 import UpdateModal from "./components/UpdateModal.vue";
 import type { ReleaseInfo } from "./api/control";
@@ -19,6 +20,7 @@ import { initializeBackendBridge, restartBackend, subscribeBackendState } from "
 const route = useRoute();
 const { t } = useI18n();
 const app = useAppStore();
+const mainElement = ref<HTMLElement | null>(null);
 
 const nav = [
   { name: "dashboard", to: "/dashboard", icon: "dashboard" },
@@ -74,6 +76,11 @@ const currentVersion = computed(() => app.status?.version || "0.2.4");
 
 watch(() => app.status?.version, (version) => {
   if (version) void refreshUpdate();
+});
+
+watch(() => route.fullPath, async () => {
+  await nextTick();
+  mainElement.value?.scrollTo({ top: 0, left: 0, behavior: "auto" });
 });
 
 async function retryBackend() {
@@ -163,8 +170,10 @@ onUnmounted(() => {
       </div>
     </aside>
 
-    <main class="main">
-      <RouterView />
+    <main ref="mainElement" class="main">
+      <RouterView v-slot="{ Component }">
+        <RouteErrorBoundary :component="Component" :reset-key="route.fullPath" />
+      </RouterView>
     </main>
 
     <Toasts />
