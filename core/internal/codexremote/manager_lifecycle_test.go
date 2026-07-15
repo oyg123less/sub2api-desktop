@@ -2,10 +2,12 @@ package codexremote
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -97,6 +99,8 @@ type lifecycleRemote struct {
 	injectCalls  int
 	restoreCalls int
 	probeErr     error
+	lastConfig   string
+	lastAuth     string
 }
 
 func (r *lifecycleRemote) Probe(context.Context) (Probe, error) {
@@ -106,11 +110,95 @@ func (r *lifecycleRemote) Probe(context.Context) (Probe, error) {
 	return Probe{OS: "Linux", Home: "/home/test", CodexDir: "/home/test/.codex"}, nil
 }
 
-func (r *lifecycleRemote) Inject(context.Context, string, string, string) error {
+func (r *lifecycleRemote) Inject(_ context.Context, _ string, config, auth string) error {
 	r.mu.Lock()
 	r.injectCalls++
+	r.lastConfig = config
+	r.lastAuth = auth
 	r.mu.Unlock()
 	return nil
+}
+
+func TestManagerDirectTargetLifecycle(t *testing.T) {
+	storage := newMemoryTargetStore()
+	operations := &lifecycleRemote{}
+	manager, err := NewManager(storage, filepath.Join(t.TempDir(), "known_hosts"), func() string { return "127.0.0.1:1" }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listenCalls := 0
+	dialCalls := 0
+	manager.dial = func(context.Context, ProbeRequest, bool, bool) (*dialResult, error) {
+		dialCalls++
+		return &dialResult{connection: &scriptedConnection{listen: func(string, string) (net.Listener, error) {
+			listenCalls++
+			return nil, errors.New("direct mode attempted to create a tunnel")
+		}}, fingerprint: "SHA256:test", known: true}, nil
+	}
+	manager.remote = func(remoteConnection) remoteOperations { return operations }
+
+	const baseURL = "https://api.example.test/v1"
+	const apiKey = "fixture-direct-key"
+	request := InjectRequest{
+		Host: "example.test", User: "deploy", Password: "fixture-password", Save: true, AcceptHostKey: true,
+		Model: "gpt-5.6", Mode: ModeDirect, BaseURL: baseURL, APIKey: apiKey,
+		Config: codexcfg.RenderConfig(baseURL, "gpt-5.6"), Auth: codexcfg.RenderAuth(apiKey),
+	}
+	injected, err := manager.Inject(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if injected.Mode != ModeDirect || injected.BaseURL != baseURL || injected.TunnelEnabled || injected.TunnelStatus != StatusInjectedDirect {
+		t.Fatalf("direct target status = %#v", injected)
+	}
+	if listenCalls != 0 || dialCalls != 1 {
+		t.Fatalf("direct inject listen calls = %d, dial calls = %d", listenCalls, dialCalls)
+	}
+	operations.mu.Lock()
+	lastConfig, lastAuth := operations.lastConfig, operations.lastAuth
+	operations.mu.Unlock()
+	if lastConfig != request.Config || lastAuth != request.Auth {
+		t.Fatal("direct inject did not pass the rendered config and auth to the remote operation")
+	}
+	encoded, err := json.Marshal(injected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), apiKey) {
+		t.Fatal("direct target response exposed the API key")
+	}
+	_, err = manager.SetTunnel(t.Context(), injected.ID, true)
+	assertRemoteErrorCode(t, err, "tunnel_not_applicable")
+	if err := manager.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := NewManager(storage, filepath.Join(t.TempDir(), "known_hosts"), func() string { return "127.0.0.1:1" }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reloaded.Close()
+	reloadDialCalls := 0
+	reloaded.dial = func(context.Context, ProbeRequest, bool, bool) (*dialResult, error) {
+		reloadDialCalls++
+		return &dialResult{connection: &scriptedConnection{}}, nil
+	}
+	reloaded.remote = func(remoteConnection) remoteOperations { return operations }
+	reloaded.RestoreSaved(t.Context())
+	if reloadDialCalls != 0 {
+		t.Fatalf("startup restoration dialed a direct target %d times", reloadDialCalls)
+	}
+	targets, err := reloaded.Targets()
+	if err != nil || len(targets) != 1 || targets[0].TunnelStatus != StatusInjectedDirect {
+		t.Fatalf("reloaded direct targets = %#v, err=%v", targets, err)
+	}
+	restored, err := reloaded.Restore(t.Context(), injected.ID)
+	if err != nil || restored.Injected || restored.TunnelStatus != StatusNotInjected {
+		t.Fatalf("restored direct target = %#v, err=%v", restored, err)
+	}
+	if reloadDialCalls != 1 {
+		t.Fatalf("direct restore dial calls = %d, want 1", reloadDialCalls)
+	}
 }
 
 func (r *lifecycleRemote) Restore(context.Context, string) error {

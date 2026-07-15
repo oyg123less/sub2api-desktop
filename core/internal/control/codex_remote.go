@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -50,12 +51,36 @@ func (c *Control) codexRemoteInject(w http.ResponseWriter, r *http.Request) {
 		writeControlError(w, http.StatusBadRequest, "invalid_model", "model must belong to the gpt-5 or codex family", false, nil)
 		return
 	}
-	if request.RemotePort == 0 {
-		request.RemotePort = 8080
+	request.Mode = strings.TrimSpace(request.Mode)
+	if request.Mode == "" {
+		request.Mode = codexremote.ModeTunnel
 	}
-	baseURL := fmt.Sprintf("http://127.0.0.1:%d/v1", request.RemotePort)
-	request.Config = codexcfg.RenderConfig(baseURL, request.Model)
-	request.Auth = codexcfg.RenderAuth(c.settings.Get().LocalAPIKey)
+	switch request.Mode {
+	case codexremote.ModeTunnel:
+		if request.RemotePort == 0 {
+			request.RemotePort = 8080
+		}
+		baseURL := fmt.Sprintf("http://127.0.0.1:%d/v1", request.RemotePort)
+		request.Config = codexcfg.RenderConfig(baseURL, request.Model)
+		request.Auth = codexcfg.RenderAuth(c.settings.Get().LocalAPIKey)
+	case codexremote.ModeDirect:
+		baseURL, ok := normalizeDirectBaseURL(request.BaseURL)
+		if !ok {
+			writeControlError(w, http.StatusBadRequest, "invalid_request", "base_url must be a valid HTTP or HTTPS URL", false, nil)
+			return
+		}
+		request.APIKey = strings.TrimSpace(request.APIKey)
+		if request.APIKey == "" {
+			writeControlError(w, http.StatusBadRequest, "invalid_request", "api_key is required for direct mode", false, nil)
+			return
+		}
+		request.BaseURL = baseURL
+		request.Config = codexcfg.RenderConfig(baseURL, request.Model)
+		request.Auth = codexcfg.RenderAuth(request.APIKey)
+	default:
+		writeControlError(w, http.StatusBadRequest, "invalid_request", "mode must be tunnel or direct", false, nil)
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 	defer cancel()
 	target, err := c.remoteCodex.Inject(ctx, request)
@@ -64,6 +89,15 @@ func (c *Control) codexRemoteInject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, target)
+}
+
+func normalizeDirectBaseURL(value string) (string, bool) {
+	value = strings.TrimRight(strings.TrimSpace(value), "/")
+	parsed, err := url.Parse(value)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil {
+		return "", false
+	}
+	return value, true
 }
 
 func (c *Control) codexRemoteTargets(w http.ResponseWriter, _ *http.Request) {
@@ -148,7 +182,7 @@ func writeCodexRemoteError(w http.ResponseWriter, err error) {
 	}
 	status := http.StatusBadGateway
 	switch remoteError.Code {
-	case "invalid_target", "unsupported_os":
+	case "invalid_target", "unsupported_os", "tunnel_not_applicable":
 		status = http.StatusBadRequest
 	case "auth_failed":
 		status = http.StatusUnauthorized

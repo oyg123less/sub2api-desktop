@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"sub2api-desktop/core/internal/codexcfg"
 	"sub2api-desktop/core/internal/codexremote"
 	"sub2api-desktop/core/internal/store"
 )
@@ -16,6 +17,7 @@ type remoteControllerStub struct {
 	target     codexremote.TargetStatus
 	probeErr   error
 	injectErr  error
+	tunnelErr  error
 	lastInject codexremote.InjectRequest
 }
 
@@ -30,7 +32,68 @@ func (s *remoteControllerStub) Targets() ([]codexremote.TargetStatus, error) {
 	return []codexremote.TargetStatus{s.target}, nil
 }
 func (s *remoteControllerStub) SetTunnel(context.Context, int64, bool) (codexremote.TargetStatus, error) {
-	return s.target, nil
+	return s.target, s.tunnelErr
+}
+
+func TestCodexRemoteDirectInjectValidationAndRendering(t *testing.T) {
+	settings := &settingsPatchAccess{value: store.Settings{LocalAPIKey: "fixture-local-key", CodexModel: "gpt-5.6-sol"}}
+	t.Run("valid", func(t *testing.T) {
+		remote := &remoteControllerStub{target: codexremote.TargetStatus{Mode: codexremote.ModeDirect}}
+		control := &Control{remoteCodex: remote, settings: settings}
+		request := httptest.NewRequest(http.MethodPost, "/control/codex/remote/inject", strings.NewReader(
+			`{"host":"example.test","user":"deploy","password":"fixture-password","mode":"direct","base_url":"https://api.example.test/v1/","api_key":"fixture-direct-key","model":"gpt-5.6-sol"}`))
+		response := httptest.NewRecorder()
+		control.codexRemoteInject(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status = %d, body=%s", response.Code, response.Body.String())
+		}
+		if remote.lastInject.BaseURL != "https://api.example.test/v1" || remote.lastInject.Mode != codexremote.ModeDirect {
+			t.Fatalf("normalized request = %#v", remote.lastInject)
+		}
+		if remote.lastInject.Config != codexcfg.RenderConfig(remote.lastInject.BaseURL, "gpt-5.6-sol") ||
+			remote.lastInject.Auth != codexcfg.RenderAuth("fixture-direct-key") {
+			t.Fatal("direct request did not render the supplied Base URL and API key")
+		}
+		if strings.Contains(response.Body.String(), "fixture-direct-key") {
+			t.Fatal("direct inject response exposed the API key")
+		}
+	})
+
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{name: "invalid scheme", body: `{"mode":"direct","base_url":"ftp://api.example.test/v1","api_key":"key","model":"gpt-5.6-sol"}`},
+		{name: "missing host", body: `{"mode":"direct","base_url":"https:///v1","api_key":"key","model":"gpt-5.6-sol"}`},
+		{name: "userinfo", body: `{"mode":"direct","base_url":"https://key@api.example.test/v1","api_key":"key","model":"gpt-5.6-sol"}`},
+		{name: "missing api key", body: `{"mode":"direct","base_url":"https://api.example.test/v1","model":"gpt-5.6-sol"}`},
+		{name: "invalid mode", body: `{"mode":"other","model":"gpt-5.6-sol"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			remote := &remoteControllerStub{}
+			control := &Control{remoteCodex: remote, settings: settings}
+			response := httptest.NewRecorder()
+			control.codexRemoteInject(response, httptest.NewRequest(http.MethodPost, "/control/codex/remote/inject", strings.NewReader(test.body)))
+			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"invalid_request"`) {
+				t.Fatalf("status = %d, body=%s", response.Code, response.Body.String())
+			}
+			if remote.lastInject.Config != "" || remote.lastInject.Auth != "" {
+				t.Fatal("invalid direct request reached the manager")
+			}
+		})
+	}
+}
+
+func TestCodexRemoteDirectTunnelReturnsBadRequest(t *testing.T) {
+	remote := &remoteControllerStub{tunnelErr: &codexremote.Error{Code: "tunnel_not_applicable"}}
+	control := &Control{remoteCodex: remote}
+	request := httptest.NewRequest(http.MethodPost, "/control/codex/remote/1/tunnel", strings.NewReader(`{"enabled":true}`))
+	request.SetPathValue("id", "1")
+	response := httptest.NewRecorder()
+	control.codexRemoteTunnel(response, request)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"tunnel_not_applicable"`) {
+		t.Fatalf("status = %d, body=%s", response.Code, response.Body.String())
+	}
 }
 func (s *remoteControllerStub) Restore(context.Context, int64) (codexremote.TargetStatus, error) {
 	return s.target, nil

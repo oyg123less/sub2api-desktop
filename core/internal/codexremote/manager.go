@@ -55,6 +55,10 @@ func NewManager(st targetStore, knownHostsPath string, localAddress func() strin
 			return nil, err
 		}
 		for _, target := range targets {
+			if target.Mode == "" {
+				target.Mode = ModeTunnel
+			}
+			target.APIKey = ""
 			manager.targets[target.ID] = &runtimeTarget{record: target, saved: true}
 		}
 	}
@@ -117,18 +121,22 @@ func (m *Manager) Inject(ctx context.Context, request InjectRequest) (TargetStat
 	if existing != nil {
 		m.closeTunnel(existing.record.ID)
 	}
-	activeTunnel, err := startTunnel(result.connection, address("127.0.0.1", request.RemotePort), m.localAddress())
-	if err != nil {
-		if existing == nil {
-			_ = remote.Restore(ctx, probe.CodexDir)
+	var activeTunnel *tunnel
+	if request.Mode == ModeTunnel {
+		activeTunnel, err = startTunnel(result.connection, address("127.0.0.1", request.RemotePort), m.localAddress())
+		if err != nil {
+			if existing == nil {
+				_ = remote.Restore(ctx, probe.CodexDir)
+			}
+			return TargetStatus{}, err
 		}
-		return TargetStatus{}, err
+		connectionOwned = false
 	}
-	connectionOwned = false
 
 	record := &store.CodexRemoteTarget{
 		Name: request.Name, Host: request.Host, Port: request.Port, User: request.User, Password: request.Password,
-		RemotePort: request.RemotePort, Model: request.Model, TunnelEnabled: true, Injected: true,
+		RemotePort: request.RemotePort, Model: request.Model, Mode: request.Mode, BaseURL: request.BaseURL, APIKey: request.APIKey,
+		TunnelEnabled: request.Mode == ModeTunnel, Injected: true,
 	}
 	existingID := int64(0)
 	saved := request.Save
@@ -140,7 +148,7 @@ func (m *Manager) Inject(ctx context.Context, request InjectRequest) (TargetStat
 	}
 	if saved {
 		if m.store == nil {
-			_ = activeTunnel.Close()
+			closeActiveTunnel(activeTunnel)
 			if existing == nil {
 				_ = remote.Restore(ctx, probe.CodexDir)
 			}
@@ -152,7 +160,7 @@ func (m *Manager) Inject(ctx context.Context, request InjectRequest) (TargetStat
 			record, err = m.store.CreateCodexRemoteTarget(record)
 		}
 		if err != nil {
-			_ = activeTunnel.Close()
+			closeActiveTunnel(activeTunnel)
 			if existing == nil {
 				_ = remote.Restore(ctx, probe.CodexDir)
 			}
@@ -164,6 +172,7 @@ func (m *Manager) Inject(ctx context.Context, request InjectRequest) (TargetStat
 		m.nextID--
 		m.mu.Unlock()
 	}
+	record.APIKey = ""
 
 	runtime := &runtimeTarget{record: record, saved: saved, tunnel: activeTunnel}
 	m.mu.Lock()
@@ -172,8 +181,16 @@ func (m *Manager) Inject(ctx context.Context, request InjectRequest) (TargetStat
 	}
 	m.targets[record.ID] = runtime
 	m.mu.Unlock()
-	m.monitorTunnel(record.ID, activeTunnel)
+	if activeTunnel != nil {
+		m.monitorTunnel(record.ID, activeTunnel)
+	}
 	return m.status(record.ID)
+}
+
+func closeActiveTunnel(active *tunnel) {
+	if active != nil {
+		_ = active.Close()
+	}
 }
 
 func (m *Manager) Targets() ([]TargetStatus, error) {
@@ -202,6 +219,9 @@ func (m *Manager) SetTunnel(ctx context.Context, id int64, enabled bool) (Target
 	runtime, err := m.get(id)
 	if err != nil {
 		return TargetStatus{}, err
+	}
+	if runtime.record.Mode == ModeDirect {
+		return TargetStatus{}, codedError("tunnel_not_applicable", nil)
 	}
 	if !enabled {
 		runtime.record.TunnelEnabled = false
@@ -299,7 +319,7 @@ func (m *Manager) RestoreSaved(ctx context.Context) {
 	m.mu.Lock()
 	ids := []int64{}
 	for id, runtime := range m.targets {
-		if runtime.saved && runtime.record.Injected && runtime.record.TunnelEnabled {
+		if runtime.saved && runtime.record.Mode != ModeDirect && runtime.record.Injected && runtime.record.TunnelEnabled {
 			ids = append(ids, id)
 		}
 	}
@@ -349,6 +369,23 @@ func (m *Manager) normalizeInjectRequest(request InjectRequest) (InjectRequest, 
 		return InjectRequest{}, nil, err
 	}
 	request.Host, request.Port, request.User, request.Password = probe.Host, probe.Port, probe.User, probe.Password
+	request.Mode = strings.TrimSpace(request.Mode)
+	if request.Mode == "" {
+		request.Mode = ModeTunnel
+	}
+	switch request.Mode {
+	case ModeTunnel:
+		request.BaseURL = ""
+		request.APIKey = ""
+	case ModeDirect:
+		request.BaseURL = strings.TrimRight(strings.TrimSpace(request.BaseURL), "/")
+		request.APIKey = strings.TrimSpace(request.APIKey)
+		if request.BaseURL == "" || request.APIKey == "" {
+			return InjectRequest{}, nil, codedError("invalid_target", nil)
+		}
+	default:
+		return InjectRequest{}, nil, codedError("invalid_target", nil)
+	}
 	request.Name = strings.TrimSpace(request.Name)
 	if request.Name == "" {
 		request.Name = request.User + "@" + request.Host
@@ -360,7 +397,7 @@ func (m *Manager) normalizeInjectRequest(request InjectRequest) (InjectRequest, 
 	if request.RemotePort == 0 {
 		request.RemotePort = 8080
 	}
-	if request.RemotePort < 1 || request.RemotePort > 65535 {
+	if request.Mode == ModeTunnel && (request.RemotePort < 1 || request.RemotePort > 65535) {
 		return InjectRequest{}, nil, codedError("invalid_target", nil)
 	}
 	return request, existing, nil
@@ -370,6 +407,9 @@ func (m *Manager) enableTunnel(ctx context.Context, id int64) error {
 	runtime, err := m.get(id)
 	if err != nil {
 		return err
+	}
+	if runtime.record.Mode == ModeDirect {
+		return codedError("tunnel_not_applicable", nil)
 	}
 	m.closeTunnel(id)
 	credentials := ProbeRequest{Host: runtime.record.Host, Port: runtime.record.Port, User: runtime.record.User, Password: runtime.record.Password}
@@ -472,16 +512,29 @@ func (m *Manager) status(id int64) (TargetStatus, error) {
 	switch {
 	case !record.Injected:
 		status = StatusNotInjected
+	case record.Mode == ModeDirect:
+		status = StatusInjectedDirect
 	case !record.TunnelEnabled:
 		status = StatusDisabled
 	case runtime.tunnel != nil:
 		status = StatusConnected
 	}
+	mode := record.Mode
+	if mode == "" {
+		mode = ModeTunnel
+	}
+	baseURL := "http://127.0.0.1:" + fmt.Sprintf("%d", record.RemotePort) + "/v1"
+	responseBaseURL := ""
+	if mode == ModeDirect {
+		baseURL = record.BaseURL
+		responseBaseURL = record.BaseURL
+	}
 	return TargetStatus{
 		ID: record.ID, Name: record.Name, Host: record.Host, Port: record.Port, User: record.User,
-		RemotePort: record.RemotePort, Model: record.Model, Saved: runtime.saved, Injected: record.Injected,
+		RemotePort: record.RemotePort, Model: record.Model, Mode: mode, BaseURL: responseBaseURL,
+		Saved: runtime.saved, Injected: record.Injected,
 		TunnelEnabled: record.TunnelEnabled, TunnelStatus: status, LastError: runtime.lastError,
-		ConfigPreview: codexcfg.RenderConfig("http://127.0.0.1:"+fmt.Sprintf("%d", record.RemotePort)+"/v1", record.Model),
+		ConfigPreview: codexcfg.RenderConfig(baseURL, record.Model),
 		AuthPreview:   codexcfg.RenderAuth("********"), UpdatedAt: record.UpdatedAt,
 	}, nil
 }

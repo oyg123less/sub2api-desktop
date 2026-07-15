@@ -252,12 +252,108 @@ func TestV023MigrationStoresEncryptedCodexRemoteTargets(t *testing.T) {
 	}
 }
 
+func TestV024MigrationDefaultsTunnelAndEncryptsDirectAPIKey(t *testing.T) {
+	dir := t.TempDir()
+	cipher, err := appcrypto.LoadOrCreate(filepath.Join(dir, "key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(filepath.Join(dir, "sub2api.db"), cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	for _, column := range []string{"mode", "base_url", "api_key_cipher"} {
+		if !testColumnExists(t, st.db, "codex_remote_targets", column) {
+			t.Fatalf("codex_remote_targets.%s missing after v0.2.4 migration", column)
+		}
+	}
+	const apiKey = "fixture-direct-api-key"
+	created, err := st.CreateCodexRemoteTarget(&CodexRemoteTarget{
+		Name: "direct", Host: "example.test", Port: 22, User: "deploy", Password: "test-password",
+		RemotePort: 8080, Model: "gpt-5.6-sol", Mode: "direct", BaseURL: "https://api.example.test/v1",
+		APIKey: apiKey, Injected: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var apiKeyCipher string
+	if err := st.db.QueryRow(`SELECT api_key_cipher FROM codex_remote_targets WHERE id=?`, created.ID).Scan(&apiKeyCipher); err != nil {
+		t.Fatal(err)
+	}
+	if apiKeyCipher == "" || apiKeyCipher == apiKey {
+		t.Fatal("direct API key was not encrypted at rest")
+	}
+	decrypted, err := cipher.Decrypt(apiKeyCipher)
+	if err != nil || decrypted != apiKey {
+		t.Fatal("direct API key ciphertext did not decrypt correctly")
+	}
+	loaded, err := st.GetCodexRemoteTarget(created.ID)
+	if err != nil || loaded.APIKey != apiKey || loaded.Mode != "direct" {
+		t.Fatalf("direct target did not round-trip through encrypted storage: %#v, err=%v", loaded, err)
+	}
+	loaded.APIKey = ""
+	loaded.Injected = false
+	if _, err := st.UpdateCodexRemoteTarget(loaded); err != nil {
+		t.Fatal(err)
+	}
+	var preservedCipher string
+	if err := st.db.QueryRow(`SELECT api_key_cipher FROM codex_remote_targets WHERE id=?`, created.ID).Scan(&preservedCipher); err != nil {
+		t.Fatal(err)
+	}
+	if preservedCipher != apiKeyCipher {
+		t.Fatal("updating direct target metadata replaced its API-key ciphertext")
+	}
+
+	if _, err := st.db.Exec(`DROP TABLE codex_remote_targets`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateV023CodexRemoteTargetsInTest(st); err != nil {
+		t.Fatal(err)
+	}
+	passwordCipher, err := cipher.Encrypt("legacy-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`INSERT INTO codex_remote_targets
+		(name,host,port,user,password_cipher,remote_port,model,tunnel_enabled,injected,created_at,updated_at)
+		VALUES('legacy','legacy.test',22,'deploy',?,8080,'gpt-5.6-sol',1,1,1,1)`, passwordCipher); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateV024CodexDirectTargetsInTest(st); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateV024CodexDirectTargetsInTest(st); err != nil {
+		t.Fatal(err)
+	}
+	var mode string
+	if err := st.db.QueryRow(`SELECT mode FROM codex_remote_targets WHERE name='legacy'`).Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if mode != "tunnel" {
+		t.Fatalf("legacy target mode = %q, want tunnel", mode)
+	}
+}
+
 func migrateV023CodexRemoteTargetsInTest(st *Store) error {
 	tx, err := st.db.Begin()
 	if err != nil {
 		return err
 	}
 	if err := migrateV023CodexRemoteTargets(tx, st.cipher); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+func migrateV024CodexDirectTargetsInTest(st *Store) error {
+	tx, err := st.db.Begin()
+	if err != nil {
+		return err
+	}
+	if err := migrateV024CodexDirectTargets(tx, st.cipher); err != nil {
 		_ = tx.Rollback()
 		return err
 	}

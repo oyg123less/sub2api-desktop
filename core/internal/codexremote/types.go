@@ -10,10 +10,14 @@ import (
 )
 
 const (
-	StatusConnected   = "connected"
-	StatusDown        = "down"
-	StatusDisabled    = "disabled"
-	StatusNotInjected = "not_injected"
+	StatusConnected      = "connected"
+	StatusDown           = "down"
+	StatusDisabled       = "disabled"
+	StatusNotInjected    = "not_injected"
+	StatusInjectedDirect = "injected_direct"
+
+	ModeTunnel = "tunnel"
+	ModeDirect = "direct"
 )
 
 type Error struct {
@@ -38,6 +42,8 @@ func (e *Error) Error() string {
 		return "remote target was not found"
 	case "tunnel_failed":
 		return "SSH reverse tunnel could not be established"
+	case "tunnel_not_applicable":
+		return "SSH tunnel controls do not apply to direct targets"
 	case "remote_command_failed":
 		return "remote Codex configuration command failed"
 	default:
@@ -75,6 +81,9 @@ type InjectRequest struct {
 	RemotePort    int    `json:"remote_port"`
 	Save          bool   `json:"save"`
 	AcceptHostKey bool   `json:"accept_host_key"`
+	Mode          string `json:"mode"`
+	BaseURL       string `json:"base_url"`
+	APIKey        string `json:"api_key"`
 	Config        string `json:"-"`
 	Auth          string `json:"-"`
 }
@@ -87,6 +96,8 @@ type TargetStatus struct {
 	User          string    `json:"user"`
 	RemotePort    int       `json:"remote_port"`
 	Model         string    `json:"model"`
+	Mode          string    `json:"mode"`
+	BaseURL       string    `json:"base_url,omitempty"`
 	Saved         bool      `json:"saved"`
 	Injected      bool      `json:"injected"`
 	TunnelEnabled bool      `json:"tunnel_enabled"`
