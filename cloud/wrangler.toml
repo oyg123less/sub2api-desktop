@@ -1,0 +1,20 @@
+name = "amber-cloud-api"
+main = "src/index.ts"
+compatibility_date = "2026-07-15"
+workers_dev = true
+
+[vars]
+ENVIRONMENT = "development"
+MAILER_MODE = "console"
+RESEND_FROM = "Amber <noreply@example.invalid>"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "amber-cloud"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+preview_id = "REPLACE_WITH_KV_PREVIEW_ID"
