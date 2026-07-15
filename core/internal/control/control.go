@@ -68,6 +68,11 @@ type CloudController interface {
 	AdminLogoutUser(context.Context, string, int64) error
 	AdminDeleteUser(context.Context, string, int64) error
 	AdminUpdateSettings(context.Context, string, map[string]bool) error
+	AdminSetShareRevoked(context.Context, string, int64, bool) error
+	ListShares(context.Context) ([]cloudsync.Share, error)
+	CreateShare(context.Context, cloudsync.CreateShareInput) (cloudsync.CreatedShare, error)
+	UpdateShare(context.Context, int64, map[string]any) (cloudsync.Share, error)
+	ShareUsage(context.Context, int64) ([]cloudsync.ShareUsage, error)
 }
 
 // Control holds control API dependencies.
@@ -162,6 +167,11 @@ func (c *Control) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /control/cloud/admin/users/{id}/logout-all", h(c.cloudAdminLogoutUser))
 	mux.HandleFunc("DELETE /control/cloud/admin/users/{id}", h(c.cloudAdminDeleteUser))
 	mux.HandleFunc("PATCH /control/cloud/admin/settings", h(c.cloudAdminUpdateSettings))
+	mux.HandleFunc("PATCH /control/cloud/admin/shares/{id}", h(c.cloudAdminSetShareRevoked))
+	mux.HandleFunc("GET /control/cloud/shares", h(c.cloudShares))
+	mux.HandleFunc("POST /control/cloud/shares", h(c.cloudCreateShare))
+	mux.HandleFunc("PATCH /control/cloud/shares/{id}", h(c.cloudUpdateShare))
+	mux.HandleFunc("GET /control/cloud/shares/{id}/usage", h(c.cloudShareUsage))
 
 	mux.HandleFunc("GET /control/models", h(c.listModels))
 

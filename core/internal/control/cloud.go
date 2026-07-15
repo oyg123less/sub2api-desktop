@@ -140,6 +140,123 @@ func (c *Control) cloudChangePassword(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, c.cloud.Status())
 }
 
+func (c *Control) cloudShares(w http.ResponseWriter, r *http.Request) {
+	if c.cloud == nil {
+		writeControlError(w, http.StatusServiceUnavailable, "cloud_unavailable", "Amber Cloud is unavailable", true, nil)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	shares, err := c.cloud.ListShares(ctx)
+	if err != nil {
+		writeCloudControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"shares": shares})
+}
+
+func (c *Control) cloudCreateShare(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		AccountID     int64  `json:"account_id"`
+		QuotaRequests int    `json:"quota_requests"`
+		ExpiresAt     string `json:"expires_at"`
+		Consent       bool   `json:"consent"`
+	}
+	if c.cloud == nil || !decodeCloudRequest(w, r, &request) {
+		if c.cloud == nil {
+			writeControlError(w, http.StatusServiceUnavailable, "cloud_unavailable", "Amber Cloud is unavailable", true, nil)
+		}
+		return
+	}
+	if request.AccountID <= 0 || !request.Consent {
+		writeControlError(w, http.StatusBadRequest, "invalid_share_request", "Select an account and confirm cloud token custody", false, nil)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	if err := c.cloud.Sync(ctx); err != nil {
+		writeCloudControlError(w, err)
+		return
+	}
+	created, err := c.cloud.CreateShare(ctx, cloudsync.CreateShareInput{
+		AccountID: request.AccountID, QuotaRequests: request.QuotaRequests,
+		ExpiresAt: request.ExpiresAt, Consent: request.Consent,
+	})
+	if err != nil {
+		writeCloudControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, created)
+}
+
+func (c *Control) cloudUpdateShare(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Revoked       *bool   `json:"revoked"`
+		QuotaRequests *int    `json:"quota_requests"`
+		ExpiresAt     *string `json:"expires_at"`
+	}
+	if c.cloud == nil || !decodeCloudRequest(w, r, &request) {
+		if c.cloud == nil {
+			writeControlError(w, http.StatusServiceUnavailable, "cloud_unavailable", "Amber Cloud is unavailable", true, nil)
+		}
+		return
+	}
+	shareID, ok := cloudShareID(w, r)
+	if !ok {
+		return
+	}
+	updates := make(map[string]any, 3)
+	if request.Revoked != nil {
+		updates["revoked"] = *request.Revoked
+	}
+	if request.QuotaRequests != nil {
+		updates["quota_requests"] = *request.QuotaRequests
+	}
+	if request.ExpiresAt != nil {
+		updates["expires_at"] = *request.ExpiresAt
+	}
+	if len(updates) == 0 {
+		writeControlError(w, http.StatusBadRequest, "invalid_share_update", "No supported share changes were provided", false, nil)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	share, err := c.cloud.UpdateShare(ctx, shareID, updates)
+	if err != nil {
+		writeCloudControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, share)
+}
+
+func (c *Control) cloudShareUsage(w http.ResponseWriter, r *http.Request) {
+	if c.cloud == nil {
+		writeControlError(w, http.StatusServiceUnavailable, "cloud_unavailable", "Amber Cloud is unavailable", true, nil)
+		return
+	}
+	shareID, ok := cloudShareID(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	usage, err := c.cloud.ShareUsage(ctx, shareID)
+	if err != nil {
+		writeCloudControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"usage": usage})
+}
+
+func cloudShareID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeControlError(w, http.StatusBadRequest, "invalid_share_id", "The share ID is invalid", false, nil)
+		return 0, false
+	}
+	return id, true
+}
+
 func (c *Control) cloudAdminOverview(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		AdminKey string `json:"admin_key"`
@@ -256,6 +373,31 @@ func (c *Control) cloudAdminUpdateSettings(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+func (c *Control) cloudAdminSetShareRevoked(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		AdminKey string `json:"admin_key"`
+		Revoked  *bool  `json:"revoked"`
+	}
+	if !c.decodeCloudAdminRequest(w, r, &request) {
+		return
+	}
+	shareID, ok := cloudShareID(w, r)
+	if !ok {
+		return
+	}
+	if request.Revoked == nil {
+		writeControlError(w, http.StatusBadRequest, "invalid_admin_action", "The revoked field is required", false, nil)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if err := c.cloud.AdminSetShareRevoked(ctx, request.AdminKey, shareID, *request.Revoked); err != nil {
+		writeCloudControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 func (c *Control) decodeCloudAdminRequest(w http.ResponseWriter, r *http.Request, target any) bool {
 	if c.cloud == nil {
 		writeControlError(w, http.StatusServiceUnavailable, "cloud_unavailable", "Amber Cloud is unavailable", true, nil)
@@ -302,7 +444,9 @@ func writeCloudControlError(w http.ResponseWriter, err error) {
 	}
 	message := strings.ToLower(err.Error())
 	switch {
-	case strings.Contains(message, "password"), strings.Contains(message, "registration session"), strings.Contains(message, "login is required"), strings.Contains(message, "administrator"):
+	case strings.Contains(message, "password"), strings.Contains(message, "registration session"), strings.Contains(message, "login is required"),
+		strings.Contains(message, "administrator"), strings.Contains(message, "share"), strings.Contains(message, "custody"),
+		strings.Contains(message, "oauth account"), strings.Contains(message, "api-key account"), strings.Contains(message, "account type"):
 		writeControlError(w, http.StatusBadRequest, "cloud_validation_failed", err.Error(), false, nil)
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		writeControlError(w, http.StatusGatewayTimeout, "cloud_timeout", "Amber Cloud request timed out", true, nil)

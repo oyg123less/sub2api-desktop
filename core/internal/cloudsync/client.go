@@ -148,13 +148,72 @@ type AdminAudit struct {
 }
 
 type AdminStats struct {
-	Users            int `json:"users"`
-	DailyActiveUsers int `json:"daily_active_users"`
-	VaultItems       int `json:"vault_items"`
+	Users            int     `json:"users"`
+	DailyActiveUsers int     `json:"daily_active_users"`
+	VaultItems       int     `json:"vault_items"`
+	ActiveShares     int     `json:"active_shares"`
+	ShareRequests    int     `json:"share_requests"`
+	ShareErrorRate   float64 `json:"share_error_rate"`
+}
+
+type AdminShare struct {
+	ID            int64  `json:"id"`
+	OwnerID       int64  `json:"owner_id"`
+	OwnerEmail    string `json:"owner_email"`
+	AccountUID    string `json:"account_uid"`
+	ShareCode     string `json:"share_code"`
+	QuotaRequests int    `json:"quota_requests"`
+	UsedRequests  int    `json:"used_requests"`
+	ExpiresAt     string `json:"expires_at"`
+	Revoked       int    `json:"revoked"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
+}
+
+type Share struct {
+	ID            int64  `json:"id"`
+	AccountUID    string `json:"account_uid"`
+	ShareCode     string `json:"share_code"`
+	QuotaRequests int    `json:"quota_requests"`
+	UsedRequests  int    `json:"used_requests"`
+	ExpiresAt     string `json:"expires_at,omitempty"`
+	Revoked       bool   `json:"revoked"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
+	BaseURL       string `json:"base_url"`
+}
+
+type ShareUsage struct {
+	ID        int64  `json:"id"`
+	Timestamp string `json:"ts"`
+	Model     string `json:"model"`
+	Status    int    `json:"status"`
+	LatencyMS int64  `json:"latency_ms"`
+}
+
+type shareCredential struct {
+	Token            string `json:"token"`
+	AccountType      string `json:"account_type"`
+	UpstreamURL      string `json:"upstream_url"`
+	ChatGPTAccountID string `json:"chatgpt_account_id,omitempty"`
+}
+
+type createShareRequest struct {
+	AccountUID    string          `json:"account_uid"`
+	Credential    shareCredential `json:"credential"`
+	QuotaRequests int             `json:"quota_requests"`
+	ExpiresAt     string          `json:"expires_at,omitempty"`
+	Consent       bool            `json:"consent"`
+}
+
+type createShareResponse struct {
+	Share    Share  `json:"share"`
+	GuestKey string `json:"guest_key"`
 }
 
 type AdminOverview struct {
 	Users    []AdminUser    `json:"users"`
+	Shares   []AdminShare   `json:"shares"`
 	Settings []AdminSetting `json:"settings"`
 	Audit    []AdminAudit   `json:"audit"`
 	Stats    AdminStats     `json:"stats"`
@@ -219,6 +278,36 @@ func (c *cloudClient) push(ctx context.Context, accessToken string, items []remo
 		return response, err
 	}
 	return response, err
+}
+
+func (c *cloudClient) listShares(ctx context.Context, accessToken string) ([]Share, error) {
+	var response struct {
+		Shares []Share `json:"shares"`
+	}
+	err := c.doJSON(ctx, http.MethodGet, "/v1/shares", accessToken, nil, &response)
+	return response.Shares, err
+}
+
+func (c *cloudClient) createShare(ctx context.Context, accessToken string, request createShareRequest) (createShareResponse, error) {
+	var response createShareResponse
+	err := c.doJSON(ctx, http.MethodPost, "/v1/shares", accessToken, request, &response)
+	return response, err
+}
+
+func (c *cloudClient) updateShare(ctx context.Context, accessToken string, shareID int64, updates map[string]any) (Share, error) {
+	var response struct {
+		Share Share `json:"share"`
+	}
+	err := c.doJSON(ctx, http.MethodPatch, fmt.Sprintf("/v1/shares/%d", shareID), accessToken, updates, &response)
+	return response.Share, err
+}
+
+func (c *cloudClient) shareUsage(ctx context.Context, accessToken string, shareID int64) ([]ShareUsage, error) {
+	var response struct {
+		Usage []ShareUsage `json:"usage"`
+	}
+	err := c.doJSON(ctx, http.MethodGet, fmt.Sprintf("/v1/shares/%d/usage", shareID), accessToken, nil, &response)
+	return response.Usage, err
 }
 
 func (c *cloudClient) doJSON(ctx context.Context, method, path, accessToken string, body, output any) error {
@@ -302,12 +391,16 @@ func (c *cloudClient) adminOverview(ctx context.Context, accessToken, adminKey s
 	var audit struct {
 		Audit []AdminAudit `json:"audit"`
 	}
+	var shares struct {
+		Shares []AdminShare `json:"shares"`
+	}
 	var stats AdminStats
 	for _, request := range []struct {
 		path   string
 		output any
 	}{
 		{"/v1/admin/users?limit=100", &users},
+		{"/v1/admin/shares?limit=100", &shares},
 		{"/v1/admin/settings", &settings},
 		{"/v1/admin/stats", &stats},
 		{"/v1/admin/audit?limit=50", &audit},
@@ -316,7 +409,7 @@ func (c *cloudClient) adminOverview(ctx context.Context, accessToken, adminKey s
 			return AdminOverview{}, err
 		}
 	}
-	return AdminOverview{Users: users.Users, Settings: settings.Settings, Audit: audit.Audit, Stats: stats}, nil
+	return AdminOverview{Users: users.Users, Shares: shares.Shares, Settings: settings.Settings, Audit: audit.Audit, Stats: stats}, nil
 }
 
 func (c *cloudClient) adminSetUserBanned(ctx context.Context, accessToken, adminKey string, userID int64, banned bool) error {
@@ -333,4 +426,8 @@ func (c *cloudClient) adminDeleteUser(ctx context.Context, accessToken, adminKey
 
 func (c *cloudClient) adminUpdateSettings(ctx context.Context, accessToken, adminKey string, settings map[string]bool) error {
 	return c.doAdminJSON(ctx, http.MethodPatch, "/v1/admin/settings", accessToken, adminKey, settings, nil)
+}
+
+func (c *cloudClient) adminSetShareRevoked(ctx context.Context, accessToken, adminKey string, shareID int64, revoked bool) error {
+	return c.doAdminJSON(ctx, http.MethodPatch, fmt.Sprintf("/v1/admin/shares/%d", shareID), accessToken, adminKey, map[string]bool{"revoked": revoked}, nil)
 }

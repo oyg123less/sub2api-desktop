@@ -33,6 +33,8 @@ func TestAdminClientKeepsSecondFactorInHeader(t *testing.T) {
 			_, _ = io.WriteString(w, `{"users":[{"id":2,"email":"user@example.test","role":"user"}]}`)
 		case "/v1/admin/settings":
 			_, _ = io.WriteString(w, `{"settings":[{"key":"registration_enabled","value":"true"}]}`)
+		case "/v1/admin/shares":
+			_, _ = io.WriteString(w, `{"shares":[]}`)
 		case "/v1/admin/stats":
 			_, _ = io.WriteString(w, `{"users":2,"daily_active_users":1,"vault_items":4}`)
 		case "/v1/admin/audit":

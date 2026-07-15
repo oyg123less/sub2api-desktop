@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"sub2api-desktop/core/internal/openai"
 	"sub2api-desktop/core/internal/store"
 )
 
@@ -24,6 +25,18 @@ type RegisterInput struct {
 	Email          string
 	Password       string
 	TurnstileToken string
+}
+
+type CreateShareInput struct {
+	AccountID     int64
+	QuotaRequests int
+	ExpiresAt     string
+	Consent       bool
+}
+
+type CreatedShare struct {
+	Share    Share  `json:"share"`
+	GuestKey string `json:"guest_key"`
 }
 
 type Status struct {
@@ -326,6 +339,117 @@ func (m *Manager) ChangePassword(ctx context.Context, currentPassword, newPasswo
 	return nil
 }
 
+func (m *Manager) ListShares(ctx context.Context) ([]Share, error) {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	if err := m.ensureAccess(ctx); err != nil {
+		return nil, err
+	}
+	m.mu.RLock()
+	accessToken := m.accessToken
+	m.mu.RUnlock()
+	shares, err := m.client.listShares(ctx, accessToken)
+	if err != nil {
+		m.setError(err)
+		return nil, err
+	}
+	m.clearError()
+	return shares, nil
+}
+
+func (m *Manager) CreateShare(ctx context.Context, input CreateShareInput) (CreatedShare, error) {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	if !input.Consent {
+		return CreatedShare{}, errors.New("cloud custody consent is required")
+	}
+	if input.QuotaRequests < 0 || input.QuotaRequests > 1_000_000 {
+		return CreatedShare{}, errors.New("share request quota is invalid")
+	}
+	if err := m.ensureAccess(ctx); err != nil {
+		return CreatedShare{}, err
+	}
+	account, err := m.store.GetAccount(input.AccountID)
+	if err != nil {
+		return CreatedShare{}, err
+	}
+	credential := shareCredential{AccountType: string(account.AccountType), ChatGPTAccountID: account.ChatGPTAccountID}
+	switch account.AccountType {
+	case store.AccountTypeOAuth:
+		if strings.TrimSpace(account.AccessToken) == "" || (!account.ExpiresAt.IsZero() && time.Until(account.ExpiresAt) < 5*time.Minute) {
+			return CreatedShare{}, errors.New("refresh this OAuth account before sharing it")
+		}
+		credential.Token = account.AccessToken
+		credential.UpstreamURL = openai.CodexResponsesURL
+	case store.AccountTypeAPIKey:
+		if strings.TrimSpace(account.APIKey) == "" {
+			return CreatedShare{}, errors.New("the API-key account has no credential")
+		}
+		credential.Token = account.APIKey
+		credential.UpstreamURL = account.BaseURL
+	default:
+		return CreatedShare{}, errors.New("the account type cannot be shared")
+	}
+	if strings.TrimSpace(account.ClientUID) == "" {
+		return CreatedShare{}, errors.New("sync this account before sharing it")
+	}
+	m.mu.RLock()
+	accessToken := m.accessToken
+	m.mu.RUnlock()
+	response, err := m.client.createShare(ctx, accessToken, createShareRequest{
+		AccountUID: account.ClientUID, Credential: credential, QuotaRequests: input.QuotaRequests,
+		ExpiresAt: strings.TrimSpace(input.ExpiresAt), Consent: true,
+	})
+	if err != nil {
+		m.setError(err)
+		return CreatedShare{}, err
+	}
+	m.clearError()
+	return CreatedShare{Share: response.Share, GuestKey: response.GuestKey}, nil
+}
+
+func (m *Manager) UpdateShare(ctx context.Context, shareID int64, updates map[string]any) (Share, error) {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	if shareID <= 0 {
+		return Share{}, errors.New("share ID is invalid")
+	}
+	if err := m.ensureAccess(ctx); err != nil {
+		return Share{}, err
+	}
+	m.mu.RLock()
+	accessToken := m.accessToken
+	m.mu.RUnlock()
+	share, err := m.client.updateShare(ctx, accessToken, shareID, updates)
+	if err != nil {
+		m.setError(err)
+		return Share{}, err
+	}
+	m.clearError()
+	return share, nil
+}
+
+func (m *Manager) ShareUsage(ctx context.Context, shareID int64) ([]ShareUsage, error) {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	if shareID <= 0 {
+		return nil, errors.New("share ID is invalid")
+	}
+	if err := m.ensureAccess(ctx); err != nil {
+		return nil, err
+	}
+	m.mu.RLock()
+	accessToken := m.accessToken
+	m.mu.RUnlock()
+	usage, err := m.client.shareUsage(ctx, accessToken, shareID)
+	if err != nil {
+		m.setError(err)
+		return nil, err
+	}
+	m.clearError()
+	return usage, nil
+}
+
 func (m *Manager) AdminOverview(ctx context.Context, adminKey string) (AdminOverview, error) {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
@@ -395,6 +519,21 @@ func (m *Manager) AdminUpdateSettings(ctx context.Context, adminKey string, sett
 		return err
 	}
 	if err := m.client.adminUpdateSettings(ctx, accessToken, strings.TrimSpace(adminKey), settings); err != nil {
+		m.setError(err)
+		return err
+	}
+	m.clearError()
+	return nil
+}
+
+func (m *Manager) AdminSetShareRevoked(ctx context.Context, adminKey string, shareID int64, revoked bool) error {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	accessToken, err := m.adminAccess(ctx, adminKey)
+	if err != nil {
+		return err
+	}
+	if err := m.client.adminSetShareRevoked(ctx, accessToken, strings.TrimSpace(adminKey), shareID, revoked); err != nil {
 		m.setError(err)
 		return err
 	}
