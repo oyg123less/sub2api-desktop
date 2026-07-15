@@ -14,17 +14,22 @@ import {
 } from "../api/control";
 import { useAppStore } from "../store";
 import {
+  codexActiveTab,
+  hostKeyAccepted,
   isValidCodexModel,
+  remoteForm,
+  remoteModelInitialized,
+  remoteProbe,
+  testedSignature,
   validateCodexRemoteForm,
   type CodexRemoteFormErrors,
   type CodexRemoteFormField,
-  type CodexRemoteFormValue,
 } from "./codexRemote";
 
 const { t } = useI18n();
 const app = useAppStore();
 
-const activeTab = ref<"local" | "remote">("local");
+const activeTab = codexActiveTab;
 const st = ref<CodexStatus | null>(null);
 const files = ref<CodexFiles | null>(null);
 const loading = ref(true);
@@ -40,22 +45,10 @@ const authDraft = ref("");
 const targets = ref<CodexRemoteTarget[]>([]);
 const remoteBusy = ref<string | null>(null);
 const remoteErrors = ref<CodexRemoteFormErrors>({});
-const remoteProbe = ref<CodexRemoteProbe | null>(null);
-const testedSignature = ref("");
-const hostKeyAccepted = ref(false);
 const hostKeyOpen = ref(false);
 const targetFilesOpen = ref<Record<number, boolean>>({});
 const restoreTarget = ref<CodexRemoteTarget | null>(null);
 const deleteTarget = ref<CodexRemoteTarget | null>(null);
-const remoteForm = ref<CodexRemoteFormValue & { save: boolean }>({
-  host: "",
-  port: 22,
-  user: "",
-  password: "",
-  model: "gpt-5.6",
-  remotePort: 8080,
-  save: true,
-});
 
 let targetPoll: ReturnType<typeof setInterval> | undefined;
 
@@ -93,7 +86,10 @@ async function load() {
     files.value = localFiles;
     targets.value = remoteTargets.targets;
     modelDraft.value = status.model;
-    remoteForm.value.model = status.model;
+    if (!remoteModelInitialized.value) {
+      remoteForm.value.model = status.model;
+      remoteModelInitialized.value = true;
+    }
     configDraft.value = localFiles.config_content || localFiles.config_default;
     authDraft.value = localFiles.auth_content || localFiles.auth_default;
   } catch (error) {

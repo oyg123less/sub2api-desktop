@@ -1,3 +1,6 @@
+import { ref } from "vue";
+import type { CodexRemoteProbe } from "../api/control";
+
 export interface CodexRemoteFormValue {
   id?: number;
   host: string;
@@ -9,6 +12,23 @@ export interface CodexRemoteFormValue {
 }
 
 export type CodexRemoteFormField = "host" | "port" | "user" | "password" | "model" | "remotePort";
+
+// Module-level state so the Codex view keeps its drafts and connection test
+// result when the user navigates away and back. Held in memory only.
+export const codexActiveTab = ref<"local" | "remote">("local");
+export const remoteForm = ref<CodexRemoteFormValue & { save: boolean }>({
+  host: "",
+  port: 22,
+  user: "",
+  password: "",
+  model: "gpt-5.6",
+  remotePort: 8080,
+  save: true,
+});
+export const remoteModelInitialized = ref(false);
+export const remoteProbe = ref<CodexRemoteProbe | null>(null);
+export const testedSignature = ref("");
+export const hostKeyAccepted = ref(false);
 export type CodexRemoteFormErrors = Partial<Record<CodexRemoteFormField, "required" | "invalid">>;
 
 export function isValidCodexModel(model: string): boolean {
