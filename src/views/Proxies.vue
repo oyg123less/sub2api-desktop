@@ -3,6 +3,8 @@ import { onMounted, reactive, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import Icon from "../components/Icon.vue";
 import ConfirmModal from "../components/ConfirmModal.vue";
+import EmptyState from "../components/EmptyState.vue";
+import SkeletonBlock from "../components/SkeletonBlock.vue";
 import { api, type Proxy } from "../api/control";
 import { useAppStore } from "../store";
 
@@ -134,15 +136,10 @@ onMounted(load);
       </button>
     </div>
 
-    <div v-if="loading" class="empty">{{ t("common.loading") }}</div>
+    <SkeletonBlock v-if="loading" :cards="2" :rows="3" />
 
-    <div v-else-if="proxies.length === 0" class="card empty">
-      <div class="empty-icon">🌐</div>
-      <div class="empty-title">{{ t("proxies.empty") }}</div>
-      <div class="faint">{{ t("proxies.emptyDesc") }}</div>
-      <button class="btn btn-primary mt-16" @click="openAdd">
-        <Icon name="plus" :size="16" /> {{ t("proxies.add") }}
-      </button>
+    <div v-else-if="proxies.length === 0" class="card">
+      <EmptyState icon="proxies" :title="t('proxies.empty')" :description="t('proxies.emptyDesc')"><button class="btn btn-primary" @click="openAdd"><Icon name="plus" :size="16" /> {{ t("proxies.add") }}</button></EmptyState>
     </div>
 
     <div v-else class="card">

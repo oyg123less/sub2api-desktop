@@ -21,6 +21,7 @@ const route = useRoute();
 const { t } = useI18n();
 const app = useAppStore();
 const mainElement = ref<HTMLElement | null>(null);
+const themeMode = ref(localStorage.getItem("s2a_theme") || "system");
 
 const nav = [
   { name: "dashboard", to: "/dashboard", icon: "dashboard" },
@@ -73,7 +74,29 @@ const backendColor = computed(() => {
   return "var(--text-faint)";
 });
 const backendLabel = computed(() => t(`backend.${backendPhase.value}`));
-const currentVersion = computed(() => app.status?.version || "0.2.4");
+const currentVersion = computed(() => app.status?.version || "0.3.0");
+const darkThemeActive = computed(() => themeMode.value === "dark" || (themeMode.value === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches));
+
+function applyTheme(mode: string) {
+  themeMode.value = mode;
+  if (mode === "system") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.dataset.theme = mode;
+}
+
+function toggleTheme() {
+  const next = darkThemeActive.value ? "light" : "dark";
+  localStorage.setItem("s2a_theme", next);
+  applyTheme(next);
+}
+
+async function copyVersion() {
+  try {
+    await navigator.clipboard.writeText(`v${currentVersion.value}`);
+    app.toast(t("common.versionCopied"), "success");
+  } catch {
+    app.toast(t("common.copyFailed"), "error");
+  }
+}
 
 watch(() => app.status?.version, (version) => {
   if (version) void refreshUpdate();
@@ -93,6 +116,7 @@ async function retryBackend() {
 }
 
 onMounted(async () => {
+  applyTheme(themeMode.value);
   unsubscribeBackend = subscribeBackendState((state) => {
     app.setBackendState(state);
     if (state.phase === "ready") app.refreshStatus();
@@ -158,7 +182,8 @@ onUnmounted(() => {
           </button>
         </div>
         <div class="version-row">
-          <span>v{{ currentVersion }}</span>
+          <button class="footer-icon-button" type="button" :title="t(darkThemeActive ? 'common.useLightTheme' : 'common.useDarkTheme')" :aria-label="t(darkThemeActive ? 'common.useLightTheme' : 'common.useDarkTheme')" @click="toggleTheme"><Icon name="theme" :size="13" /></button>
+          <button class="version-copy" type="button" :title="t('common.copyVersion')" @click="copyVersion">v{{ currentVersion }}</button>
           <button
             v-if="availableUpdate"
             class="update-badge"
@@ -173,7 +198,9 @@ onUnmounted(() => {
 
     <main ref="mainElement" class="main">
       <RouterView v-slot="{ Component }">
-        <RouteErrorBoundary :component="Component" :reset-key="route.fullPath" />
+        <Transition name="page" mode="out-in">
+          <RouteErrorBoundary :key="route.fullPath" :component="Component" :reset-key="route.fullPath" />
+        </Transition>
       </RouterView>
     </main>
 
@@ -196,6 +223,8 @@ onUnmounted(() => {
   min-height: 24px;
   margin-top: 6px;
 }
+.footer-icon-button, .version-copy { min-height: 24px; padding: 2px 5px; border: 0; border-radius: 5px; background: transparent; color: var(--text-faint); cursor: pointer; }
+.footer-icon-button:hover, .version-copy:hover { background: var(--bg-hover); color: var(--text); }
 .update-badge {
   max-width: 100%;
   padding: 2px 6px;

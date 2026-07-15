@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import Icon from "../components/Icon.vue";
 import CopyField from "../components/CopyField.vue";
 import ConfirmModal from "../components/ConfirmModal.vue";
+import SkeletonBlock from "../components/SkeletonBlock.vue";
 import { api, type Settings } from "../api/control";
 import { isUpdateCheckEnabled, setUpdateCheckEnabled } from "../api/update";
 import { useAppStore } from "../store";
@@ -196,7 +197,7 @@ onMounted(() => {
       </button>
     </div>
 
-    <div v-if="loading || !s" class="empty">{{ t("common.loading") }}</div>
+    <SkeletonBlock v-if="loading || !s" :cards="2" :rows="5" />
 
     <template v-else>
       <!-- Service -->

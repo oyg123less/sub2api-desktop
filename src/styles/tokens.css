@@ -1,0 +1,18 @@
+:root {
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --shadow-xs: 0 1px 2px rgba(55, 47, 38, 0.08);
+  --shadow-sm: 0 4px 14px rgba(55, 47, 38, 0.09);
+  --shadow-md: 0 10px 28px rgba(55, 47, 38, 0.12);
+  --shadow-hover: 0 12px 32px rgba(55, 47, 38, 0.15);
+  --motion-fast: 150ms;
+  --motion-normal: 250ms;
+  --motion-ease: ease-out;
+}

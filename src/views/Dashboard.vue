@@ -5,6 +5,8 @@ import { useI18n } from "vue-i18n";
 import Icon from "../components/Icon.vue";
 import CopyField from "../components/CopyField.vue";
 import ConfirmModal from "../components/ConfirmModal.vue";
+import AnimatedNumber from "../components/AnimatedNumber.vue";
+import SkeletonBlock from "../components/SkeletonBlock.vue";
 import { api, type RequestLog, type StatsResponse } from "../api/control";
 import { useAppStore } from "../store";
 
@@ -19,6 +21,8 @@ const regenOpen = ref(false);
 const editingUrl = ref(false);
 const urlDraft = ref("");
 const savingUrl = ref(false);
+const initialLoading = ref(true);
+const expandedLog = ref<number | null>(null);
 
 const hasAccount = computed(() => app.accountCount > 0);
 const endpoint = computed(() => app.status?.endpoint || "http://127.0.0.1:8080/v1");
@@ -109,6 +113,8 @@ async function load() {
     ];
   } catch {
     /* ignore transient */
+  } finally {
+    initialLoading.value = false;
   }
 }
 
@@ -182,18 +188,19 @@ onUnmounted(() => clearInterval(timer));
     </div>
 
     <!-- Stat tiles -->
-    <div class="grid grid-3" style="margin-top: 16px">
+    <SkeletonBlock v-if="initialLoading" :cards="3" :rows="2" style="margin-top: 16px" />
+    <div v-else class="grid grid-3" style="margin-top: 16px">
       <div class="stat">
         <div class="stat-label">{{ t("dashboard.accounts") }}</div>
-        <div class="stat-value">{{ app.accountCount }}</div>
+        <div class="stat-value"><AnimatedNumber :value="app.accountCount" /></div>
       </div>
       <div class="stat">
         <div class="stat-label">{{ t("dashboard.todayRequests") }}</div>
-        <div class="stat-value">{{ fmtNum(todayRequests) }}</div>
+        <div class="stat-value"><AnimatedNumber :value="todayRequests" /></div>
       </div>
       <div class="stat">
         <div class="stat-label">{{ t("dashboard.todayTokens") }}</div>
-        <div class="stat-value">{{ fmtNum(todayTokens) }}</div>
+        <div class="stat-value"><AnimatedNumber :value="todayTokens" /></div>
       </div>
     </div>
 
@@ -262,12 +269,14 @@ onUnmounted(() => clearInterval(timer));
           {{ t("dashboard.viewAll") }}
         </button>
       </div>
-      <div v-if="logs.length === 0" class="empty">
+      <SkeletonBlock v-if="initialLoading" :cards="1" :rows="3" />
+      <div v-else-if="logs.length === 0" class="empty">
         <div class="empty-icon">◔</div>
         <div>{{ t("dashboard.noRequests") }}</div>
       </div>
       <div v-else class="list">
-        <div v-for="l in logs" :key="l.id" class="list-row">
+        <div v-for="l in logs" :key="l.id" class="dashboard-log-entry">
+        <button class="list-row dashboard-log-row" type="button" :class="{ expandable: !!l.error }" :aria-expanded="expandedLog === l.id" @click="l.error && (expandedLog = expandedLog === l.id ? null : l.id)">
           <span class="badge" :class="statusClass(l.status_code)" style="min-width: 52px; justify-content: center">
             {{ l.status_code }}
           </span>
@@ -275,8 +284,22 @@ onUnmounted(() => clearInterval(timer));
           <span class="faint text-sm">{{ fmtNum(l.total_tokens) }} tok</span>
           <span class="faint text-sm" style="width: 62px; text-align: right">{{ l.latency_ms }}ms</span>
           <span class="faint text-sm" style="width: 84px; text-align: right">{{ fmtTime(l.created_at) }}</span>
+          <Icon v-if="l.error" name="chevron-down" :size="14" class="log-chevron" :class="{ open: expandedLog === l.id }" />
+        </button>
+        <div v-if="l.error && expandedLog === l.id" class="log-error-detail">{{ l.error }}</div>
         </div>
       </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+.dashboard-log-entry { border-bottom: 1px solid var(--border-soft); }
+.dashboard-log-entry:last-child { border-bottom: 0; }
+.dashboard-log-row { width: 100%; border: 0; border-bottom: 0; background: transparent; color: var(--text); text-align: left; }
+.dashboard-log-row.expandable { cursor: pointer; }
+.dashboard-log-row.expandable:hover { background: var(--bg-hover); }
+.log-chevron { transition: transform var(--motion-fast) var(--motion-ease); }
+.log-chevron.open { transform: rotate(180deg); }
+.log-error-detail { padding: 0 10px 12px 66px; color: var(--danger); font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+</style>

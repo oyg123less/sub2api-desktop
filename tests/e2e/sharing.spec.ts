@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("creates a one-time cloud share and manages revocation without exposing the upstream token", async ({ page }) => {
+test("creates a one-time cloud share and manages revocation without exposing the upstream token", async ({ page }, testInfo) => {
   const guestKey = "sk-share-fixture-one-time-guest-key";
   const accountUID = "018f1f46-7a19-7cc2-88cb-f577e51d3999";
   let revoked = false;
@@ -54,6 +54,7 @@ test("creates a one-time cloud share and manages revocation without exposing the
   await expect(page.locator('[data-test="share-guest-key"]')).toHaveText(guestKey);
   await expect(page.locator("body")).not.toContainText("upstream-owner-token");
   expect(await page.evaluate(() => Object.values(localStorage))).not.toContain(guestKey);
+  await page.screenshot({ path: `test-results/amber-share-${testInfo.project.name}.png`, fullPage: true });
 
   await page.getByRole("button", { name: "Close" }).click();
   await page.locator('[data-test="account-share"]').click();

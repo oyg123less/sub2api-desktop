@@ -3,6 +3,8 @@ import { onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import Icon from "../components/Icon.vue";
 import ConfirmModal from "../components/ConfirmModal.vue";
+import EmptyState from "../components/EmptyState.vue";
+import SkeletonBlock from "../components/SkeletonBlock.vue";
 import {
   api,
   type Account,
@@ -560,18 +562,12 @@ onUnmounted(() => clearInterval(pollTimer));
       </div>
     </div>
 
-    <div v-if="loading" class="empty">{{ t("common.loading") }}</div>
+    <SkeletonBlock v-if="loading" :cards="2" :rows="4" />
 
-    <div v-else-if="accounts.length === 0" class="card empty">
-      <div class="empty-icon">👤</div>
-      <div class="empty-title">{{ t("accounts.empty") }}</div>
-      <div class="faint">{{ t("accounts.emptyDesc") }}</div>
-      <button class="btn btn-primary mt-16" @click="startLogin">
-        <Icon name="plus" :size="16" /> {{ t("accounts.login") }}
-      </button>
-      <button class="btn btn-ghost mt-8" @click="openAPIKey">
-        <Icon name="key" :size="16" /> {{ t("accounts.addAPIKey") }}
-      </button>
+    <div v-else-if="accounts.length === 0" class="card">
+      <EmptyState icon="accounts" :title="t('accounts.empty')" :description="t('accounts.emptyDesc')">
+        <div class="flex gap-8"><button class="btn btn-primary" @click="startLogin"><Icon name="plus" :size="16" /> {{ t("accounts.login") }}</button><button class="btn btn-ghost" @click="openAPIKey"><Icon name="key" :size="16" /> {{ t("accounts.addAPIKey") }}</button></div>
+      </EmptyState>
     </div>
 
     <div v-else class="grid grid-2">

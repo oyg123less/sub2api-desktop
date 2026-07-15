@@ -4,6 +4,8 @@ import { useI18n } from "vue-i18n";
 import LineChart from "../components/LineChart.vue";
 import Icon from "../components/Icon.vue";
 import ConfirmModal from "../components/ConfirmModal.vue";
+import AnimatedNumber from "../components/AnimatedNumber.vue";
+import SkeletonBlock from "../components/SkeletonBlock.vue";
 import { api, type RequestLog, type StatsResponse } from "../api/control";
 import { useAppStore } from "../store";
 
@@ -16,6 +18,7 @@ const logs = ref<RequestLog[]>([]);
 const loading = ref(true);
 const clearOpen = ref(false);
 const clearing = ref(false);
+const expandedLog = ref<number | null>(null);
 
 const successRate = computed(() => {
   const s = stats.value?.summary;
@@ -106,10 +109,11 @@ onMounted(load);
 		</div>
     </div>
 
-    <div class="grid grid-4">
+    <SkeletonBlock v-if="loading" :cards="4" :rows="5" />
+    <div v-show="!loading" class="grid grid-4">
       <div class="stat">
         <div class="stat-label">{{ t("statistics.totalRequests") }}</div>
-        <div class="stat-value">{{ fmtNum(stats?.summary.total_requests) }}</div>
+        <div class="stat-value"><AnimatedNumber :value="stats?.summary.total_requests || 0" /></div>
       </div>
       <div class="stat">
         <div class="stat-label">{{ t("statistics.successRate") }}</div>
@@ -117,24 +121,24 @@ onMounted(load);
       </div>
       <div class="stat">
         <div class="stat-label">{{ t("statistics.totalTokens") }}</div>
-        <div class="stat-value">{{ fmtNum(stats?.summary.total_tokens) }}</div>
+        <div class="stat-value"><AnimatedNumber :value="stats?.summary.total_tokens || 0" /></div>
       </div>
       <div class="stat">
         <div class="stat-label">{{ t("statistics.avgLatency") }}</div>
-        <div class="stat-value">{{ fmtNum(stats?.summary.avg_latency_ms) }}<span style="font-size: 14px" class="faint"> ms</span></div>
+        <div class="stat-value"><AnimatedNumber :value="stats?.summary.avg_latency_ms || 0" /><span style="font-size: 14px" class="faint"> ms</span></div>
       </div>
     </div>
 
-    <div class="card" style="margin-top: 16px">
+    <div v-show="!loading" class="card" style="margin-top: 16px">
       <h3 class="card-title">{{ t("statistics.dailyTrend") }}</h3>
       <div v-if="!hasData" class="empty">{{ t("statistics.noData") }}</div>
       <LineChart v-else :data="chartData" />
     </div>
-		<p class="faint text-sm" style="margin-top: 10px">
+		<p v-show="!loading" class="faint text-sm" style="margin-top: 10px">
 			{{ t("logs.retentionScope", { rows: fmtNum(stats?.retention.retained_rows), days: stats?.retention.days === 0 ? t("logs.forever") : stats?.retention.days }) }}
 		</p>
 
-    <div class="grid grid-2" style="margin-top: 16px">
+    <div v-show="!loading" class="grid grid-2" style="margin-top: 16px">
       <div class="card">
         <h3 class="card-title">{{ t("statistics.byModel") }}</h3>
         <div v-if="!(stats?.by_model?.length)" class="empty">{{ t("statistics.noData") }}</div>
@@ -151,7 +155,8 @@ onMounted(load);
         <h3 class="card-title">{{ t("logs.title") }}</h3>
         <div v-if="logs.length === 0" class="empty">{{ t("statistics.noData") }}</div>
         <div v-else class="list" style="max-height: 320px; overflow-y: auto">
-          <div v-for="l in logs" :key="l.id" class="list-row" :title="l.error || ''">
+          <div v-for="l in logs" :key="l.id" class="statistics-log-entry">
+          <button class="list-row statistics-log-row" type="button" :class="{ expandable: !!l.error }" :aria-expanded="expandedLog === l.id" @click="l.error && (expandedLog = expandedLog === l.id ? null : l.id)">
             <span class="badge" :class="statusClass(l.status_code)" style="min-width: 48px; justify-content: center">
               {{ l.status_code }}
             </span>
@@ -161,6 +166,9 @@ onMounted(load);
 					</div>
             <span class="faint text-sm" style="width: 58px; text-align: right">{{ l.latency_ms }}ms</span>
             <span class="faint text-sm" style="width: 130px; text-align: right">{{ fmtTime(l.created_at) }}</span>
+            <Icon v-if="l.error" name="chevron-down" :size="14" class="log-chevron" :class="{ open: expandedLog === l.id }" />
+          </button>
+          <div v-if="l.error && expandedLog === l.id" class="log-error-detail">{{ l.error }}</div>
           </div>
         </div>
       </div>
@@ -177,3 +185,14 @@ onMounted(load);
 		/>
   </div>
 </template>
+
+<style scoped>
+.statistics-log-entry { border-bottom: 1px solid var(--border-soft); }
+.statistics-log-entry:last-child { border-bottom: 0; }
+.statistics-log-row { width: 100%; border: 0; border-bottom: 0; background: transparent; color: var(--text); text-align: left; }
+.statistics-log-row.expandable { cursor: pointer; }
+.statistics-log-row.expandable:hover { background: var(--bg-hover); }
+.log-chevron { transition: transform var(--motion-fast) var(--motion-ease); }
+.log-chevron.open { transform: rotate(180deg); }
+.log-error-detail { padding: 0 10px 12px 60px; color: var(--danger); font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+</style>

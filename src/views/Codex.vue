@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import Collapsible from "../components/Collapsible.vue";
 import ConfirmModal from "../components/ConfirmModal.vue";
+import SkeletonBlock from "../components/SkeletonBlock.vue";
 import CopyField from "../components/CopyField.vue";
 import Icon from "../components/Icon.vue";
 import {
@@ -435,7 +436,7 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
-    <div v-if="loading" class="codex-loading">{{ t("common.loading") }}</div>
+    <SkeletonBlock v-if="loading" :cards="2" :rows="4" />
 
     <section v-else-if="loadError" class="codex-panel codex-load-error" role="alert">
       <Icon name="warn" :size="22" />
