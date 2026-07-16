@@ -46,3 +46,9 @@ npm test
 The desktop first requests `/v1/auth/parameters` with an email address, derives its master key and authentication hash locally, then calls `/v1/auth/login`. Unknown emails receive deterministic fake parameters of the same shape to reduce account enumeration. D1 stores a one-way SHA-256 verifier of the already memory-hard 32-byte authentication hash, so a D1-only leak cannot be replayed directly as a login credential.
 
 All API errors use stable codes and a request ID. Request bodies, vault ciphertext, tokens, API keys, passwords, and email verification values are never included in production error logs.
+
+## Sharing gateway
+
+M2 share owners create and manage grants through `/v1/shares`. A grant stores the upstream credential only as AES-256-GCM ciphertext encrypted under `SHARE_KMS_KEY`; the one-time `sk-share-*` guest key is represented in D1 only by its SHA-256 hash. Friends call the returned Base URL with that guest key and do not need Amber installed.
+
+`POST /v1/responses` supports OAuth and API-key grants with streamed response passthrough. `POST /v1/chat/completions` is available for API-key grants. For the hard guarantee that an upstream cannot reflect an Authorization header, production sharing accepts only `chatgpt.com` and `api.openai.com` upstream hosts. Usage logs store only timestamp, model, HTTP status, and latency; request and response bodies are never stored.

@@ -52,6 +52,25 @@ test("creates a one-time cloud share and manages revocation without exposing the
   await page.getByLabel(/I confirm cloud custody/).check();
   await page.locator('[data-test="share-create"]').click();
   await expect(page.locator('[data-test="share-guest-key"]')).toHaveText(guestKey);
+  const qr = page.locator('[data-test="share-qr"]');
+  await expect(qr).toBeVisible();
+  await expect.poll(async () => qr.evaluate((element) => {
+    const canvas = element as HTMLCanvasElement;
+    const pixels = canvas.getContext("2d")?.getImageData(0, 0, canvas.width, canvas.height).data;
+    if (!pixels) return { width: canvas.width, height: canvas.height, hasDark: false, hasLight: false };
+    let hasDark = false;
+    let hasLight = false;
+    for (let index = 0; index < pixels.length; index += 4) {
+      const red = pixels[index];
+      const green = pixels[index + 1];
+      const blue = pixels[index + 2];
+      const alpha = pixels[index + 3];
+      if (alpha > 0 && red < 64 && green < 64 && blue < 64) hasDark = true;
+      if (alpha > 0 && red > 240 && green > 240 && blue > 240) hasLight = true;
+      if (hasDark && hasLight) break;
+    }
+    return { width: canvas.width, height: canvas.height, hasDark, hasLight };
+  })).toEqual({ width: 164, height: 164, hasDark: true, hasLight: true });
   await expect(page.locator("body")).not.toContainText("upstream-owner-token");
   expect(await page.evaluate(() => Object.values(localStorage))).not.toContain(guestKey);
   await page.screenshot({ path: `test-results/amber-share-${testInfo.project.name}.png`, fullPage: true });

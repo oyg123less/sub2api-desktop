@@ -5,6 +5,7 @@ import Icon from "../components/Icon.vue";
 import ConfirmModal from "../components/ConfirmModal.vue";
 import EmptyState from "../components/EmptyState.vue";
 import SkeletonBlock from "../components/SkeletonBlock.vue";
+import ShareQRCode from "../components/ShareQRCode.vue";
 import {
   api,
   type Account,
@@ -708,9 +709,15 @@ onUnmounted(() => clearInterval(pollTimer));
 
           <div v-if="createdShare" class="share-created" data-test="share-created">
             <div><strong>{{ t("accounts.shareKeyOnce") }}</strong><span>{{ t("accounts.shareKeyOnceDesc") }}</span></div>
-            <label class="field"><span class="field-label">Base URL</span><div class="code-box"><span>{{ createdShare.share.base_url }}</span><button class="copy-btn" type="button" :title="t('common.copy')" @click="copyShareValue(createdShare.share.base_url)"><Icon name="copy" :size="14" /></button></div></label>
-            <label class="field"><span class="field-label">API Key</span><div class="code-box"><span data-test="share-guest-key">{{ createdShare.guest_key }}</span><button class="copy-btn" type="button" :title="t('common.copy')" @click="copyShareValue(createdShare.guest_key)"><Icon name="copy" :size="14" /></button></div></label>
-            <label class="field"><span class="field-label">{{ t("accounts.shareCode") }}</span><div class="code-box"><span>{{ createdShare.share.share_code }}</span><button class="copy-btn" type="button" :title="t('common.copy')" @click="copyShareValue(createdShare.share.share_code)"><Icon name="copy" :size="14" /></button></div></label>
+            <div class="share-created-content">
+              <div class="share-qr-wrap"><ShareQRCode :base-url="createdShare.share.base_url" :guest-key="createdShare.guest_key" :share-code="createdShare.share.share_code" /><small>{{ t("accounts.shareQR") }}</small></div>
+              <div class="share-created-fields">
+                <label class="field"><span class="field-label">Base URL</span><div class="code-box"><span>{{ createdShare.share.base_url }}</span><button class="copy-btn" type="button" :title="t('common.copy')" @click="copyShareValue(createdShare.share.base_url)"><Icon name="copy" :size="14" /></button></div></label>
+                <label class="field"><span class="field-label">API Key</span><div class="code-box"><span data-test="share-guest-key">{{ createdShare.guest_key }}</span><button class="copy-btn" type="button" :title="t('common.copy')" @click="copyShareValue(createdShare.guest_key)"><Icon name="copy" :size="14" /></button></div></label>
+                <label class="field"><span class="field-label">{{ t("accounts.shareCode") }}</span><div class="code-box"><span>{{ createdShare.share.share_code }}</span><button class="copy-btn" type="button" :title="t('common.copy')" @click="copyShareValue(createdShare.share.share_code)"><Icon name="copy" :size="14" /></button></div></label>
+              </div>
+            </div>
+            <p class="share-access-note">{{ t("accounts.shareAccessHint") }}</p>
           </div>
 
           <div class="share-create-form">
@@ -988,6 +995,10 @@ onUnmounted(() => clearInterval(pollTimer));
 .share-created { display: grid; gap: 10px; padding: 14px; border: 1px solid rgba(63, 143, 95, .28); border-radius: 8px; background: var(--success-soft); }
 .share-created > div:first-child { display: grid; gap: 3px; color: var(--success); }
 .share-created .field { margin: 0; }
+.share-created-content { display: grid; grid-template-columns: 176px minmax(0, 1fr); gap: 14px; align-items: start; }
+.share-created-fields { display: grid; gap: 10px; min-width: 0; }
+.share-qr-wrap { display: grid; gap: 5px; justify-items: center; color: var(--text-dim); text-align: center; }
+.share-access-note { margin: 0; color: var(--text-dim); font-size: 12px; }
 .share-create-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: end; margin-top: 16px; }
 .share-create-form .field { margin: 0; }
 .share-create-form small { color: var(--text-faint); }
@@ -1002,6 +1013,7 @@ onUnmounted(() => clearInterval(pollTimer));
 .share-usage-row { display: grid; grid-template-columns: minmax(150px, 1.3fr) minmax(100px, 1fr) auto auto; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border-soft); font-size: 12px; }
 @media (max-width: 720px) {
   .share-create-form { grid-template-columns: minmax(0, 1fr); }
+  .share-created-content { grid-template-columns: minmax(0, 1fr); }
   .share-existing article { align-items: stretch; flex-direction: column; }
   .share-usage-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
