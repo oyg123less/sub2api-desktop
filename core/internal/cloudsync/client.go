@@ -64,9 +64,8 @@ type registerRequest struct {
 }
 
 type loginParameters struct {
-	SaltKDF         string `json:"salt_kdf"`
-	SaltAuth        string `json:"salt_auth"`
-	WrappedVaultKey string `json:"wrapped_vault_key"`
+	SaltKDF  string `json:"salt_kdf"`
+	SaltAuth string `json:"salt_auth"`
 }
 
 type cloudUser struct {

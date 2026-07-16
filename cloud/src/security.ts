@@ -187,14 +187,8 @@ export function authUserFromRow(row: UserRow): AuthUser {
 export async function fakeLoginParameters(secret: string, email: string) {
   const kdf = (await hmac(secret, `fake-kdf:${email}`)).slice(0, 16);
   const auth = (await hmac(secret, `fake-auth:${email}`)).slice(0, 16);
-  const wrappedA = await hmac(secret, `fake-vault-a:${email}`);
-  const wrappedB = await hmac(secret, `fake-vault-b:${email}`);
-  const wrapped = new Uint8Array(60);
-  wrapped.set(wrappedA);
-  wrapped.set(wrappedB.slice(0, 28), 32);
   return {
     salt_kdf: bytesToBase64URL(kdf),
     salt_auth: bytesToBase64URL(auth),
-    wrapped_vault_key: `v1.${bytesToBase64URL(wrapped)}`,
   };
 }

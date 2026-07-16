@@ -74,7 +74,7 @@ func (m *mockCloud) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/v1/auth/verify-email", "/v1/auth/logout":
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	case "/v1/auth/parameters":
-		_, _ = fmt.Fprintf(w, `{"salt_kdf":%q,"salt_auth":%q,"wrapped_vault_key":%q}`, m.saltKDF, m.saltAuth, m.wrapped)
+		_, _ = fmt.Fprintf(w, `{"salt_kdf":%q,"salt_auth":%q}`, m.saltKDF, m.saltAuth)
 	case "/v1/auth/login":
 		var body map[string]string
 		if !decode(&body) {

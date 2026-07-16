@@ -61,7 +61,14 @@ describe("authentication", () => {
     await registerAndVerify();
     const parameters = await jsonRequest("/v1/auth/parameters", { email });
     expect(parameters.status).toBe(200);
-    expect(await parameters.json()).toMatchObject({ salt_kdf: saltKDF, salt_auth: saltAuth, wrapped_vault_key: wrappedVaultKey });
+    const knownParameters = await parameters.json<Record<string, string>>();
+    expect(knownParameters).toEqual({ salt_kdf: saltKDF, salt_auth: saltAuth });
+    expect(knownParameters).not.toHaveProperty("wrapped_vault_key");
+    const unknown = await jsonRequest("/v1/auth/parameters", { email: "missing@example.test" });
+    expect(unknown.status).toBe(200);
+    const fakeParameters = await unknown.json<Record<string, string>>();
+    expect(fakeParameters).not.toHaveProperty("wrapped_vault_key");
+    expect(Object.keys(fakeParameters).sort()).toEqual(Object.keys(knownParameters).sort());
 
     const response = await login();
     expect(response.status).toBe(200);
@@ -88,8 +95,7 @@ describe("authentication", () => {
     expect(unknown.status).toBe(200);
     const fake = await unknown.json<Record<string, string>>();
     expect(fake.salt_kdf).not.toBe(saltKDF);
-    expect(fake.wrapped_vault_key).toMatch(/^v1\./);
-    expect(fake.wrapped_vault_key?.length).toBe(wrappedVaultKey.length);
+    expect(Object.keys(fake).sort()).toEqual(["salt_auth", "salt_kdf"]);
   });
 });
 

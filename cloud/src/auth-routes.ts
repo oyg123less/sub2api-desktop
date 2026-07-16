@@ -132,8 +132,8 @@ auth.post("/parameters", async (c) => {
   await rateLimit(c.env, "auth-parameters", ip, 60, 60 * 60);
   const body = await readJSON<Record<string, unknown>>(c);
   const email = normalizeEmail(body.email);
-  const row = await c.env.DB.prepare("SELECT salt_kdf, salt_auth, wrapped_vault_key FROM users WHERE email=? AND email_verified=1")
-    .bind(email).first<{ salt_kdf: string; salt_auth: string; wrapped_vault_key: string }>();
+  const row = await c.env.DB.prepare("SELECT salt_kdf, salt_auth FROM users WHERE email=? AND email_verified=1")
+    .bind(email).first<{ salt_kdf: string; salt_auth: string }>();
   return c.json(row ?? await fakeLoginParameters(c.env.JWT_SECRET, email));
 });
 
