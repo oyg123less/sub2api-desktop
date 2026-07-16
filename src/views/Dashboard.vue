@@ -8,6 +8,7 @@ import ConfirmModal from "../components/ConfirmModal.vue";
 import AnimatedNumber from "../components/AnimatedNumber.vue";
 import SkeletonBlock from "../components/SkeletonBlock.vue";
 import { api, type RequestLog, type StatsResponse } from "../api/control";
+import { localDateString } from "../date";
 import { useAppStore } from "../store";
 
 const { t } = useI18n();
@@ -29,12 +30,12 @@ const endpoint = computed(() => app.status?.endpoint || "http://127.0.0.1:8080/v
 const apiKey = computed(() => app.status?.local_api_key || "");
 
 const todayRequests = computed(() => {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateString();
   const d = stats.value?.daily?.find((x) => x.date === today);
   return d?.requests ?? 0;
 });
 const todayTokens = computed(() => {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateString();
   const d = stats.value?.daily?.find((x) => x.date === today);
   return d?.total_tokens ?? 0;
 });

@@ -7,6 +7,7 @@ import ConfirmModal from "../components/ConfirmModal.vue";
 import AnimatedNumber from "../components/AnimatedNumber.vue";
 import SkeletonBlock from "../components/SkeletonBlock.vue";
 import { api, type RequestLog, type StatsResponse } from "../api/control";
+import { localDateString } from "../date";
 import { useAppStore } from "../store";
 
 const { t } = useI18n();
@@ -65,7 +66,7 @@ async function exportLogs(format: "json" | "csv") {
 		const href = URL.createObjectURL(blob);
 		const anchor = document.createElement("a");
 		anchor.href = href;
-		anchor.download = `amber-logs-${new Date().toISOString().slice(0, 10)}.${format}`;
+		anchor.download = `amber-logs-${localDateString()}.${format}`;
 		anchor.click();
 		URL.revokeObjectURL(href);
 	} catch (e) {
