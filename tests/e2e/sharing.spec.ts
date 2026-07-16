@@ -25,7 +25,7 @@ test("creates a one-time cloud share and manages revocation without exposing the
     const request = route.request();
     const path = new URL(request.url()).pathname;
     let body: unknown = {};
-    if (path === "/control/status") body = { version: "0.3.1", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "http://127.0.0.1:8080/v1", lan_addresses: [], local_api_key: "", account_count: 1, schema_version: 7 };
+    if (path === "/control/status") body = { version: "0.3.1", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "http://127.0.0.1:8080/v1", lan_addresses: [], local_api_key: "", account_count: 1, schema_version: 9 };
     if (path === "/control/accounts") body = { accounts: [{ id: 1, account_type: "oauth", base_url: "", email: "owner@example.test", chatgpt_account_id: "acct-owner", plan_type: "plus", expires_at: "2026-08-01T00:00:00Z", status: "active", consecutive_failures: 0, created_at: "2026-07-01T00:00:00Z", client_uid: accountUID }], usage: {} };
     if (path === "/control/proxies") body = { proxies: [] };
     if (path === "/control/settings") body = { account_strategy: "quota_aware", default_model: "gpt-5.6" };

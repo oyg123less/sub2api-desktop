@@ -73,6 +73,13 @@ func TestResponsesPassthrough(t *testing.T) {
 	if captured.Get("chatgpt-account-id") != "acc-123" {
 		t.Errorf("expected chatgpt-account-id header")
 	}
+	logs, err := st.RecentLogs(1)
+	if err != nil || len(logs) != 1 {
+		t.Fatalf("logs=%#v err=%v", logs, err)
+	}
+	if logs[0].PromptTokens != 10 || logs[0].CachedTokens != 3 || logs[0].CompletionTokens != 5 || logs[0].ReasoningTokens != 2 || logs[0].Estimated {
+		t.Fatalf("usage details were not persisted: %+v", logs[0])
+	}
 }
 
 func TestResponsesNonStreamingAggregatesSSE(t *testing.T) {

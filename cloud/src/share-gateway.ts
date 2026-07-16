@@ -105,7 +105,7 @@ async function forward(c: Context<AppEnv>) {
       Authorization: `Bearer ${credential.token}`,
       "Content-Type": "application/json",
       Accept: c.req.header("accept") || "text/event-stream, application/json",
-      "User-Agent": "codex_cli_rs/0.3.0 (Amber Cloud Share)",
+      "User-Agent": "codex_cli_rs/0.3.1 (Amber Cloud Share)",
       originator: "codex_cli_rs",
       "OpenAI-Beta": "responses=experimental",
       session_id: crypto.randomUUID(),

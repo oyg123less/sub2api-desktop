@@ -55,7 +55,7 @@ func mockUpstreamSSE(t *testing.T, capture *http.Header) http.HandlerFunc {
 			`data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-5.4"}}`,
 			`data: {"type":"response.output_text.delta","delta":"Hello"}`,
 			`data: {"type":"response.output_text.delta","delta":", world"}`,
-			`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":10,"output_tokens":5}}}`,
+			`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":10,"output_tokens":5,"input_tokens_details":{"cached_tokens":3},"output_tokens_details":{"reasoning_tokens":2}}}}`,
 		}
 		for _, l := range lines {
 			_, _ = io.WriteString(w, l+"\n\n")

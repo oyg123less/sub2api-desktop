@@ -9,7 +9,7 @@ const localStatus = {
   lan_addresses: [],
   local_api_key: "",
   account_count: 0,
-  schema_version: 7,
+  schema_version: 9,
 };
 
 async function initialize(page: import("@playwright/test").Page) {
