@@ -175,10 +175,13 @@ auth.post("/login", async (c) => {
   await checkLoginLock(c.env, subject);
   const row = await c.env.DB.prepare(`SELECT ${userColumns} FROM users WHERE email=?`).bind(email).first<UserRow>();
   const suppliedVerifier = await authVerifier(authHash);
-  if (!row || !row.email_verified || row.banned || !safeEqual(row.auth_hash, suppliedVerifier)) {
+  if (!row || !row.email_verified || !safeEqual(row.auth_hash, suppliedVerifier)) {
     await recordLoginFailure(c.env, subject);
-    throw new AppError(row?.banned ? 403 : 401, row?.banned ? "account_disabled" : "invalid_credentials",
-      row?.banned ? "This account has been disabled." : "Email or master password is incorrect.");
+    throw new AppError(401, "invalid_credentials", "Email or master password is incorrect.");
+  }
+  if (row.banned) {
+    await clearLoginFailures(c.env, subject);
+    throw new AppError(403, "account_disabled", "This account has been disabled.");
   }
   await clearLoginFailures(c.env, subject);
   await c.env.DB.prepare("UPDATE users SET last_active_at=?, updated_at=? WHERE id=?")

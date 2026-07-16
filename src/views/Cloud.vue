@@ -569,7 +569,7 @@ onUnmounted(() => window.clearInterval(clockTimer));
         <div v-else class="conflict-list">
           <article v-for="conflict in status.conflicts" :key="conflict.id" class="conflict-row">
             <span class="badge badge-neutral">{{ t(`cloud.kind.${conflict.kind}`) }}</span>
-            <div><strong>{{ t(conflict.resolution === "local_won" ? "cloud.localWon" : "cloud.remoteWon") }}</strong><small>{{ formatTime(conflict.created_at) }}</small></div>
+            <div><strong>{{ conflict.display_name || t(`cloud.kind.${conflict.kind}`) }}</strong><span>{{ t(conflict.resolution === "local_won" ? "cloud.localWon" : "cloud.remoteWon") }}</span><small>{{ formatTime(conflict.created_at) }}</small></div>
           </article>
         </div>
       </section>
@@ -636,6 +636,7 @@ onUnmounted(() => window.clearInterval(clockTimer));
 .conflict-list { border-top: 1px solid var(--border-soft); }
 .conflict-row { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 12px; padding: 13px 0; border-bottom: 1px solid var(--border-soft); }
 .conflict-row div { display: grid; gap: 2px; }
+.conflict-row div span { color: var(--text-dim); font-size: 12px; }
 .conflict-row small { color: var(--text-faint); }
 .cloud-admin-shell { margin-top: 18px; padding-block: 18px; border-block: 1px solid var(--border); }
 .admin-heading { margin-bottom: 14px; }

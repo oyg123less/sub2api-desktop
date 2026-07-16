@@ -109,3 +109,28 @@ func TestSettingsBecomeDirtyOutsideRemoteApply(t *testing.T) {
 		t.Fatalf("state=%#v err=%v", state, err)
 	}
 }
+
+func TestCloudConflictIncludesLocalDisplayNameWithoutPersistingIt(t *testing.T) {
+	st := openCloudTestStore(t)
+	proxy, err := st.CreateProxy(&Proxy{Name: "Office gateway", Type: ProxyHTTP, Host: "127.0.0.1", Port: 8080})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddCloudConflict(CloudKindProxy, proxy.ClientUID, "local_won", "Local update was newer than the remote update."); err != nil {
+		t.Fatal(err)
+	}
+	conflicts, err := st.ListCloudConflicts(10)
+	if err != nil || len(conflicts) != 1 {
+		t.Fatalf("conflicts=%#v err=%v", conflicts, err)
+	}
+	if conflicts[0].DisplayName != proxy.Name {
+		t.Fatalf("display name = %q, want %q", conflicts[0].DisplayName, proxy.Name)
+	}
+	var storedDetails string
+	if err := st.db.QueryRow("SELECT details FROM cloud_sync_conflicts WHERE id=?", conflicts[0].ID).Scan(&storedDetails); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(storedDetails, proxy.Name) {
+		t.Fatal("display name was persisted in conflict details")
+	}
+}

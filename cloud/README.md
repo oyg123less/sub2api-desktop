@@ -47,6 +47,15 @@ The desktop first requests `/v1/auth/parameters` with an email address, derives 
 
 All API errors use stable codes and a request ID. Request bodies, vault ciphertext, tokens, API keys, passwords, and email verification values are never included in production error logs.
 
+## API outline
+
+- `POST /v1/auth/register`, `POST /v1/auth/resend-verification`, and `POST /v1/auth/verify-email` implement email verification.
+- `POST /v1/auth/parameters` returns only the KDF and authentication salts; the wrapped vault key is returned only by a successful `POST /v1/auth/login`.
+- `POST /v1/auth/refresh` rotates refresh tokens, while `POST /v1/auth/logout` revokes one session.
+- `PUT /v1/auth/master-password` rewraps the vault key and invalidates every existing session.
+- `GET /v1/vault` and `PUT /v1/vault/batch` synchronize opaque encrypted items using optimistic versions and composite cursors.
+- `/v1/admin/*` requires both an administrator access token and the independent `X-Admin-Key` second factor.
+
 ## Sharing gateway
 
 M2 share owners create and manage grants through `/v1/shares`. A grant stores the upstream credential only as AES-256-GCM ciphertext encrypted under `SHARE_KMS_KEY`; the one-time `sk-share-*` guest key is represented in D1 only by its SHA-256 hash. Friends call the returned Base URL with that guest key and do not need Amber installed.

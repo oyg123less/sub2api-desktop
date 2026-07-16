@@ -134,6 +134,18 @@ describe("authentication", () => {
     expect(missing.status).toBe(202);
     expect(await verified.json()).toEqual(await missing.json());
   });
+
+  it("reveals a ban only after the supplied authentication hash is valid", async () => {
+    await registerAndVerify();
+    await env.DB.prepare("UPDATE users SET banned=1 WHERE email=?").bind(email).run();
+    const wrongHash = bytesToBase64URL(new Uint8Array(32).fill(88));
+    const wrong = await login(email, wrongHash);
+    expect(wrong.status).toBe(401);
+    expect(await wrong.json()).toMatchObject({ error: { code: "invalid_credentials" } });
+    const valid = await login(email, authHash);
+    expect(valid.status).toBe(403);
+    expect(await valid.json()).toMatchObject({ error: { code: "account_disabled" } });
+  });
 });
 
 describe("encrypted vault", () => {

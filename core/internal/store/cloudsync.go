@@ -50,12 +50,13 @@ type CloudItemMeta struct {
 }
 
 type CloudConflict struct {
-	ID         int64     `json:"id"`
-	Kind       string    `json:"kind"`
-	ClientUID  string    `json:"client_uid"`
-	Resolution string    `json:"resolution"`
-	Details    string    `json:"details,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID          int64     `json:"id"`
+	Kind        string    `json:"kind"`
+	ClientUID   string    `json:"client_uid"`
+	DisplayName string    `json:"display_name,omitempty"`
+	Resolution  string    `json:"resolution"`
+	Details     string    `json:"details,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 func (s *Store) SaveCloudSession(session CloudSession) error {
@@ -286,7 +287,35 @@ func (s *Store) ListCloudConflicts(limit int) ([]CloudConflict, error) {
 		item.CreatedAt = unixToTime(created)
 		result = append(result, item)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for index := range result {
+		result[index].DisplayName = s.cloudConflictDisplayName(result[index].Kind, result[index].ClientUID)
+	}
+	return result, nil
+}
+
+func (s *Store) cloudConflictDisplayName(kind, clientUID string) string {
+	var name string
+	var err error
+	switch kind {
+	case CloudKindAccount:
+		err = s.db.QueryRow(`SELECT COALESCE(NULLIF(email,''),NULLIF(chatgpt_account_id,''),base_url) FROM accounts WHERE client_uid=?`, clientUID).Scan(&name)
+	case CloudKindProxy:
+		err = s.db.QueryRow(`SELECT name FROM proxies WHERE client_uid=?`, clientUID).Scan(&name)
+	case CloudKindCodexRemote:
+		err = s.db.QueryRow(`SELECT name FROM codex_remote_targets WHERE client_uid=?`, clientUID).Scan(&name)
+	default:
+		return ""
+	}
+	if err != nil {
+		return ""
+	}
+	return name
 }
 
 func (s *Store) GetProxyByClientUID(clientUID string) (*Proxy, error) {

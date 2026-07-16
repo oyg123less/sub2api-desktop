@@ -181,6 +181,7 @@ export interface CloudConflict {
   id: number;
   kind: "account" | "proxy" | "codex_remote" | "settings";
   client_uid: string;
+  display_name?: string;
   resolution: "local_won" | "remote_won";
   details?: string;
   created_at: string;
