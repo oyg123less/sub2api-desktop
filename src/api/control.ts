@@ -139,7 +139,9 @@ export interface AccountUsage {
   account_id: number;
   requests: number;
   prompt_tokens: number;
+  cached_tokens: number;
   completion_tokens: number;
+  reasoning_tokens: number;
   total_tokens: number;
   cost_usd: number;
 }
@@ -163,8 +165,11 @@ export interface RequestLog {
   model: string;
   status_code: number;
   prompt_tokens: number;
+  cached_tokens: number;
   completion_tokens: number;
+  reasoning_tokens: number;
   total_tokens: number;
+  estimated: boolean;
   latency_ms: number;
   stream: boolean;
   error?: string;
@@ -288,6 +293,24 @@ export interface ModelCatalogResponse {
   codex_default_model: string;
 }
 
+export interface ModelPrice {
+  model: string;
+  input_per_m: number;
+  cached_per_m?: number;
+  output_per_m: number;
+  long_context_threshold?: number;
+  long_input_per_m?: number;
+  long_cached_per_m?: number;
+  long_output_per_m?: number;
+}
+
+export interface PricingResponse {
+  price_version: string;
+  source_url: string;
+  tier: "standard";
+  models: ModelPrice[];
+}
+
 export interface Settings {
   listen_port: number;
   allow_lan: boolean;
@@ -317,15 +340,21 @@ export interface ImportResult {
 export interface StatsResponse {
   summary: {
     total_requests: number;
+    eligible_requests: number;
     success_requests: number;
     failed_requests: number;
+    client_cancelled: number;
     total_tokens: number;
     prompt_tokens: number;
+    cached_tokens: number;
     completion_tokens: number;
+    reasoning_tokens: number;
+    estimated_requests: number;
     avg_latency_ms: number;
   };
   daily: { date: string; requests: number; total_tokens: number }[];
   by_model: { model: string; requests: number; total_tokens: number }[];
+	failure_breakdown: { kind: "upstream_error" | "rate_limited" | "authentication" | "stream_interrupted"; requests: number }[];
 	retention: {
 		days: number;
 		max_rows: number;
@@ -517,6 +546,7 @@ export const api = {
 		req<{ ok: boolean; latency_ms?: number; error_kind?: string; error?: string; stages: { id: string; status: "ok" | "failed" | "skipped" | "not_run" }[] }>("POST", `/control/proxies/${id}/test`),
 
   listModels: () => req<ModelCatalogResponse>("GET", "/control/models"),
+  pricing: () => req<PricingResponse>("GET", "/control/pricing"),
 
   logs: (limit = 50) => req<{ logs: RequestLog[] }>("GET", `/control/logs?limit=${limit}`),
   stats: (days = 7) => req<StatsResponse>("GET", `/control/stats?days=${days}`),

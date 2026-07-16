@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -93,7 +94,7 @@ func (e *Engine) Responses(w http.ResponseWriter, r *http.Request) {
 			release = e.scheduler.Acquire(acc.ID)
 		}
 		attempt++
-		meta := forwardMeta{RequestID: requestID, RequestedModel: requestedModel, ResolvedModel: logModel, Attempt: attempt, Stream: clientStream}
+		meta := forwardMeta{RequestID: requestID, RequestedModel: requestedModel, ResolvedModel: logModel, Attempt: attempt, Stream: clientStream, EstimatedPromptTokens: estimateTokensFromBytes(len(bodyBytes))}
 		result := e.forwardResponsesOnce(r.Context(), w, upstreamBody, acc, cfg, meta)
 		if result.outcome == outcomeAuthFailed && acc.AccountType == store.AccountTypeOAuth && acc.RefreshToken != "" {
 			if refreshed, err := e.forceRefreshAccount(r.Context(), acc, cfg); err == nil {
@@ -170,6 +171,7 @@ func (e *Engine) forwardResponsesOnce(ctx context.Context, w http.ResponseWriter
 	token, err := e.accounts.ValidAccessToken(ctx, authClient, acc)
 	if err != nil {
 		if ctx.Err() != nil {
+			e.logForwardUsage(acc, meta, 499, estimatedUsage(meta, 0), time.Since(start), "client cancelled request", "client_cancelled", "request_cancelled")
 			return forwardResult{outcome: outcomeClientClosed}
 		}
 		if isNetworkOrProxyError(err) {
@@ -188,7 +190,7 @@ func (e *Engine) forwardResponsesOnce(ctx context.Context, w http.ResponseWriter
 	resp, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
-			e.logForward(acc, meta, 499, 0, 0, time.Since(start), "client cancelled request", "client_cancelled", "request_cancelled")
+			e.logForwardUsage(acc, meta, 499, estimatedUsage(meta, 0), time.Since(start), "client cancelled request", "client_cancelled", "request_cancelled")
 			return forwardResult{outcome: outcomeClientClosed}
 		}
 		message := "upstream request failed: " + err.Error()
@@ -217,14 +219,14 @@ func (e *Engine) forwardResponsesOnce(ctx context.Context, w http.ResponseWriter
 	_ = e.store.TouchAccount(acc.ID)
 
 	if meta.Stream {
-		return e.relayResponsesSSE(w, resp.Body, acc, start, meta)
+		return e.relayResponsesSSE(ctx, w, resp.Body, acc, start, meta)
 	}
-	return e.aggregateResponsesJSON(w, resp.Body, acc, start, meta)
+	return e.aggregateResponsesJSON(ctx, w, resp.Body, acc, start, meta)
 }
 
 // relayResponsesSSE copies the upstream Responses SSE stream to the client
 // verbatim while extracting token usage from response.completed for logging.
-func (e *Engine) relayResponsesSSE(w http.ResponseWriter, body io.Reader, acc *store.Account, start time.Time, meta forwardMeta) forwardResult {
+func (e *Engine) relayResponsesSSE(ctx context.Context, w http.ResponseWriter, body io.Reader, acc *store.Account, start time.Time, meta forwardMeta) forwardResult {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: "streaming unsupported"}
@@ -235,48 +237,59 @@ func (e *Engine) relayResponsesSSE(w http.ResponseWriter, body io.Reader, acc *s
 	w.WriteHeader(http.StatusOK)
 
 	var usage *apicompat.ResponsesUsage
+	outputBytes := 0
 	terminal := &sseTerminal{}
 	sc := scanSSE(body)
 	for sc.Scan() {
 		line := sc.Text()
+		eventBytes := 0
 		if evt, ok := parseSSEEvent(line); ok {
 			terminal.observe(evt)
+			eventBytes = responseEventOutputBytes(evt)
 			if terminal.usage != nil {
 				usage = terminal.usage
 			}
 			if terminal.errorKind != "" {
 				writeStreamError(w, terminal.errorKind, terminal.message)
 				flusher.Flush()
-				prompt, completion := responsesUsageCounts(usage)
-				e.logForward(acc, meta, terminal.status, prompt, completion, time.Since(start), terminal.message, terminal.errorKind, terminal.event)
+				metrics := bestUsage(usage, nil, meta, outputBytes)
+				e.logForwardUsage(acc, meta, terminal.status, metrics, time.Since(start), terminal.message, terminal.errorKind, terminal.event)
 				return forwardResult{outcome: outcomeUpstreamError, status: terminal.status, errMsg: terminal.message, headersWritten: true}
 			}
 		}
 		if _, err := io.WriteString(w, line+"\n"); err != nil {
-			e.logForward(acc, meta, 499, 0, 0, time.Since(start), "client cancelled stream", "client_cancelled", "client_cancelled")
+			metrics := bestUsage(usage, nil, meta, outputBytes)
+			e.logForwardUsage(acc, meta, 499, metrics, time.Since(start), "client cancelled stream", "client_cancelled", "client_cancelled")
 			return forwardResult{outcome: outcomeClientClosed, headersWritten: true}
 		}
+		outputBytes += eventBytes
 		if line == "" {
 			flusher.Flush()
 		}
 	}
+	if ctx.Err() != nil || errors.Is(sc.Err(), context.Canceled) {
+		metrics := bestUsage(usage, nil, meta, outputBytes)
+		e.logForwardUsage(acc, meta, 499, metrics, time.Since(start), "client cancelled stream", "client_cancelled", "client_cancelled")
+		return forwardResult{outcome: outcomeClientClosed, headersWritten: true}
+	}
 	if err := terminal.finish(sc.Err()); err != nil {
 		writeStreamError(w, terminal.errorKind, terminal.message)
 		flusher.Flush()
-		prompt, completion := responsesUsageCounts(usage)
-		e.logForward(acc, meta, terminal.status, prompt, completion, time.Since(start), terminal.message, terminal.errorKind, terminal.event)
+		metrics := bestUsage(usage, nil, meta, outputBytes)
+		e.logForwardUsage(acc, meta, terminal.status, metrics, time.Since(start), terminal.message, terminal.errorKind, terminal.event)
 		return forwardResult{outcome: outcomeUpstreamError, status: terminal.status, errMsg: terminal.message, headersWritten: true}
 	}
 	flusher.Flush()
 
-	prompt, completion := responsesUsageCounts(usage)
-	e.logForward(acc, meta, http.StatusOK, prompt, completion, time.Since(start), "", "", terminal.event)
+	metrics := bestUsage(usage, nil, meta, outputBytes)
+	e.logForwardUsage(acc, meta, http.StatusOK, metrics, time.Since(start), "", "", terminal.event)
 	return forwardResult{outcome: outcomeSuccess, headersWritten: true}
 }
 
-func (e *Engine) aggregateResponsesJSON(w http.ResponseWriter, body io.Reader, acc *store.Account, start time.Time, meta forwardMeta) forwardResult {
+func (e *Engine) aggregateResponsesJSON(ctx context.Context, w http.ResponseWriter, body io.Reader, acc *store.Account, start time.Time, meta forwardMeta) forwardResult {
 	terminal := &sseTerminal{}
 	accumulator := apicompat.NewBufferedResponseAccumulator()
+	outputBytes := 0
 	sc := scanSSE(body)
 	for sc.Scan() {
 		evt, ok := parseSSEEvent(sc.Text())
@@ -284,14 +297,20 @@ func (e *Engine) aggregateResponsesJSON(w http.ResponseWriter, body io.Reader, a
 			continue
 		}
 		terminal.observe(evt)
+		outputBytes += responseEventOutputBytes(evt)
 		if terminal.errorKind != "" {
 			break
 		}
 		accumulator.ProcessEvent(evt)
 	}
+	if ctx.Err() != nil || errors.Is(sc.Err(), context.Canceled) {
+		metrics := bestUsage(terminal.usage, nil, meta, outputBytes)
+		e.logForwardUsage(acc, meta, 499, metrics, time.Since(start), "client cancelled request", "client_cancelled", "client_cancelled")
+		return forwardResult{outcome: outcomeClientClosed}
+	}
 	if err := terminal.finish(sc.Err()); err != nil {
-		prompt, completion := responsesUsageCounts(terminal.usage)
-		e.logForward(acc, meta, terminal.status, prompt, completion, time.Since(start), terminal.message, terminal.errorKind, terminal.event)
+		metrics := bestUsage(terminal.usage, nil, meta, outputBytes)
+		e.logForwardUsage(acc, meta, terminal.status, metrics, time.Since(start), terminal.message, terminal.errorKind, terminal.event)
 		writeError(w, terminal.status, terminal.message, terminal.errorKind)
 		return forwardResult{outcome: outcomeUpstreamError, status: terminal.status, errMsg: terminal.message, headersWritten: true}
 	}
@@ -311,8 +330,8 @@ func (e *Engine) aggregateResponsesJSON(w http.ResponseWriter, body io.Reader, a
 	}
 	accumulator.SupplementResponseOutput(resp)
 	writeJSON(w, http.StatusOK, resp)
-	prompt, completion := responsesUsageCounts(resp.Usage)
-	e.logForward(acc, meta, http.StatusOK, prompt, completion, time.Since(start), "", "", terminal.event)
+	metrics := bestUsage(resp.Usage, nil, meta, outputBytes)
+	e.logForwardUsage(acc, meta, http.StatusOK, metrics, time.Since(start), "", "", terminal.event)
 	return forwardResult{outcome: outcomeSuccess, headersWritten: true}
 }
 

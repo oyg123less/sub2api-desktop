@@ -1,6 +1,8 @@
 package gateway
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -12,7 +14,7 @@ import (
 
 // streamResponse translates the upstream Responses SSE into Chat Completions
 // SSE and writes it to the client as it arrives.
-func (e *Engine) streamResponse(w http.ResponseWriter, body io.Reader, chatReq *apicompat.ChatCompletionsRequest, acc *store.Account, start time.Time, meta forwardMeta) forwardResult {
+func (e *Engine) streamResponse(ctx context.Context, w http.ResponseWriter, body io.Reader, chatReq *apicompat.ChatCompletionsRequest, acc *store.Account, start time.Time, meta forwardMeta) forwardResult {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: "streaming unsupported"}
@@ -34,6 +36,7 @@ func (e *Engine) streamResponse(w http.ResponseWriter, body io.Reader, chatReq *
 	state := apicompat.NewResponsesEventToChatState()
 	state.Model = model
 	state.IncludeUsage = chatReq.StreamOptions != nil && chatReq.StreamOptions.IncludeUsage
+	outputBytes := 0
 
 	write := func(chunk apicompat.ChatCompletionsChunk) bool {
 		chunk.Model = model
@@ -45,6 +48,7 @@ func (e *Engine) streamResponse(w http.ResponseWriter, body io.Reader, chatReq *
 		if _, err := io.WriteString(w, sse); err != nil {
 			return false
 		}
+		outputBytes += chatChunkOutputBytes(chunk)
 		flusher.Flush()
 		return true
 	}
@@ -59,8 +63,8 @@ func (e *Engine) streamResponse(w http.ResponseWriter, body io.Reader, chatReq *
 		}
 		terminal.observe(evt)
 		if terminal.errorKind != "" {
-			prompt, completion := usageCounts(state.Usage)
-			e.logForward(acc, meta, terminal.status, prompt, completion, time.Since(start), terminal.message, terminal.errorKind, terminal.event)
+			usage := bestUsage(terminal.usage, state.Usage, meta, outputBytes)
+			e.logForwardUsage(acc, meta, terminal.status, usage, time.Since(start), terminal.message, terminal.errorKind, terminal.event)
 			if !streamStarted {
 				return forwardResult{outcome: outcomeUpstreamError, status: terminal.status, errMsg: terminal.message, retryable: true}
 			}
@@ -70,14 +74,20 @@ func (e *Engine) streamResponse(w http.ResponseWriter, body io.Reader, chatReq *
 		}
 		for _, chunk := range apicompat.ResponsesEventToChatChunks(evt, state) {
 			if !write(chunk) {
-				e.logForward(acc, meta, 499, 0, 0, time.Since(start), "client cancelled stream", "client_cancelled", "client_cancelled")
+				usage := bestUsage(terminal.usage, state.Usage, meta, outputBytes)
+				e.logForwardUsage(acc, meta, 499, usage, time.Since(start), "client cancelled stream", "client_cancelled", "client_cancelled")
 				return forwardResult{outcome: outcomeClientClosed, headersWritten: true}
 			}
 		}
 	}
+	if ctx.Err() != nil || errors.Is(sc.Err(), context.Canceled) {
+		usage := bestUsage(terminal.usage, state.Usage, meta, outputBytes)
+		e.logForwardUsage(acc, meta, 499, usage, time.Since(start), "client cancelled stream", "client_cancelled", "client_cancelled")
+		return forwardResult{outcome: outcomeClientClosed, headersWritten: streamStarted}
+	}
 	if err := terminal.finish(sc.Err()); err != nil {
-		prompt, completion := usageCounts(state.Usage)
-		e.logForward(acc, meta, terminal.status, prompt, completion, time.Since(start), terminal.message, terminal.errorKind, terminal.event)
+		usage := bestUsage(terminal.usage, state.Usage, meta, outputBytes)
+		e.logForwardUsage(acc, meta, terminal.status, usage, time.Since(start), terminal.message, terminal.errorKind, terminal.event)
 		if !streamStarted {
 			return forwardResult{outcome: outcomeUpstreamError, status: terminal.status, errMsg: terminal.message, retryable: true}
 		}
@@ -89,14 +99,14 @@ func (e *Engine) streamResponse(w http.ResponseWriter, body io.Reader, chatReq *
 	_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	flusher.Flush()
 
-	prompt, completion := usageCounts(state.Usage)
-	e.logForward(acc, meta, http.StatusOK, prompt, completion, time.Since(start), "", "", terminal.event)
+	usage := bestUsage(terminal.usage, state.Usage, meta, outputBytes)
+	e.logForwardUsage(acc, meta, http.StatusOK, usage, time.Since(start), "", "", terminal.event)
 	return forwardResult{outcome: outcomeSuccess, headersWritten: true}
 }
 
 // aggregateResponse consumes the upstream SSE and assembles a single
 // non-streaming Chat Completions response.
-func (e *Engine) aggregateResponse(w http.ResponseWriter, body io.Reader, chatReq *apicompat.ChatCompletionsRequest, acc *store.Account, start time.Time, meta forwardMeta) forwardResult {
+func (e *Engine) aggregateResponse(ctx context.Context, w http.ResponseWriter, body io.Reader, chatReq *apicompat.ChatCompletionsRequest, acc *store.Account, start time.Time, meta forwardMeta) forwardResult {
 	model := responseModel(meta)
 	state := apicompat.NewResponsesEventToChatState()
 	state.Model = model
@@ -107,8 +117,10 @@ func (e *Engine) aggregateResponse(w http.ResponseWriter, body io.Reader, chatRe
 	toolCalls := map[int]*apicompat.ChatToolCall{}
 	var toolOrder []int
 	finishReason := "stop"
+	outputBytes := 0
 
 	apply := func(chunk apicompat.ChatCompletionsChunk) {
+		outputBytes += chatChunkOutputBytes(chunk)
 		for _, ch := range chunk.Choices {
 			if ch.Delta.Content != nil {
 				content.WriteString(*ch.Delta.Content)
@@ -157,9 +169,14 @@ func (e *Engine) aggregateResponse(w http.ResponseWriter, body io.Reader, chatRe
 			apply(chunk)
 		}
 	}
+	if ctx.Err() != nil || errors.Is(sc.Err(), context.Canceled) {
+		usage := bestUsage(terminal.usage, state.Usage, meta, outputBytes)
+		e.logForwardUsage(acc, meta, 499, usage, time.Since(start), "client cancelled request", "client_cancelled", "client_cancelled")
+		return forwardResult{outcome: outcomeClientClosed}
+	}
 	if err := terminal.finish(sc.Err()); err != nil {
-		prompt, completion := usageCounts(state.Usage)
-		e.logForward(acc, meta, terminal.status, prompt, completion, time.Since(start), terminal.message, terminal.errorKind, terminal.event)
+		usage := bestUsage(terminal.usage, state.Usage, meta, outputBytes)
+		e.logForwardUsage(acc, meta, terminal.status, usage, time.Since(start), terminal.message, terminal.errorKind, terminal.event)
 		writeError(w, terminal.status, terminal.message, terminal.errorKind)
 		return forwardResult{outcome: outcomeUpstreamError, status: terminal.status, errMsg: terminal.message, headersWritten: true}
 	}
@@ -189,9 +206,9 @@ func (e *Engine) aggregateResponse(w http.ResponseWriter, body io.Reader, chatRe
 		Usage: state.Usage,
 	}
 
-	prompt, completion := usageCounts(state.Usage)
 	writeJSON(w, http.StatusOK, resp)
-	e.logForward(acc, meta, http.StatusOK, prompt, completion, time.Since(start), "", "", terminal.event)
+	usage := bestUsage(terminal.usage, state.Usage, meta, outputBytes)
+	e.logForwardUsage(acc, meta, http.StatusOK, usage, time.Since(start), "", "", terminal.event)
 	return forwardResult{outcome: outcomeSuccess, headersWritten: true}
 }
 

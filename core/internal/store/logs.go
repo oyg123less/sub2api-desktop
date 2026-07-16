@@ -10,12 +10,16 @@ func (s *Store) InsertLog(l *RequestLog) error {
 	if l.Stream {
 		streamInt = 1
 	}
+	estimatedInt := 0
+	if l.Estimated {
+		estimatedInt = 1
+	}
 	_, err := s.db.Exec(`INSERT INTO request_logs
-		(account_id, account_email, model, status_code, prompt_tokens, completion_tokens, total_tokens, latency_ms, stream, error, created_at,
+		(account_id, account_email, model, status_code, prompt_tokens, cached_tokens, completion_tokens, reasoning_tokens, total_tokens, estimated, latency_ms, stream, error, created_at,
 		 request_id, requested_model, resolved_model, error_kind, attempt_count, terminal_event)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		l.AccountID, l.AccountEmail, l.Model, l.StatusCode, l.PromptTokens, l.CompletionTokens,
-		l.TotalTokens, l.LatencyMS, streamInt, l.Error, time.Now().Unix(), l.RequestID, l.RequestedModel,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		l.AccountID, l.AccountEmail, l.Model, l.StatusCode, l.PromptTokens, l.CachedTokens, l.CompletionTokens, l.ReasoningTokens,
+		l.TotalTokens, estimatedInt, l.LatencyMS, streamInt, l.Error, time.Now().Unix(), l.RequestID, l.RequestedModel,
 		l.ResolvedModel, l.ErrorKind, max(l.AttemptCount, 1), l.TerminalEvent)
 	return err
 }
@@ -25,7 +29,7 @@ func (s *Store) RecentLogs(limit int) ([]*RequestLog, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := s.db.Query(`SELECT id, account_id, account_email, model, status_code, prompt_tokens, completion_tokens, total_tokens, latency_ms, stream, error, created_at,
+	rows, err := s.db.Query(`SELECT id, account_id, account_email, model, status_code, prompt_tokens, cached_tokens, completion_tokens, reasoning_tokens, total_tokens, estimated, latency_ms, stream, error, created_at,
 		request_id, requested_model, resolved_model, error_kind, attempt_count, terminal_event
 		FROM request_logs ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
@@ -46,7 +50,7 @@ func (s *Store) RecentLogs(limit int) ([]*RequestLog, error) {
 // LogsForExport returns logs in chronological order for deterministic JSON and
 // CSV exports. A zero since value exports the full retained range.
 func (s *Store) LogsForExport(since time.Time) ([]*RequestLog, error) {
-	rows, err := s.db.Query(`SELECT id, account_id, account_email, model, status_code, prompt_tokens, completion_tokens, total_tokens, latency_ms, stream, error, created_at,
+	rows, err := s.db.Query(`SELECT id, account_id, account_email, model, status_code, prompt_tokens, cached_tokens, completion_tokens, reasoning_tokens, total_tokens, estimated, latency_ms, stream, error, created_at,
 		request_id, requested_model, resolved_model, error_kind, attempt_count, terminal_event
 		FROM request_logs WHERE created_at >= ? ORDER BY id ASC`, timeToUnix(since))
 	if err != nil {
@@ -79,29 +83,36 @@ func scanLog(rows interface {
 		l         RequestLog
 		accID     *int64
 		streamInt int
+		estimated int
 		createdAt int64
 	)
 	if err := rows.Scan(&l.ID, &accID, &l.AccountEmail, &l.Model, &l.StatusCode,
-		&l.PromptTokens, &l.CompletionTokens, &l.TotalTokens, &l.LatencyMS, &streamInt,
+		&l.PromptTokens, &l.CachedTokens, &l.CompletionTokens, &l.ReasoningTokens, &l.TotalTokens, &estimated, &l.LatencyMS, &streamInt,
 		&l.Error, &createdAt, &l.RequestID, &l.RequestedModel, &l.ResolvedModel, &l.ErrorKind,
 		&l.AttemptCount, &l.TerminalEvent); err != nil {
 		return nil, err
 	}
 	l.AccountID = accID
 	l.Stream = streamInt == 1
+	l.Estimated = estimated == 1
 	l.CreatedAt = unixToTime(createdAt)
 	return &l, nil
 }
 
 // StatsSummary is an aggregate view over request logs.
 type StatsSummary struct {
-	TotalRequests   int64 `json:"total_requests"`
-	SuccessRequests int64 `json:"success_requests"`
-	FailedRequests  int64 `json:"failed_requests"`
-	TotalTokens     int64 `json:"total_tokens"`
-	PromptTokens    int64 `json:"prompt_tokens"`
-	CompletionTok   int64 `json:"completion_tokens"`
-	AvgLatencyMS    int64 `json:"avg_latency_ms"`
+	TotalRequests     int64 `json:"total_requests"`
+	EligibleRequests  int64 `json:"eligible_requests"`
+	SuccessRequests   int64 `json:"success_requests"`
+	FailedRequests    int64 `json:"failed_requests"`
+	ClientCancelled   int64 `json:"client_cancelled"`
+	TotalTokens       int64 `json:"total_tokens"`
+	PromptTokens      int64 `json:"prompt_tokens"`
+	CachedTokens      int64 `json:"cached_tokens"`
+	CompletionTok     int64 `json:"completion_tokens"`
+	ReasoningTokens   int64 `json:"reasoning_tokens"`
+	EstimatedRequests int64 `json:"estimated_requests"`
+	AvgLatencyMS      int64 `json:"avg_latency_ms"`
 }
 
 // Summary computes an aggregate over logs newer than `since` (zero = all time).
@@ -109,18 +120,54 @@ func (s *Store) Summary(since time.Time) (*StatsSummary, error) {
 	var sum StatsSummary
 	row := s.db.QueryRow(`SELECT
 		COUNT(*),
+		COALESCE(SUM(CASE WHEN status_code != 499 AND error_kind != 'client_cancelled' THEN 1 ELSE 0 END),0),
 		COALESCE(SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END),0),
-		COALESCE(SUM(CASE WHEN status_code < 200 OR status_code >= 300 THEN 1 ELSE 0 END),0),
+		COALESCE(SUM(CASE WHEN (status_code < 200 OR status_code >= 300) AND status_code != 499 AND error_kind != 'client_cancelled' THEN 1 ELSE 0 END),0),
+		COALESCE(SUM(CASE WHEN status_code = 499 OR error_kind = 'client_cancelled' THEN 1 ELSE 0 END),0),
 		COALESCE(SUM(total_tokens),0),
 		COALESCE(SUM(prompt_tokens),0),
+		COALESCE(SUM(cached_tokens),0),
 		COALESCE(SUM(completion_tokens),0),
+		COALESCE(SUM(reasoning_tokens),0),
+		COALESCE(SUM(estimated),0),
 		COALESCE(CAST(AVG(latency_ms) AS INTEGER),0)
 		FROM request_logs WHERE created_at >= ?`, timeToUnix(since))
-	if err := row.Scan(&sum.TotalRequests, &sum.SuccessRequests, &sum.FailedRequests,
-		&sum.TotalTokens, &sum.PromptTokens, &sum.CompletionTok, &sum.AvgLatencyMS); err != nil {
+	if err := row.Scan(&sum.TotalRequests, &sum.EligibleRequests, &sum.SuccessRequests, &sum.FailedRequests, &sum.ClientCancelled,
+		&sum.TotalTokens, &sum.PromptTokens, &sum.CachedTokens, &sum.CompletionTok, &sum.ReasoningTokens,
+		&sum.EstimatedRequests, &sum.AvgLatencyMS); err != nil {
 		return nil, err
 	}
 	return &sum, nil
+}
+
+type FailurePoint struct {
+	Kind     string `json:"kind"`
+	Requests int64  `json:"requests"`
+}
+
+func (s *Store) FailureBreakdown(since time.Time) ([]FailurePoint, error) {
+	rows, err := s.db.Query(`SELECT CASE
+		WHEN status_code = 429 OR error_kind = 'account_rate_limited' THEN 'rate_limited'
+		WHEN status_code IN (401,403) OR error_kind = 'account_unauthorized' THEN 'authentication'
+		WHEN error_kind IN ('upstream_stream_error','upstream_failed_event') THEN 'stream_interrupted'
+		ELSE 'upstream_error' END AS category, COUNT(*)
+		FROM request_logs
+		WHERE created_at >= ? AND (status_code < 200 OR status_code >= 300)
+		AND status_code != 499 AND error_kind != 'client_cancelled'
+		GROUP BY category ORDER BY COUNT(*) DESC`, timeToUnix(since))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []FailurePoint
+	for rows.Next() {
+		var point FailurePoint
+		if err := rows.Scan(&point.Kind, &point.Requests); err != nil {
+			return nil, err
+		}
+		result = append(result, point)
+	}
+	return result, rows.Err()
 }
 
 // DailyPoint is a per-day aggregate.
@@ -161,7 +208,9 @@ type AccountModelUsage struct {
 	Model            string `json:"model"`
 	Requests         int64  `json:"requests"`
 	PromptTokens     int64  `json:"prompt_tokens"`
+	CachedTokens     int64  `json:"cached_tokens"`
 	CompletionTokens int64  `json:"completion_tokens"`
+	ReasoningTokens  int64  `json:"reasoning_tokens"`
 	TotalTokens      int64  `json:"total_tokens"`
 }
 
@@ -169,7 +218,7 @@ type AccountModelUsage struct {
 // logs that carry an account_id. Used to compute per-account usage and cost.
 func (s *Store) UsageByAccountModel() ([]AccountModelUsage, error) {
 	rows, err := s.db.Query(`SELECT account_id, model,
-		COUNT(*), COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0), COALESCE(SUM(total_tokens),0)
+		COUNT(*), COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(cached_tokens),0), COALESCE(SUM(completion_tokens),0), COALESCE(SUM(reasoning_tokens),0), COALESCE(SUM(total_tokens),0)
 		FROM request_logs WHERE account_id IS NOT NULL
 		GROUP BY account_id, model`)
 	if err != nil {
@@ -179,7 +228,7 @@ func (s *Store) UsageByAccountModel() ([]AccountModelUsage, error) {
 	var out []AccountModelUsage
 	for rows.Next() {
 		var u AccountModelUsage
-		if err := rows.Scan(&u.AccountID, &u.Model, &u.Requests, &u.PromptTokens, &u.CompletionTokens, &u.TotalTokens); err != nil {
+		if err := rows.Scan(&u.AccountID, &u.Model, &u.Requests, &u.PromptTokens, &u.CachedTokens, &u.CompletionTokens, &u.ReasoningTokens, &u.TotalTokens); err != nil {
 			return nil, err
 		}
 		out = append(out, u)

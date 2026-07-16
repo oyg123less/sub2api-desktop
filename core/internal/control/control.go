@@ -178,6 +178,7 @@ func (c *Control) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /control/cloud/shares/{id}/usage", h(c.cloudShareUsage))
 
 	mux.HandleFunc("GET /control/models", h(c.listModels))
+	mux.HandleFunc("GET /control/pricing", h(c.pricing))
 
 	mux.HandleFunc("GET /control/logs", h(c.logs))
 	mux.HandleFunc("GET /control/logs/export", h(c.exportLogs))
@@ -476,7 +477,9 @@ type accountUsage struct {
 	AccountID        int64   `json:"account_id"`
 	Requests         int64   `json:"requests"`
 	PromptTokens     int64   `json:"prompt_tokens"`
+	CachedTokens     int64   `json:"cached_tokens"`
 	CompletionTokens int64   `json:"completion_tokens"`
+	ReasoningTokens  int64   `json:"reasoning_tokens"`
 	TotalTokens      int64   `json:"total_tokens"`
 	CostUSD          float64 `json:"cost_usd"`
 }
@@ -495,9 +498,11 @@ func (c *Control) usageByAccount() map[int64]*accountUsage {
 		}
 		u.Requests += r.Requests
 		u.PromptTokens += r.PromptTokens
+		u.CachedTokens += r.CachedTokens
 		u.CompletionTokens += r.CompletionTokens
+		u.ReasoningTokens += r.ReasoningTokens
 		u.TotalTokens += r.TotalTokens
-		u.CostUSD += openai.CostUSD(r.Model, r.PromptTokens, r.CompletionTokens)
+		u.CostUSD += openai.CostUSD(r.Model, r.PromptTokens, r.CachedTokens, r.CompletionTokens)
 	}
 	return out
 }
@@ -835,6 +840,15 @@ func (c *Control) listModels(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (c *Control) pricing(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"price_version": openai.PriceVersion,
+		"source_url":    openai.PriceSourceURL,
+		"tier":          "standard",
+		"models":        openai.PublishedModelPrices(),
+	})
+}
+
 // --- logs / stats ---
 
 func (c *Control) logs(w http.ResponseWriter, r *http.Request) {
@@ -863,10 +877,11 @@ func (c *Control) stats(w http.ResponseWriter, r *http.Request) {
 	}
 	daily, _ := c.store.Daily(days)
 	byModel, _ := c.store.ByModel(since)
+	failures, _ := c.store.FailureBreakdown(since)
 	health, _ := c.store.LogHealth()
 	cfg := c.settings.Get()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"summary": summary, "daily": daily, "by_model": byModel,
+		"summary": summary, "daily": daily, "by_model": byModel, "failure_breakdown": failures,
 		"retention": map[string]any{
 			"days": cfg.LogRetentionDays, "max_rows": cfg.MaxLogRows,
 			"retained_rows": health.Rows, "oldest_at": health.OldestAt, "newest_at": health.NewestAt,
@@ -907,13 +922,14 @@ func (c *Control) exportLogs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF})
 	writer := csv.NewWriter(w)
-	_ = writer.Write([]string{"id", "created_at", "request_id", "account_email", "requested_model", "resolved_model", "status_code", "error_kind", "attempt_count", "terminal_event", "prompt_tokens", "completion_tokens", "total_tokens", "latency_ms", "stream", "error"})
+	_ = writer.Write([]string{"id", "created_at", "request_id", "account_email", "requested_model", "resolved_model", "status_code", "error_kind", "attempt_count", "terminal_event", "prompt_tokens", "cached_tokens", "completion_tokens", "reasoning_tokens", "total_tokens", "estimated", "latency_ms", "stream", "error"})
 	for _, entry := range logs {
 		_ = writer.Write([]string{
 			strconv.FormatInt(entry.ID, 10), entry.CreatedAt.UTC().Format(time.RFC3339), entry.RequestID, entry.AccountEmail,
 			entry.RequestedModel, entry.ResolvedModel, strconv.Itoa(entry.StatusCode), entry.ErrorKind,
 			strconv.Itoa(entry.AttemptCount), entry.TerminalEvent, strconv.Itoa(entry.PromptTokens),
-			strconv.Itoa(entry.CompletionTokens), strconv.Itoa(entry.TotalTokens), strconv.FormatInt(entry.LatencyMS, 10),
+			strconv.Itoa(entry.CachedTokens), strconv.Itoa(entry.CompletionTokens), strconv.Itoa(entry.ReasoningTokens),
+			strconv.Itoa(entry.TotalTokens), strconv.FormatBool(entry.Estimated), strconv.FormatInt(entry.LatencyMS, 10),
 			strconv.FormatBool(entry.Stream), entry.Error,
 		})
 	}

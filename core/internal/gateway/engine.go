@@ -166,7 +166,7 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			release = e.scheduler.Acquire(acc.ID)
 		}
 		attempt++
-		meta := forwardMeta{RequestID: requestID, RequestedModel: requestedModel, ResolvedModel: logModel, Attempt: attempt, Stream: chatReq.Stream}
+		meta := forwardMeta{RequestID: requestID, RequestedModel: requestedModel, ResolvedModel: logModel, Attempt: attempt, Stream: chatReq.Stream, EstimatedPromptTokens: estimateTokensFromBytes(len(bodyBytes))}
 		result := e.forwardOnce(r.Context(), w, &chatReq, acc, cfg, meta)
 		if result.outcome == outcomeAuthFailed && acc.AccountType == store.AccountTypeOAuth && acc.RefreshToken != "" {
 			if refreshed, err := e.forceRefreshAccount(r.Context(), acc, cfg); err == nil {
@@ -248,7 +248,7 @@ type forwardResult struct {
 
 type forwardMeta struct {
 	RequestID, RequestedModel, ResolvedModel string
-	Attempt                                  int
+	Attempt, EstimatedPromptTokens           int
 	Stream                                   bool
 }
 
@@ -274,6 +274,7 @@ func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq
 	token, err := e.accounts.ValidAccessToken(ctx, authClient, acc)
 	if err != nil {
 		if ctx.Err() != nil {
+			e.logForwardUsage(acc, meta, 499, estimatedUsage(meta, 0), time.Since(start), "client cancelled request", "client_cancelled", "request_cancelled")
 			return forwardResult{outcome: outcomeClientClosed}
 		}
 		if isNetworkOrProxyError(err) {
@@ -311,7 +312,7 @@ func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq
 	resp, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
-			e.logForward(acc, meta, 499, 0, 0, time.Since(start), "client cancelled request", "client_cancelled", "request_cancelled")
+			e.logForwardUsage(acc, meta, 499, estimatedUsage(meta, 0), time.Since(start), "client cancelled request", "client_cancelled", "request_cancelled")
 			return forwardResult{outcome: outcomeClientClosed}
 		}
 		message := "upstream request failed: " + err.Error()
@@ -341,9 +342,9 @@ func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq
 
 	// Stream and translate.
 	if chatReq.Stream {
-		return e.streamResponse(w, resp.Body, chatReq, acc, start, meta)
+		return e.streamResponse(ctx, w, resp.Body, chatReq, acc, start, meta)
 	}
-	return e.aggregateResponse(w, resp.Body, chatReq, acc, start, meta)
+	return e.aggregateResponse(ctx, w, resp.Body, chatReq, acc, start, meta)
 }
 
 func shouldFailoverUpstreamError(result forwardResult) bool {
@@ -395,9 +396,13 @@ func (e *Engine) proxyForAccount(acc *store.Account) (*store.Proxy, error) {
 }
 
 func (e *Engine) logForward(acc *store.Account, meta forwardMeta, status, prompt, completion int, latency time.Duration, message, kind, terminal string) {
+	e.logForwardUsage(acc, meta, status, usageMetrics{Prompt: prompt, Completion: completion}, latency, message, kind, terminal)
+}
+
+func (e *Engine) logForwardUsage(acc *store.Account, meta forwardMeta, status int, usage usageMetrics, latency time.Duration, message, kind, terminal string) {
 	e.logRequestWithDetails(acc, requestLogDetails{
 		RequestID: meta.RequestID, RequestedModel: meta.RequestedModel, ResolvedModel: meta.ResolvedModel,
-		Status: status, Prompt: prompt, Completion: completion, Attempts: meta.Attempt,
+		Status: status, Prompt: usage.Prompt, Cached: usage.Cached, Completion: usage.Completion, Reasoning: usage.Reasoning, Estimated: usage.Estimated, Attempts: meta.Attempt,
 		Latency: latency, Stream: meta.Stream, Error: message, ErrorKind: kind, TerminalEvent: terminal,
 	})
 }
@@ -511,9 +516,10 @@ func (e *Engine) logRequest(acc *store.Account, model string, status, prompt, co
 
 type requestLogDetails struct {
 	RequestID, RequestedModel, ResolvedModel string
-	Status, Prompt, Completion, Attempts     int
+	Status, Prompt, Cached, Completion       int
+	Reasoning, Attempts                      int
 	Latency                                  time.Duration
-	Stream                                   bool
+	Stream, Estimated                        bool
 	Error, ErrorKind, TerminalEvent          string
 }
 
@@ -530,8 +536,11 @@ func (e *Engine) logRequestWithDetails(acc *store.Account, detail requestLogDeta
 		Model:            detail.ResolvedModel,
 		StatusCode:       detail.Status,
 		PromptTokens:     detail.Prompt,
+		CachedTokens:     detail.Cached,
 		CompletionTokens: detail.Completion,
+		ReasoningTokens:  detail.Reasoning,
 		TotalTokens:      detail.Prompt + detail.Completion,
+		Estimated:        detail.Estimated,
 		LatencyMS:        detail.Latency.Milliseconds(),
 		Stream:           detail.Stream,
 		Error:            detail.Error,

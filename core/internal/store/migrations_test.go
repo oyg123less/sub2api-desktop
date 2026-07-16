@@ -34,7 +34,7 @@ func TestOpenInitializesVersionedSchema(t *testing.T) {
 			t.Fatalf("accounts.%s missing", column)
 		}
 	}
-	for _, column := range []string{"request_id", "requested_model", "resolved_model", "error_kind", "attempt_count", "terminal_event"} {
+	for _, column := range []string{"request_id", "requested_model", "resolved_model", "error_kind", "attempt_count", "terminal_event", "cached_tokens", "reasoning_tokens", "estimated"} {
 		if !testColumnExists(t, st.db, "request_logs", column) {
 			t.Fatalf("request_logs.%s missing", column)
 		}

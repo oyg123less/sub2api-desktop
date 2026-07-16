@@ -23,8 +23,20 @@ const expandedLog = ref<number | null>(null);
 
 const successRate = computed(() => {
   const s = stats.value?.summary;
-  if (!s || s.total_requests === 0) return "—";
-  return Math.round((s.success_requests / s.total_requests) * 100) + "%";
+  if (!s || s.eligible_requests === 0) return "—";
+  return Math.round((s.success_requests / s.eligible_requests) * 100) + "%";
+});
+
+const cancelledRate = computed(() => {
+  const s = stats.value?.summary;
+  if (!s || s.total_requests === 0) return "0%";
+  return Math.round((s.client_cancelled / s.total_requests) * 100) + "%";
+});
+
+const estimatedRate = computed(() => {
+  const s = stats.value?.summary;
+  if (!s || s.total_requests === 0) return "0%";
+  return Math.round((s.estimated_requests / s.total_requests) * 100) + "%";
 });
 
 const chartData = computed(() =>
@@ -57,6 +69,7 @@ function fmtTime(s: string) {
   return new Date(s).toLocaleString();
 }
 function statusClass(code: number) {
+  if (code === 499) return "badge-neutral";
   return code >= 200 && code < 300 ? "badge-success" : "badge-danger";
 }
 
@@ -135,6 +148,13 @@ onMounted(load);
       <div v-if="!hasData" class="empty">{{ t("statistics.noData") }}</div>
       <LineChart v-else :data="chartData" />
     </div>
+
+    <div v-show="!loading" class="quality-strip">
+      <div><span>{{ t("statistics.clientCancelled") }}</span><strong>{{ fmtNum(stats?.summary.client_cancelled) }}</strong><small>{{ cancelledRate }}</small></div>
+      <div><span>{{ t("statistics.estimatedUsage") }}</span><strong>{{ fmtNum(stats?.summary.estimated_requests) }}</strong><small>{{ estimatedRate }}</small></div>
+      <div><span>{{ t("statistics.cachedTokens") }}</span><strong>{{ fmtNum(stats?.summary.cached_tokens) }}</strong></div>
+      <div><span>{{ t("statistics.reasoningTokens") }}</span><strong>{{ fmtNum(stats?.summary.reasoning_tokens) }}</strong></div>
+    </div>
 		<p v-show="!loading" class="faint text-sm" style="margin-top: 10px">
 			{{ t("logs.retentionScope", { rows: fmtNum(stats?.retention.retained_rows), days: stats?.retention.days === 0 ? t("logs.forever") : stats?.retention.days }) }}
 		</p>
@@ -153,6 +173,17 @@ onMounted(load);
       </div>
 
       <div class="card">
+        <h3 class="card-title">{{ t("statistics.failureBreakdown") }}</h3>
+        <div v-if="!(stats?.failure_breakdown?.length)" class="empty">{{ t("statistics.noFailures") }}</div>
+        <div v-else class="list">
+          <div v-for="failure in stats!.failure_breakdown" :key="failure.kind" class="list-row">
+            <span style="flex: 1">{{ t(`statistics.failureKind.${failure.kind}`) }}</span>
+            <strong>{{ fmtNum(failure.requests) }}</strong>
+          </div>
+        </div>
+      </div>
+
+      <div class="card statistics-logs-card">
         <h3 class="card-title">{{ t("logs.title") }}</h3>
         <div v-if="logs.length === 0" class="empty">{{ t("statistics.noData") }}</div>
         <div v-else class="list" style="max-height: 320px; overflow-y: auto">
@@ -163,7 +194,7 @@ onMounted(load);
             </span>
 					<div style="flex: 1; min-width: 0">
 						<div class="mono text-sm">{{ l.resolved_model || l.model }}</div>
-						<div v-if="l.error_kind" class="faint text-xs">{{ l.error_kind }} · {{ t("logs.attempts", { count: l.attempt_count }) }}</div>
+						<div class="faint text-xs"><span v-if="l.error_kind">{{ l.error_kind }} · </span>{{ t("logs.attempts", { count: l.attempt_count }) }}<span v-if="l.estimated"> · {{ t("statistics.estimated") }}</span></div>
 					</div>
             <span class="faint text-sm" style="width: 58px; text-align: right">{{ l.latency_ms }}ms</span>
             <span class="faint text-sm" style="width: 130px; text-align: right">{{ fmtTime(l.created_at) }}</span>
@@ -189,6 +220,13 @@ onMounted(load);
 
 <style scoped>
 .statistics-log-entry { border-bottom: 1px solid var(--border-soft); }
+.quality-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 16px; border-block: 1px solid var(--border-soft); }
+.quality-strip div { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; padding: 12px 14px; border-right: 1px solid var(--border-soft); }
+.quality-strip div:last-child { border-right: 0; }
+.quality-strip span, .quality-strip small { color: var(--text-faint); font-size: 11px; }
+.quality-strip strong { font-size: 14px; }
+.quality-strip small { grid-column: 2; }
+.statistics-logs-card { grid-column: 1 / -1; }
 .statistics-log-entry:last-child { border-bottom: 0; }
 .statistics-log-row { width: 100%; border: 0; border-bottom: 0; background: transparent; color: var(--text); text-align: left; }
 .statistics-log-row.expandable { cursor: pointer; }
@@ -196,4 +234,5 @@ onMounted(load);
 .log-chevron { transition: transform var(--motion-fast) var(--motion-ease); }
 .log-chevron.open { transform: rotate(180deg); }
 .log-error-detail { padding: 0 10px 12px 60px; color: var(--danger); font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+@media (max-width: 760px) { .quality-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } .quality-strip div:nth-child(2) { border-right: 0; } }
 </style>

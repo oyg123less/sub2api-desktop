@@ -3,6 +3,7 @@ import Dashboard from "./views/Dashboard.vue";
 import Accounts from "./views/Accounts.vue";
 import Proxies from "./views/Proxies.vue";
 import Statistics from "./views/Statistics.vue";
+import Models from "./views/Models.vue";
 import Diagnostics from "./views/Diagnostics.vue";
 import Settings from "./views/Settings.vue";
 import Cloud from "./views/Cloud.vue";
@@ -18,6 +19,7 @@ export const router = createRouter({
     { path: "/accounts", component: Accounts, name: "accounts" },
     { path: "/proxies", component: Proxies, name: "proxies" },
     { path: "/statistics", component: Statistics, name: "statistics" },
+    { path: "/models", component: Models, name: "models" },
     { path: "/diagnostics", component: Diagnostics, name: "diagnostics" },
     { path: "/settings", component: Settings, name: "settings" },
     { path: "/cloud", component: Cloud, name: "cloud" },

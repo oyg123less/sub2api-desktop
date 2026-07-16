@@ -123,6 +123,7 @@ function fmtTime(s: string) {
   return new Date(s).toLocaleTimeString();
 }
 function statusClass(code: number) {
+  if (code === 499) return "badge-neutral";
   return code >= 200 && code < 300 ? "badge-success" : "badge-danger";
 }
 function fmtNum(n: number) {
@@ -282,7 +283,7 @@ onUnmounted(() => clearInterval(timer));
             {{ l.status_code }}
           </span>
           <span class="mono" style="flex: 1">{{ l.model }}</span>
-          <span class="faint text-sm">{{ fmtNum(l.total_tokens) }} tok</span>
+          <span class="faint text-sm">{{ l.estimated ? "≈" : "" }}{{ fmtNum(l.total_tokens) }} tok</span>
           <span class="faint text-sm" style="width: 62px; text-align: right">{{ l.latency_ms }}ms</span>
           <span class="faint text-sm" style="width: 84px; text-align: right">{{ fmtTime(l.created_at) }}</span>
           <Icon v-if="l.error" name="chevron-down" :size="14" class="log-chevron" :class="{ open: expandedLog === l.id }" />

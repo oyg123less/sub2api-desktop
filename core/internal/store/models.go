@@ -122,8 +122,11 @@ type RequestLog struct {
 	Model            string    `json:"model"`
 	StatusCode       int       `json:"status_code"`
 	PromptTokens     int       `json:"prompt_tokens"`
+	CachedTokens     int       `json:"cached_tokens"`
 	CompletionTokens int       `json:"completion_tokens"`
+	ReasoningTokens  int       `json:"reasoning_tokens"`
 	TotalTokens      int       `json:"total_tokens"`
+	Estimated        bool      `json:"estimated"`
 	LatencyMS        int64     `json:"latency_ms"`
 	Stream           bool      `json:"stream"`
 	Error            string    `json:"error,omitempty"`

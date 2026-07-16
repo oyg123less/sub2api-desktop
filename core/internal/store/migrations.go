@@ -16,7 +16,7 @@ import (
 	appcrypto "sub2api-desktop/core/internal/crypto"
 )
 
-const CurrentSchemaVersion = 7
+const CurrentSchemaVersion = 8
 
 type migration struct {
 	version int
@@ -32,6 +32,7 @@ var migrations = []migration{
 	{version: 5, name: "v0.2.3 Codex remote targets", apply: migrateV023CodexRemoteTargets},
 	{version: 6, name: "v0.2.4 Codex direct remote targets", apply: migrateV024CodexDirectTargets},
 	{version: 7, name: "v0.3.0 cloud sync metadata", apply: migrateV030CloudSync},
+	{version: 8, name: "v0.3.1 usage details", apply: migrateV031UsageDetails},
 }
 
 func databaseExists(path string) bool {
@@ -141,8 +142,11 @@ func migrateBaseline(tx *sql.Tx, _ *appcrypto.Cipher) error {
 			model TEXT NOT NULL DEFAULT '',
 			status_code INTEGER NOT NULL DEFAULT 0,
 			prompt_tokens INTEGER NOT NULL DEFAULT 0,
+			cached_tokens INTEGER NOT NULL DEFAULT 0,
 			completion_tokens INTEGER NOT NULL DEFAULT 0,
+			reasoning_tokens INTEGER NOT NULL DEFAULT 0,
 			total_tokens INTEGER NOT NULL DEFAULT 0,
+			estimated INTEGER NOT NULL DEFAULT 0,
 			latency_ms INTEGER NOT NULL DEFAULT 0,
 			stream INTEGER NOT NULL DEFAULT 0,
 			error TEXT NOT NULL DEFAULT '',
@@ -160,6 +164,19 @@ func migrateBaseline(tx *sql.Tx, _ *appcrypto.Cipher) error {
 		}
 	}
 	return addColumnIfMissing(tx, "accounts", "usage_snapshot", `TEXT NOT NULL DEFAULT ''`)
+}
+
+func migrateV031UsageDetails(tx *sql.Tx, _ *appcrypto.Cipher) error {
+	for _, column := range []struct{ name, declaration string }{
+		{"cached_tokens", `INTEGER NOT NULL DEFAULT 0`},
+		{"reasoning_tokens", `INTEGER NOT NULL DEFAULT 0`},
+		{"estimated", `INTEGER NOT NULL DEFAULT 0`},
+	} {
+		if err := addColumnIfMissing(tx, "request_logs", column.name, column.declaration); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func migrateV020(tx *sql.Tx, cipher *appcrypto.Cipher) error {
