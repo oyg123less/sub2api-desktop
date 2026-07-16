@@ -5,6 +5,7 @@ import { bytesToBase64URL, sha256 } from "../src/security";
 const authHash = bytesToBase64URL(new Uint8Array(32).fill(41));
 const accountUID = "018f1f46-7a19-7cc2-88cb-f577e51d3999";
 const upstreamToken = "upstream-owner-token-must-never-leak";
+const streamHoldMs = Number((import.meta as unknown as { env: Record<string, string | undefined> }).env.VITE_AMBER_STREAM_HOLD_MS || 25);
 
 async function ownerSession() {
   const email = "share-owner@example.test";
@@ -46,7 +47,7 @@ async function createShare(headers: Record<string, string>, quota = 0) {
       credential: {
         token: upstreamToken,
         account_type: "api_key",
-        upstream_url: "https://api.openai.com/v1/responses",
+        upstream_url: "https://api.openai.com/v1",
       },
       quota_requests: quota,
       consent: true,
@@ -103,6 +104,73 @@ describe("cloud sharing", () => {
     vi.unstubAllGlobals();
   });
 
+  it("resolves API-key endpoints and passes a delayed stream through without buffering", async () => {
+    const headers = await ownerSession();
+    const creation = await (await createShare(headers)).json<{ guest_key: string }>();
+    const encoder = new TextEncoder();
+    const upstreamURLs: string[] = [];
+    const upstream = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      upstreamURLs.push(url);
+      if (url.endsWith("/chat/completions")) {
+        return new Response(JSON.stringify({ choices: [] }), {
+          status: 200, headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode("data: first\n\n"));
+          setTimeout(() => {
+            controller.enqueue(encoder.encode("data: second\n\n"));
+            controller.close();
+          }, streamHoldMs);
+        },
+      }), {
+        status: 200,
+        headers: {
+          "content-type": "text/event-stream",
+          authorization: `Bearer ${upstreamToken}`,
+        },
+      });
+    });
+    vi.stubGlobal("fetch", upstream);
+
+    const started = Date.now();
+    const streamed = await SELF.fetch("https://amber.test/v1/responses", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${creation.guest_key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6", input: "hold", stream: true }),
+    });
+    expect(streamed.status).toBe(200);
+    expect(streamed.headers.get("authorization")).toBeNull();
+    const reader = streamed.body!.getReader();
+    const first = await reader.read();
+    expect(new TextDecoder().decode(first.value)).toContain("first");
+    expect(Date.now() - started).toBeLessThan(5_000);
+    const second = await reader.read();
+    expect(new TextDecoder().decode(second.value)).toContain("second");
+    expect(Date.now() - started).toBeGreaterThanOrEqual(Math.max(0, streamHoldMs - 250));
+
+    const chat = await SELF.fetch("https://amber.test/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${creation.guest_key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6", messages: [] }),
+    });
+    expect(chat.status).toBe(200);
+    expect(upstreamURLs).toEqual([
+      "https://api.openai.com/v1/responses",
+      "https://api.openai.com/v1/chat/completions",
+    ]);
+    let usageCount = 0;
+    for (let attempt = 0; attempt < 50 && usageCount < 2; attempt += 1) {
+      const usage = await env.DB.prepare("SELECT COUNT(*) AS count FROM share_usage_log").first<{ count: number }>();
+      usageCount = usage?.count ?? 0;
+      if (usageCount < 2) await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(usageCount).toBe(2);
+    vi.unstubAllGlobals();
+  }, streamHoldMs + 15_000);
+
   it("rejects revoked and expired keys and cascades account deletion into revocation", async () => {
     const headers = await ownerSession();
     const first = await (await createShare(headers)).json<{ guest_key: string; share: { id: number } }>();
@@ -132,5 +200,11 @@ describe("cloud sharing", () => {
     expect(deleted.status).toBe(200);
     const row = await env.DB.prepare("SELECT revoked FROM share_grants WHERE id=?").bind(third.share.id).first<{ revoked: number }>();
     expect(row?.revoked).toBe(1);
+    const restoreDeleted = await SELF.fetch(`https://amber.test/v1/shares/${third.share.id}`, {
+      method: "PATCH", headers, body: JSON.stringify({ revoked: false }),
+    });
+    expect(restoreDeleted.status).toBe(409);
+    const stillRevoked = await env.DB.prepare("SELECT revoked FROM share_grants WHERE id=?").bind(third.share.id).first<{ revoked: number }>();
+    expect(stillRevoked?.revoked).toBe(1);
   });
 });

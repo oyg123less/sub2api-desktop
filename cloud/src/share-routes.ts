@@ -134,8 +134,16 @@ shares.patch("/:id", async (c) => {
   if (!updates.length) throw new AppError(400, "invalid_share_update", "No supported share changes were provided.");
   updates.push("updated_at=?");
   values.push(new Date().toISOString(), id, c.get("auth").id);
-  const result = await c.env.DB.prepare(`UPDATE share_grants SET ${updates.join(",")} WHERE id=? AND owner_id=?`).bind(...values).run();
-  if (!result.meta.changes) throw new AppError(404, "share_not_found", "The share was not found.");
+  const restoring = body.revoked === false;
+  const accountGuard = restoring ? ` AND EXISTS (SELECT 1 FROM vault_items v
+    WHERE v.user_id=share_grants.owner_id AND v.kind='account' AND v.client_uid=share_grants.account_uid AND v.deleted=0)` : "";
+  const result = await c.env.DB.prepare(`UPDATE share_grants SET ${updates.join(",")} WHERE id=? AND owner_id=?${accountGuard}`).bind(...values).run();
+  if (!result.meta.changes) {
+    const existing = await c.env.DB.prepare("SELECT id FROM share_grants WHERE id=? AND owner_id=?").bind(id, c.get("auth").id).first();
+    if (!existing) throw new AppError(404, "share_not_found", "The share was not found.");
+    if (restoring) throw new AppError(409, "share_account_deleted", "The deleted account's share cannot be restored.");
+    throw new AppError(404, "share_not_found", "The share was not found.");
+  }
   const row = await c.env.DB.prepare(`SELECT id,owner_id,account_uid,share_code,quota_requests,used_requests,
     expires_at,revoked,created_at,updated_at FROM share_grants WHERE id=?`).bind(id).first<ShareRow>();
   return c.json({ share: publicShare(row!, new URL(c.req.url).origin) });

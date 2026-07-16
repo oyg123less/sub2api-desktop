@@ -104,6 +104,10 @@ describe("administrator boundaries", () => {
     const revokedShare = await env.DB.prepare("SELECT revoked FROM share_grants WHERE id=?")
       .bind(insertedShare.meta.last_row_id).first<{ revoked: number }>();
     expect(revokedShare?.revoked).toBe(1);
+    const restoreDeletedShare = await SELF.fetch(`https://amber.test/v1/admin/shares/${insertedShare.meta.last_row_id}`, {
+      method: "PATCH", headers, body: JSON.stringify({ revoked: false }),
+    });
+    expect(restoreDeletedShare.status).toBe(409);
 
     const audit = await SELF.fetch("https://amber.test/v1/admin/audit", { headers });
     expect(audit.status).toBe(200);

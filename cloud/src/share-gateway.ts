@@ -75,10 +75,14 @@ function requestModel(body: ArrayBuffer): string {
 function upstreamURL(configured: string, path: string, accountType: "oauth" | "api_key"): string {
   const target = new URL(configured);
   if (path.endsWith("/chat/completions")) {
-    if (accountType !== "api_key") {
+    if (accountType !== "api_key" || target.hostname.toLowerCase() !== "api.openai.com") {
       throw new AppError(400, "share_endpoint_unsupported", "This shared account supports the Responses API endpoint.");
     }
     target.pathname = "/v1/chat/completions";
+  } else if (target.hostname.toLowerCase() === "api.openai.com") {
+    target.pathname = "/v1/responses";
+  } else {
+    target.pathname = "/backend-api/codex/responses";
   }
   target.search = "";
   target.hash = "";

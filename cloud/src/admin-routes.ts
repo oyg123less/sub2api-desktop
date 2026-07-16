@@ -137,9 +137,16 @@ admin.patch("/shares/:id", async (c) => {
   const id = positiveID(c.req.param("id"));
   const body = await readJSON<{ revoked?: unknown }>(c);
   if (typeof body.revoked !== "boolean") throw new AppError(400, "invalid_admin_action", "The revoked field must be a boolean.");
-  const result = await c.env.DB.prepare("UPDATE share_grants SET revoked=?,updated_at=? WHERE id=?")
+  const accountGuard = body.revoked ? "" : ` AND EXISTS (SELECT 1 FROM vault_items v
+    WHERE v.user_id=share_grants.owner_id AND v.kind='account' AND v.client_uid=share_grants.account_uid AND v.deleted=0)`;
+  const result = await c.env.DB.prepare(`UPDATE share_grants SET revoked=?,updated_at=? WHERE id=?${accountGuard}`)
     .bind(body.revoked ? 1 : 0, new Date().toISOString(), id).run();
-  if (!result.meta.changes) throw new AppError(404, "share_not_found", "The share was not found.");
+  if (!result.meta.changes) {
+    const existing = await c.env.DB.prepare("SELECT id FROM share_grants WHERE id=?").bind(id).first();
+    if (!existing) throw new AppError(404, "share_not_found", "The share was not found.");
+    if (!body.revoked) throw new AppError(409, "share_account_deleted", "The deleted account's share cannot be restored.");
+    throw new AppError(404, "share_not_found", "The share was not found.");
+  }
   await audit(c.env, c.get("auth").id, body.revoked ? "share.revoke" : "share.restore", "share", String(id));
   return c.json({ ok: true });
 });
