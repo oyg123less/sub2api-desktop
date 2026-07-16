@@ -97,6 +97,43 @@ describe("authentication", () => {
     expect(fake.salt_kdf).not.toBe(saltKDF);
     expect(Object.keys(fake).sort()).toEqual(["salt_auth", "salt_kdf"]);
   });
+
+  it("resends verification without enumeration and limits each email to three attempts per hour", async () => {
+    const pendingEmail = "pending-resend@example.test";
+    const registration = await jsonRequest("/v1/auth/register", {
+      email: pendingEmail,
+      turnstile_token: "test-pass",
+      auth_hash: authHash,
+      salt_kdf: saltKDF,
+      salt_auth: saltAuth,
+      wrapped_vault_key: wrappedVaultKey,
+    });
+    expect(registration.status).toBe(202);
+    const verificationKey = `verify:${await sha256(pendingEmail)}`;
+    const original = await env.SESSIONS.get<{ attempts: number }>(verificationKey, "json");
+    expect(original?.attempts).toBe(0);
+    const wrong = await jsonRequest("/v1/auth/verify-email", { email: pendingEmail, code: "000000" });
+    expect(wrong.status).toBe(400);
+    expect((await env.SESSIONS.get<{ attempts: number }>(verificationKey, "json"))?.attempts).toBe(1);
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const resent = await jsonRequest("/v1/auth/resend-verification", { email: pendingEmail });
+      expect(resent.status).toBe(202);
+      expect(await resent.json()).toEqual({ ok: true });
+    }
+    expect((await env.SESSIONS.get<{ attempts: number }>(verificationKey, "json"))?.attempts).toBe(0);
+    const limited = await jsonRequest("/v1/auth/resend-verification", { email: pendingEmail });
+    expect(limited.status).toBe(429);
+
+    const latestCode = await env.SESSIONS.get(`test-mail:${await sha256(pendingEmail)}`);
+    expect((await jsonRequest("/v1/auth/verify-email", { email: pendingEmail, code: latestCode })).status).toBe(200);
+    await registerAndVerify("verified-resend@example.test");
+    const verified = await jsonRequest("/v1/auth/resend-verification", { email: "verified-resend@example.test" });
+    const missing = await jsonRequest("/v1/auth/resend-verification", { email: "missing-resend@example.test" });
+    expect(verified.status).toBe(202);
+    expect(missing.status).toBe(202);
+    expect(await verified.json()).toEqual(await missing.json());
+  });
 });
 
 describe("encrypted vault", () => {

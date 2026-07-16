@@ -72,6 +72,34 @@ func (c *Control) cloudVerifyEmail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, c.cloud.Status())
 }
 
+func (c *Control) cloudResendVerification(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Email string `json:"email"`
+	}
+	if c.cloud == nil || !decodeCloudRequest(w, r, &request) {
+		if c.cloud == nil {
+			writeControlError(w, http.StatusServiceUnavailable, "cloud_unavailable", "Amber Cloud is unavailable", true, nil)
+		}
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if err := c.cloud.ResendVerification(ctx, request.Email); err != nil {
+		writeCloudControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, c.cloud.Status())
+}
+
+func (c *Control) cloudCancelRegistration(w http.ResponseWriter, _ *http.Request) {
+	if c.cloud == nil {
+		writeControlError(w, http.StatusServiceUnavailable, "cloud_unavailable", "Amber Cloud is unavailable", true, nil)
+		return
+	}
+	c.cloud.CancelRegistration()
+	writeJSON(w, http.StatusOK, c.cloud.Status())
+}
+
 func (c *Control) cloudLogin(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Email    string `json:"email"`

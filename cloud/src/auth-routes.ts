@@ -100,6 +100,34 @@ auth.post("/register", async (c) => {
   return c.json({ ok: true, verification_required: true }, 202);
 });
 
+auth.post("/resend-verification", async (c) => {
+  const body = await readJSON<Record<string, unknown>>(c);
+  const email = normalizeEmail(body.email);
+  await rateLimit(c.env, "resend", email, 3, 60 * 60);
+  const user = await c.env.DB.prepare("SELECT id, email_verified FROM users WHERE email=?")
+    .bind(email).first<{ id: number; email_verified: number }>();
+  if (!user || user.email_verified) return c.json({ ok: true }, 202);
+
+  const code = randomVerificationCode();
+  try {
+    await mailerFor(c.env).sendVerification(email, code);
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: "verification_resend_failed",
+      error_type: error instanceof Error ? error.name : "unknown",
+    }));
+    return c.json({ ok: true }, 202);
+  }
+  const verificationKey = `verify:${await sha256(email)}`;
+  await c.env.SESSIONS.put(verificationKey, JSON.stringify({
+    user_id: user.id,
+    code_hash: await sha256(`amber-verify-v1:${code}`),
+    attempts: 0,
+    expires_at: Date.now() + 10 * 60 * 1000,
+  }), { expirationTtl: 10 * 60 });
+  return c.json({ ok: true }, 202);
+});
+
 auth.post("/verify-email", async (c) => {
   const body = await readJSON<Record<string, unknown>>(c);
   const email = normalizeEmail(body.email);

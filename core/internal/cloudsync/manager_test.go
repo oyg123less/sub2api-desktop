@@ -45,6 +45,7 @@ type mockCloud struct {
 	wrapped    string
 	items      map[string]remoteVaultItem
 	lastUpload string
+	resends    int
 }
 
 func newMockCloud() *mockCloud {
@@ -72,6 +73,10 @@ func (m *mockCloud) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	case "/v1/auth/verify-email", "/v1/auth/logout":
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	case "/v1/auth/resend-verification":
+		m.resends++
+		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	case "/v1/auth/parameters":
 		_, _ = fmt.Fprintf(w, `{"salt_kdf":%q,"salt_auth":%q}`, m.saltKDF, m.saltAuth)
@@ -129,6 +134,40 @@ func (m *mockCloud) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(pushResponse{Items: updated, Cursor: time.Now().UTC().Format(time.RFC3339Nano)})
 	default:
 		http.NotFound(w, r)
+	}
+}
+
+func TestPendingRegistrationCanBeResentAndCancelled(t *testing.T) {
+	cloud := newMockCloud()
+	server := httptest.NewServer(cloud)
+	defer server.Close()
+	manager := NewManager(openTestStore(t, "pending"), &testSettings{value: store.DefaultSettings()}, server.URL, "site-key", server.Client(), nil)
+	t.Cleanup(manager.Close)
+	ctx := context.Background()
+	const email = "pending@example.test"
+	if err := manager.Register(ctx, RegisterInput{Email: email, Password: "correct horse battery staple", TurnstileToken: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	status := manager.Status()
+	if !status.PendingVerification || status.Email != email {
+		t.Fatalf("unexpected pending status: %+v", status)
+	}
+	if err := manager.ResendVerification(ctx, email); err != nil {
+		t.Fatal(err)
+	}
+	cloud.mu.Lock()
+	resends := cloud.resends
+	cloud.mu.Unlock()
+	if resends != 1 {
+		t.Fatalf("resends = %d, want 1", resends)
+	}
+	manager.CancelRegistration()
+	status = manager.Status()
+	if status.PendingVerification || status.Email != "" {
+		t.Fatalf("pending registration was not cleared: %+v", status)
+	}
+	if err := manager.ResendVerification(ctx, email); err == nil {
+		t.Fatal("resend succeeded after pending registration was cancelled")
 	}
 }
 

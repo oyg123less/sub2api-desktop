@@ -226,6 +226,10 @@ func (c *cloudClient) verifyEmail(ctx context.Context, email, code string) error
 	return c.doJSON(ctx, http.MethodPost, "/v1/auth/verify-email", "", map[string]string{"email": email, "code": code}, nil)
 }
 
+func (c *cloudClient) resendVerification(ctx context.Context, email string) error {
+	return c.doJSON(ctx, http.MethodPost, "/v1/auth/resend-verification", "", map[string]string{"email": email}, nil)
+}
+
 func (c *cloudClient) parameters(ctx context.Context, email string) (loginParameters, error) {
 	var response loginParameters
 	err := c.doJSON(ctx, http.MethodPost, "/v1/auth/parameters", "", map[string]string{"email": email}, &response)

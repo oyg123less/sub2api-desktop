@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { api, type CloudAdminOverview, type CloudAdminUser, type CloudStatus } from "../api/control";
 import ConfirmModal from "../components/ConfirmModal.vue";
@@ -22,6 +22,8 @@ const recoveryAcknowledged = ref(false);
 const turnstileToken = ref("");
 const turnstileFailed = ref(false);
 const verificationCode = ref("");
+const resendUntil = ref(0);
+const clockNow = ref(Date.now());
 const currentPassword = ref("");
 const newPassword = ref("");
 const newPasswordConfirm = ref("");
@@ -42,6 +44,7 @@ const deleteConfirmText = ref("");
 
 const pendingVerification = computed(() => Boolean(status.value?.pending_verification));
 const authenticated = computed(() => Boolean(status.value?.authenticated));
+const resendSeconds = computed(() => Math.max(0, Math.ceil((resendUntil.value - clockNow.value) / 1000)));
 const filteredAdminUsers = computed(() => {
   const users = adminOverview.value?.users ?? [];
   const query = adminSearch.value.trim().toLowerCase();
@@ -91,6 +94,7 @@ async function register() {
     password.value = "";
     passwordConfirm.value = "";
     status.value = normalizeStatus(await api.cloudStatus());
+    resendUntil.value = Date.now() + 60_000;
     app.toast(t("cloud.verificationSent"), "success");
   } catch (error) {
     resetTurnstile();
@@ -111,6 +115,35 @@ async function verifyEmail() {
     verificationCode.value = "";
     app.toast(t("cloud.verified"), "success");
     await syncNow(true);
+  } catch (error) {
+    app.toast((error as Error).message, "error");
+  } finally {
+    busy.value = "";
+  }
+}
+
+async function resendVerification() {
+  if (resendSeconds.value > 0 || !email.value.trim()) return;
+  busy.value = "resend";
+  try {
+    status.value = normalizeStatus(await api.cloudResendVerification(email.value.trim()));
+    resendUntil.value = Date.now() + 60_000;
+    app.toast(t("cloud.verificationResent"), "success");
+  } catch (error) {
+    app.toast((error as Error).message, "error");
+  } finally {
+    busy.value = "";
+  }
+}
+
+async function cancelRegistration() {
+  busy.value = "cancel-registration";
+  try {
+    status.value = normalizeStatus(await api.cloudCancelRegistration());
+    verificationCode.value = "";
+    resendUntil.value = 0;
+    mode.value = "register";
+    app.toast(t("cloud.registrationCancelled"), "success");
   } catch (error) {
     app.toast((error as Error).message, "error");
   } finally {
@@ -326,7 +359,12 @@ function formatTime(value?: string): string {
   return Number.isNaN(date.getTime()) ? t("common.unknown") : date.toLocaleString();
 }
 
-onMounted(load);
+let clockTimer = 0;
+onMounted(() => {
+  void load();
+  clockTimer = window.setInterval(() => { clockNow.value = Date.now(); }, 1000);
+});
+onUnmounted(() => window.clearInterval(clockTimer));
 </script>
 
 <template>
@@ -366,6 +404,10 @@ onMounted(load);
         <div class="cloud-form compact-form">
           <label class="field"><span class="field-label">{{ t("cloud.verificationCode") }}</span><input v-model="verificationCode" class="input mono code-input" inputmode="numeric" maxlength="6" autocomplete="one-time-code" /></label>
           <button class="btn btn-primary" type="button" :disabled="busy !== ''" @click="verifyEmail"><Icon name="check" :size="15" />{{ busy === "verify" ? t("cloud.verifying") : t("cloud.verify") }}</button>
+          <div class="verification-actions">
+            <button class="btn btn-ghost btn-sm" data-test="cloud-resend-verification" type="button" :disabled="busy !== '' || resendSeconds > 0" @click="resendVerification"><Icon name="refresh" :size="14" />{{ busy === "resend" ? t("cloud.resendingVerification") : resendSeconds > 0 ? t("cloud.resendCountdown", { seconds: resendSeconds }) : t("cloud.resendVerification") }}</button>
+            <button class="btn btn-ghost btn-sm" data-test="cloud-cancel-registration" type="button" :disabled="busy !== ''" @click="cancelRegistration"><Icon name="plus" :size="14" />{{ t("cloud.backToRegistration") }}</button>
+          </div>
         </div>
       </section>
 
@@ -572,6 +614,7 @@ onMounted(load);
 .cloud-form small { color: var(--text-faint); }
 .form-submit { align-self: end; justify-self: start; min-width: 130px; }
 .compact-form { grid-template-columns: minmax(180px, 1fr) auto; align-items: end; }
+.verification-actions { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .code-input { letter-spacing: 4px; font-size: 17px; }
 .recovery-warning { display: flex; gap: 10px; margin-top: 18px; padding: 13px 14px; border: 1px solid rgba(193, 134, 58, .28); border-radius: 8px; background: var(--warn-soft); color: var(--warn); }
 .recovery-warning div { display: grid; gap: 3px; }

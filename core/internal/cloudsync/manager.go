@@ -136,6 +136,8 @@ func (m *Manager) Status() Status {
 			lastSync := m.session.LastSyncAt
 			status.LastSyncAt = &lastSync
 		}
+	} else if m.pending != nil {
+		status.Email = m.pending.email
 	}
 	m.mu.RUnlock()
 	status.PendingItems, _ = m.store.PendingCloudCount()
@@ -207,6 +209,36 @@ func (m *Manager) VerifyEmail(ctx context.Context, email, code string) error {
 	m.lastError = ""
 	m.mu.Unlock()
 	return nil
+}
+
+func (m *Manager) ResendVerification(ctx context.Context, email string) error {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	email = strings.ToLower(strings.TrimSpace(email))
+	m.mu.RLock()
+	pending := m.pending
+	m.mu.RUnlock()
+	if pending == nil || pending.email != email {
+		return errors.New("registration session is no longer available; register again")
+	}
+	if err := m.client.resendVerification(ctx, email); err != nil {
+		m.setError(err)
+		return err
+	}
+	m.clearError()
+	return nil
+}
+
+func (m *Manager) CancelRegistration() {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.pending != nil {
+		m.pending.material.clear()
+	}
+	m.pending = nil
+	m.lastError = ""
 }
 
 func (m *Manager) Login(ctx context.Context, email, password string) error {

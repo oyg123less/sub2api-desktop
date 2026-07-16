@@ -35,6 +35,48 @@ test("shows offline-safe state when Amber Cloud is not configured", async ({ pag
   await expect(page.getByText("Local accounts, proxies, and Codex setup remain fully available offline.")).toBeVisible();
 });
 
+test("resends verification with a countdown and returns to registration", async ({ page }) => {
+  await initialize(page);
+  let pending = true;
+  let resendCalls = 0;
+  const cloudStatus = () => ({
+    configured: true,
+    authenticated: false,
+    pending_verification: pending,
+    email: pending ? "pending@example.test" : undefined,
+    turnstile_site_key: "",
+    pending_items: 0,
+    syncing: false,
+    conflicts: [],
+  });
+  await page.route("http://127.0.0.1:45678/control/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    let body: unknown = localStatus;
+    if (path === "/control/cloud/status") body = cloudStatus();
+    if (path === "/control/cloud/resend-verification") {
+      expect(request.postDataJSON()).toEqual({ email: "pending@example.test" });
+      resendCalls += 1;
+      body = cloudStatus();
+    }
+    if (path === "/control/cloud/cancel-registration") {
+      pending = false;
+      body = cloudStatus();
+    }
+    await route.fulfill({ status: path === "/control/cloud/resend-verification" ? 202 : 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+
+  await page.goto("/#/cloud");
+  await expect(page.getByText("Enter the six-digit code sent to pending@example.test.")).toBeVisible();
+  const resend = page.locator('[data-test="cloud-resend-verification"]');
+  await resend.click();
+  expect(resendCalls).toBe(1);
+  await expect(resend).toBeDisabled();
+  await expect(resend).toContainText(/Resend in (59|60)s/);
+  await page.locator('[data-test="cloud-cancel-registration"]').click();
+  await expect(page.getByRole("heading", { name: "Create a cloud account" })).toBeVisible();
+});
+
 test("logs in, synchronizes, and logs out without exposing session credentials", async ({ page }) => {
   await initialize(page);
   let authenticated = false;

@@ -59,6 +59,8 @@ type CloudController interface {
 	Status() cloudsync.Status
 	Register(context.Context, cloudsync.RegisterInput) error
 	VerifyEmail(context.Context, string, string) error
+	ResendVerification(context.Context, string) error
+	CancelRegistration()
 	Login(context.Context, string, string) error
 	Logout(context.Context) error
 	Sync(context.Context) error
@@ -158,6 +160,8 @@ func (c *Control) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /control/cloud/status", h(c.cloudStatus))
 	mux.HandleFunc("POST /control/cloud/register", h(c.cloudRegister))
 	mux.HandleFunc("POST /control/cloud/verify-email", h(c.cloudVerifyEmail))
+	mux.HandleFunc("POST /control/cloud/resend-verification", h(c.cloudResendVerification))
+	mux.HandleFunc("POST /control/cloud/cancel-registration", h(c.cloudCancelRegistration))
 	mux.HandleFunc("POST /control/cloud/login", h(c.cloudLogin))
 	mux.HandleFunc("POST /control/cloud/logout", h(c.cloudLogout))
 	mux.HandleFunc("POST /control/cloud/sync", h(c.cloudSync))

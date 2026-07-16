@@ -453,6 +453,10 @@ export const api = {
     req<{ ok: boolean; verification_required: boolean }>("POST", "/control/cloud/register", input),
   cloudVerifyEmail: (email: string, code: string) =>
     req<CloudStatus>("POST", "/control/cloud/verify-email", { email, code }),
+  cloudResendVerification: (email: string) =>
+    req<CloudStatus>("POST", "/control/cloud/resend-verification", { email }),
+  cloudCancelRegistration: () =>
+    req<CloudStatus>("POST", "/control/cloud/cancel-registration"),
   cloudLogin: (email: string, password: string) =>
     req<CloudStatus>("POST", "/control/cloud/login", { email, password }),
   cloudLogout: () => req<CloudStatus>("POST", "/control/cloud/logout"),
