@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 const localStatus = {
-  version: "0.3.0",
+  version: "0.3.1",
   server_running: true,
   port: 8080,
   host: "127.0.0.1",

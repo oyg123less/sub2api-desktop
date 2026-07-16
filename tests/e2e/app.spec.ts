@@ -34,7 +34,7 @@ test("persists manual dark mode, copies the version, and respects reduced motion
 
   await page.locator(".version-copy").click();
   await expect(page.getByText("Version copied")).toBeVisible();
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("v0.3.0");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("v0.3.1");
 
   await page.emulateMedia({ reducedMotion: "reduce" });
   const duration = await page.locator(".nav-item").first().evaluate((element) => getComputedStyle(element).transitionDuration);
