@@ -21,6 +21,11 @@ type SettingsAccess interface {
 	Save(store.Settings) error
 }
 
+const (
+	cloudPullPageSize = 1000
+	cloudPullMaxPages = 20
+)
+
 type RegisterInput struct {
 	Email          string
 	Password       string
@@ -629,16 +634,27 @@ func (m *Manager) Sync(ctx context.Context) error {
 	m.mu.RUnlock()
 	defer wipe(vaultKey)
 
-	pull, err := m.client.pull(ctx, accessToken, cursor)
-	if err != nil {
-		m.setError(err)
-		return err
+	pulledItems := false
+	for page := 0; page < cloudPullMaxPages; page++ {
+		pull, err := m.client.pull(ctx, accessToken, cursor)
+		if err != nil {
+			m.setError(err)
+			return err
+		}
+		if err := m.applyRemoteItems(pull.Items, vaultKey); err != nil {
+			m.setError(err)
+			return err
+		}
+		pulledItems = pulledItems || len(pull.Items) > 0
+		previousCursor := cursor
+		if pull.Cursor != "" {
+			cursor = pull.Cursor
+		}
+		if len(pull.Items) < cloudPullPageSize || cursor == previousCursor {
+			break
+		}
 	}
-	if err := m.applyRemoteItems(pull.Items, vaultKey); err != nil {
-		m.setError(err)
-		return err
-	}
-	if len(pull.Items) > 0 {
+	if pulledItems {
 		m.mu.RLock()
 		hook := m.appliedHook
 		m.mu.RUnlock()
@@ -648,9 +664,6 @@ func (m *Manager) Sync(ctx context.Context) error {
 				return err
 			}
 		}
-	}
-	if pull.Cursor != "" {
-		cursor = pull.Cursor
 	}
 	items, err := m.collectDirty(vaultKey)
 	if err != nil {

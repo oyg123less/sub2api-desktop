@@ -164,6 +164,35 @@ describe("encrypted vault", () => {
     expect(await conflict.json()).toMatchObject({ error: { code: "vault_conflict" }, conflicts: [{ version: 1 }] });
   });
 
+  it("paginates equal-timestamp vault items with a composite cursor", async () => {
+    await registerAndVerify();
+    const session = await (await login()).json<{ access_token: string }>();
+    const headers = { Authorization: `Bearer ${session.access_token}`, "Content-Type": "application/json" };
+    const user = await env.DB.prepare("SELECT id FROM users WHERE email=?").bind(email).first<{ id: number }>();
+    const timestamp = "2026-07-17T00:00:00.000Z";
+    const ciphertext = `v1.${bytesToBase64URL(new Uint8Array(80).fill(51))}`;
+    await env.DB.batch([
+      env.DB.prepare(`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<600)
+        INSERT INTO vault_items(user_id,kind,client_uid,ciphertext,version,deleted,updated_at)
+        SELECT ?,'account',printf('018f1f46-7a19-7cc2-88cb-%012x',n),?,1,0,? FROM seq`).bind(user?.id, ciphertext, timestamp),
+      env.DB.prepare(`WITH RECURSIVE seq(n) AS (SELECT 601 UNION ALL SELECT n+1 FROM seq WHERE n<1002)
+        INSERT INTO vault_items(user_id,kind,client_uid,ciphertext,version,deleted,updated_at)
+        SELECT ?,'account',printf('018f1f46-7a19-7cc2-88cb-%012x',n),?,1,0,? FROM seq`).bind(user?.id, ciphertext, timestamp),
+    ]);
+
+    const first = await SELF.fetch("https://amber.test/v1/vault", { headers });
+    const firstPage = await first.json<{ items: Array<{ client_uid: string }>; cursor: string }>();
+    expect(firstPage.items).toHaveLength(1000);
+    expect(firstPage.cursor).toMatch(/^2026-07-17T00:00:00\.000Z\|\d+$/);
+    const second = await SELF.fetch(`https://amber.test/v1/vault?since=${encodeURIComponent(firstPage.cursor)}`, { headers });
+    const secondPage = await second.json<{ items: Array<{ client_uid: string }>; cursor: string }>();
+    expect(secondPage.items).toHaveLength(2);
+    expect(new Set([...firstPage.items, ...secondPage.items].map((item) => item.client_uid)).size).toBe(1002);
+
+    const legacy = await SELF.fetch(`https://amber.test/v1/vault?since=${encodeURIComponent(timestamp)}`, { headers });
+    expect(await legacy.json()).toMatchObject({ items: [], cursor: timestamp });
+  });
+
   it("invalidates every old session after changing the master password", async () => {
     await registerAndVerify();
     const session = await (await login()).json<{ access_token: string }>();

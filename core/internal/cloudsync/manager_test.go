@@ -46,6 +46,8 @@ type mockCloud struct {
 	items      map[string]remoteVaultItem
 	lastUpload string
 	resends    int
+	pullPages  [][]remoteVaultItem
+	pullCalls  int
 }
 
 func newMockCloud() *mockCloud {
@@ -95,6 +97,13 @@ func (m *mockCloud) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/v1/auth/refresh":
 		_, _ = w.Write([]byte(`{"access_token":"access","access_expires_in":900,"refresh_token":"refresh-next"}`))
 	case "/v1/vault":
+		if len(m.pullPages) > 0 {
+			index := min(m.pullCalls, len(m.pullPages)-1)
+			page := m.pullPages[index]
+			m.pullCalls++
+			_ = json.NewEncoder(w).Encode(pullResponse{Items: page, Cursor: fmt.Sprintf("2026-07-17T00:00:00.000Z|%d", (index+1)*cloudPullPageSize)})
+			return
+		}
 		items := make([]remoteVaultItem, 0, len(m.items))
 		for _, item := range m.items {
 			items = append(items, item)
@@ -168,6 +177,47 @@ func TestPendingRegistrationCanBeResentAndCancelled(t *testing.T) {
 	}
 	if err := manager.ResendVerification(ctx, email); err == nil {
 		t.Fatal("resend succeeded after pending registration was cancelled")
+	}
+}
+
+func TestSyncPullsMultipleRemotePagesInOneRun(t *testing.T) {
+	cloud := newMockCloud()
+	server := httptest.NewServer(cloud)
+	defer server.Close()
+	st := openTestStore(t, "multipage")
+	manager := NewManager(st, &testSettings{value: store.DefaultSettings()}, server.URL, "site-key", server.Client(), nil)
+	t.Cleanup(manager.Close)
+	ctx := context.Background()
+	if err := manager.Register(ctx, RegisterInput{Email: "pages@example.test", Password: "correct horse battery staple", TurnstileToken: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.VerifyEmail(ctx, "pages@example.test", "123456"); err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.RLock()
+	vaultKey := append([]byte(nil), manager.vaultKey...)
+	manager.mu.RUnlock()
+	defer wipe(vaultKey)
+	ciphertext, err := encryptEnvelope(vaultKey, time.Now(), map[string]string{"deleted": "item"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := make([]remoteVaultItem, cloudPullPageSize)
+	for index := range first {
+		first[index] = remoteVaultItem{Kind: store.CloudKindAccount, ClientUID: fmt.Sprintf("deleted-%04d", index), Ciphertext: ciphertext, Version: 1, Deleted: true}
+	}
+	second := []remoteVaultItem{{Kind: store.CloudKindAccount, ClientUID: "deleted-final", Ciphertext: ciphertext, Version: 1, Deleted: true}}
+	cloud.mu.Lock()
+	cloud.pullPages = [][]remoteVaultItem{first, second}
+	cloud.mu.Unlock()
+	if err := manager.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cloud.mu.Lock()
+	pullCalls := cloud.pullCalls
+	cloud.mu.Unlock()
+	if pullCalls != 2 {
+		t.Fatalf("pull calls = %d, want 2", pullCalls)
 	}
 }
 

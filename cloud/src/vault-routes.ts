@@ -18,6 +18,24 @@ function publicItem(row: VaultRow) {
   };
 }
 
+function cursorFor(row: VaultRow): string {
+  return `${row.updated_at}|${row.id}`;
+}
+
+function parseCursor(value: string): { updatedAt: string; id: number; composite: boolean } | null {
+  if (!value) return null;
+  const separator = value.lastIndexOf("|");
+  const composite = separator >= 0;
+  const updatedAt = composite ? value.slice(0, separator) : value;
+  const idText = composite ? value.slice(separator + 1) : "0";
+  const id = Number(idText);
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(updatedAt) || Number.isNaN(Date.parse(updatedAt)) ||
+      (composite && (!/^\d+$/.test(idText) || !Number.isSafeInteger(id) || id < 0))) {
+    throw new AppError(400, "invalid_sync_cursor", "The sync cursor is invalid.");
+  }
+  return { updatedAt, id, composite };
+}
+
 interface IncomingItem {
   kind: VaultRow["kind"];
   client_uid: string;
@@ -43,16 +61,19 @@ vault.use("/*", requireAuth);
 vault.get("/", async (c) => {
   const user = c.get("auth");
   const since = c.req.query("since") || "";
-  if (since && (!/^\d{4}-\d{2}-\d{2}T/.test(since) || Number.isNaN(Date.parse(since)))) {
-    throw new AppError(400, "invalid_sync_cursor", "The sync cursor is invalid.");
-  }
-  const result = since
+  const cursor = parseCursor(since);
+  const result = cursor?.composite
     ? await c.env.DB.prepare(`SELECT id, kind, client_uid, ciphertext, version, deleted, updated_at
-        FROM vault_items WHERE user_id=? AND updated_at>? ORDER BY updated_at,id LIMIT 1000`).bind(user.id, since).all<VaultRow>()
-    : await c.env.DB.prepare(`SELECT id, kind, client_uid, ciphertext, version, deleted, updated_at
-        FROM vault_items WHERE user_id=? ORDER BY updated_at,id LIMIT 1000`).bind(user.id).all<VaultRow>();
+        FROM vault_items WHERE user_id=? AND (updated_at>? OR (updated_at=? AND id>?))
+        ORDER BY updated_at,id LIMIT 1000`).bind(user.id, cursor.updatedAt, cursor.updatedAt, cursor.id).all<VaultRow>()
+    : cursor
+      ? await c.env.DB.prepare(`SELECT id, kind, client_uid, ciphertext, version, deleted, updated_at
+          FROM vault_items WHERE user_id=? AND updated_at>? ORDER BY updated_at,id LIMIT 1000`).bind(user.id, cursor.updatedAt).all<VaultRow>()
+      : await c.env.DB.prepare(`SELECT id, kind, client_uid, ciphertext, version, deleted, updated_at
+          FROM vault_items WHERE user_id=? ORDER BY updated_at,id LIMIT 1000`).bind(user.id).all<VaultRow>();
   const items = result.results.map(publicItem);
-  return c.json({ items, cursor: items.at(-1)?.updated_at || since || new Date(0).toISOString() });
+  const last = result.results.at(-1);
+  return c.json({ items, cursor: last ? cursorFor(last) : since || `${new Date(0).toISOString()}|0` });
 });
 
 vault.put("/batch", async (c) => {
@@ -109,7 +130,9 @@ vault.put("/batch", async (c) => {
       FROM vault_items WHERE user_id=? AND kind=? AND client_uid=?`).bind(user.id, item.kind, item.client_uid).first<VaultRow>();
     if (row) updated.push(row);
   }
-  return c.json({ items: updated.map(publicItem), cursor: now });
+  const latest = updated.reduce<VaultRow | null>((current, row) => !current || row.updated_at > current.updated_at ||
+    (row.updated_at === current.updated_at && row.id > current.id) ? row : current, null);
+  return c.json({ items: updated.map(publicItem), cursor: latest ? cursorFor(latest) : `${now}|0` });
 });
 
 export default vault;
