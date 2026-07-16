@@ -8,10 +8,11 @@ test("loads the operational desktop shell without horizontal overflow", async ({
   expect(dimensions.scroll).toBeLessThanOrEqual(dimensions.client);
 });
 
-test("exposes diagnostics and statistics navigation", async ({ page }) => {
+test("exposes model and statistics navigation without a standalone diagnostics route", async ({ page }) => {
   await page.goto("/");
-  await expect(page.locator('a[href="#/diagnostics"]')).toBeVisible();
+  await expect(page.locator('a[href="#/diagnostics"]')).toHaveCount(0);
   await expect(page.locator('a[href="#/statistics"]')).toBeVisible();
+  await expect(page.locator('a[href="#/models"]')).toBeVisible();
 });
 
 test("persists manual dark mode, copies the version, and respects reduced motion", async ({ page, context }, testInfo) => {

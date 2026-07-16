@@ -7,7 +7,7 @@ import CopyField from "../components/CopyField.vue";
 import ConfirmModal from "../components/ConfirmModal.vue";
 import AnimatedNumber from "../components/AnimatedNumber.vue";
 import SkeletonBlock from "../components/SkeletonBlock.vue";
-import { api, type RequestLog, type StatsResponse } from "../api/control";
+import { api, type RequestLog, type Settings, type StatsResponse } from "../api/control";
 import { localDateString } from "../date";
 import { useAppStore } from "../store";
 
@@ -24,10 +24,17 @@ const urlDraft = ref("");
 const savingUrl = ref(false);
 const initialLoading = ref(true);
 const expandedLog = ref<number | null>(null);
+const settings = ref<Settings | null>(null);
+const lanSaving = ref(false);
+const lanConfirmOpen = ref(false);
 
 const hasAccount = computed(() => app.accountCount > 0);
 const endpoint = computed(() => app.status?.endpoint || "http://127.0.0.1:8080/v1");
 const apiKey = computed(() => app.status?.local_api_key || "");
+const listenAddress = computed(() => {
+  const port = settings.value?.listen_port ?? app.status?.port ?? 8080;
+  return `${settings.value?.allow_lan ? "0.0.0.0" : "127.0.0.1"}:${port}`;
+});
 
 const todayRequests = computed(() => {
   const today = localDateString();
@@ -106,12 +113,44 @@ async function confirmRegen() {
   }
 }
 
+async function saveLAN(enabled: boolean) {
+  if (!settings.value || lanSaving.value) return;
+  lanSaving.value = true;
+  try {
+    settings.value = await api.saveSettings({ allow_lan: enabled });
+    if (app.serverRunning) {
+      await api.stopServer();
+      await api.startServer();
+    }
+    await app.refreshStatus();
+    app.toast(t("settings.saved"), "success");
+  } catch (error) {
+    app.toast((error as Error).message, "error");
+  } finally {
+    lanSaving.value = false;
+  }
+}
+
+function requestLANChange(event: Event) {
+  const enabled = (event.target as HTMLInputElement).checked;
+  if (enabled) {
+    lanConfirmOpen.value = true;
+    return;
+  }
+  void saveLAN(false);
+}
+
+async function confirmLAN() {
+  lanConfirmOpen.value = false;
+  await saveLAN(true);
+}
+
 async function load() {
   try {
-    [logs.value, stats.value] = [
-      (await api.logs(8)).logs || [],
-      await api.stats(7),
-    ];
+    const [logResult, statsResult, settingsResult] = await Promise.all([api.logs(8), api.stats(7), api.getSettings()]);
+    logs.value = logResult.logs || [];
+    stats.value = statsResult;
+    settings.value = settingsResult;
   } catch {
     /* ignore transient */
   } finally {
@@ -186,6 +225,13 @@ onUnmounted(() => clearInterval(timer));
           <Icon :name="app.serverRunning ? 'stop' : 'play'" :size="16" />
           {{ app.serverRunning ? t("dashboard.stop") : t("dashboard.start") }}
         </button>
+      </div>
+      <div class="lan-control">
+        <div><strong>{{ t("settings.allowLan") }}</strong><span>{{ t("dashboard.listenAddress", { address: listenAddress }) }}</span></div>
+        <label class="switch">
+          <input type="checkbox" :checked="settings?.allow_lan || false" :disabled="!settings || lanSaving" @change="requestLANChange" />
+          <span class="slider"></span>
+        </label>
       </div>
     </div>
 
@@ -263,6 +309,15 @@ onUnmounted(() => clearInterval(timer));
       @cancel="regenOpen = false"
     />
 
+    <ConfirmModal
+      :open="lanConfirmOpen"
+      :title="t('settings.lanConfirm')"
+      :desc="t('settings.lanConfirmDesc')"
+      danger
+      @confirm="confirmLAN"
+      @cancel="lanConfirmOpen = false"
+    />
+
     <!-- Recent requests -->
     <div class="card" style="margin-top: 16px">
       <div class="row-between" style="margin-bottom: 4px">
@@ -297,6 +352,10 @@ onUnmounted(() => clearInterval(timer));
 
 <style scoped>
 .dashboard-log-entry { border-bottom: 1px solid var(--border-soft); }
+.lan-control { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 13px; border-top: 1px solid var(--border-soft); }
+.lan-control > div { display: grid; gap: 3px; }
+.lan-control strong { font-size: 13px; }
+.lan-control span { color: var(--text-faint); font-size: 12px; }
 .dashboard-log-entry:last-child { border-bottom: 0; }
 .dashboard-log-row { width: 100%; border: 0; border-bottom: 0; background: transparent; color: var(--text); text-align: left; }
 .dashboard-log-row.expandable { cursor: pointer; }

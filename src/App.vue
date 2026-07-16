@@ -29,7 +29,6 @@ const nav = [
   { name: "proxies", to: "/proxies", icon: "proxies" },
   { name: "statistics", to: "/statistics", icon: "statistics" },
   { name: "models", to: "/models", icon: "database" },
-  { name: "diagnostics", to: "/diagnostics", icon: "bolt" },
   { name: "settings", to: "/settings", icon: "settings" },
   { name: "cloud", to: "/cloud", icon: "cloud" },
   { name: "codex", to: "/codex", icon: "terminal" },

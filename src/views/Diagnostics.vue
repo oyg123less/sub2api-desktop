@@ -5,6 +5,8 @@ import Icon from "../components/Icon.vue";
 import { api, type DiagnosticCheck, type DiagnosticRun } from "../api/control";
 import { useAppStore } from "../store";
 
+const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false });
+
 const { t } = useI18n();
 const app = useAppStore();
 const run = ref<DiagnosticRun | null>(null);
@@ -84,11 +86,12 @@ onUnmounted(() => clearTimeout(pollTimer));
 
 <template>
   <div>
-    <div class="page-header row-between">
-      <div>
+    <div class="row-between" :class="props.embedded ? 'diagnostic-embedded-header' : 'page-header'">
+      <div v-if="!props.embedded">
         <h1 class="page-title">{{ t("diagnostics.title") }}</h1>
         <p class="page-desc">{{ t("diagnostics.desc") }}</p>
       </div>
+      <p v-else class="faint text-sm">{{ t("diagnostics.desc") }}</p>
       <div class="flex gap-8">
         <button v-if="run?.status === 'completed'" class="btn btn-ghost" @click="copySummary">
           <Icon name="copy" :size="15" /> {{ t("diagnostics.copy") }}

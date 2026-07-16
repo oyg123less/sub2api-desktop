@@ -5,6 +5,8 @@ import Icon from "../components/Icon.vue";
 import CopyField from "../components/CopyField.vue";
 import ConfirmModal from "../components/ConfirmModal.vue";
 import SkeletonBlock from "../components/SkeletonBlock.vue";
+import Collapsible from "../components/Collapsible.vue";
+import Diagnostics from "./Diagnostics.vue";
 import { api, type Settings } from "../api/control";
 import { isUpdateCheckEnabled, setUpdateCheckEnabled } from "../api/update";
 import { useAppStore } from "../store";
@@ -28,6 +30,7 @@ const lanConfirmOpen = ref(false);
 const initialAllowLAN = ref(false);
 const savedListenPort = ref(0);
 const updateChecksEnabled = ref(isUpdateCheckEnabled());
+const diagnosticsOpen = ref(false);
 
 const inTauri = isTauri();
 const dataDir = ref<DataDirInfo | null>(null);
@@ -121,6 +124,7 @@ async function save(forceLAN = false) {
 	}
   saving.value = true;
   const listenPortChanged = s.value.listen_port !== savedListenPort.value;
+  const lanChanged = s.value.allow_lan !== initialAllowLAN.value;
   try {
     s.value = await api.saveSettings(s.value);
 		setUpdateCheckEnabled(updateChecksEnabled.value);
@@ -128,6 +132,10 @@ async function save(forceLAN = false) {
     savedListenPort.value = s.value.listen_port;
     applyLanguage(s.value.language);
     app.toast(t("settings.saved"), "success");
+    if (lanChanged && app.serverRunning) {
+      await api.stopServer();
+      await api.startServer();
+    }
     await app.refreshStatus();
     if (listenPortChanged) await warnIfCodexStale();
   } catch (e) {
@@ -346,6 +354,13 @@ onMounted(() => {
         </div>
         <p v-if="movingDir" class="faint text-sm mt-16">{{ t("settings.dataDirMoving") }}</p>
       </div>
+
+      <Collapsible v-model:open="diagnosticsOpen" class="settings-diagnostics">
+        <template #trigger>
+          <span class="diagnostics-trigger"><Icon name="bolt" :size="16" /><span><strong>{{ t("diagnostics.title") }}</strong><small>{{ t("diagnostics.desc") }}</small></span></span>
+        </template>
+        <div id="diagnostics" class="settings-diagnostics-content"><Diagnostics embedded /></div>
+      </Collapsible>
     </template>
 
       <ConfirmModal
@@ -391,4 +406,10 @@ onMounted(() => {
   gap: 8px;
   flex-wrap: wrap;
 }
+.settings-diagnostics { margin-top: 16px; }
+.diagnostics-trigger { display: flex; align-items: center; gap: 9px; }
+.diagnostics-trigger > span { display: grid; gap: 2px; }
+.diagnostics-trigger small { color: var(--text-faint); font-size: 11px; }
+.settings-diagnostics-content { padding: 0 14px 14px; }
+:deep(.diagnostic-embedded-header) { min-height: 44px; gap: 12px; padding-bottom: 12px; }
 </style>
