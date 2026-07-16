@@ -110,6 +110,36 @@ func (s *Store) DeleteCloudSession() error {
 	return err
 }
 
+func (s *Store) SaveCloudPendingRegistration(payload []byte) error {
+	ciphertext, err := s.cipher.Encrypt(string(payload))
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`INSERT INTO cloud_pending_registration(id,payload_cipher,updated_at) VALUES(1,?,?)
+		ON CONFLICT(id) DO UPDATE SET payload_cipher=excluded.payload_cipher,updated_at=excluded.updated_at`, ciphertext, time.Now().Unix())
+	return err
+}
+
+func (s *Store) LoadCloudPendingRegistration() ([]byte, error) {
+	var ciphertext string
+	if err := s.db.QueryRow(`SELECT payload_cipher FROM cloud_pending_registration WHERE id=1`).Scan(&ciphertext); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	plaintext, err := s.cipher.Decrypt(ciphertext)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(plaintext), nil
+}
+
+func (s *Store) DeleteCloudPendingRegistration() error {
+	_, err := s.db.Exec(`DELETE FROM cloud_pending_registration WHERE id=1`)
+	return err
+}
+
 func (s *Store) UpdateCloudSessionProgress(refreshToken, cursor string, syncedAt time.Time) error {
 	refreshCipher, err := s.cipher.Encrypt(refreshToken)
 	if err != nil {

@@ -60,7 +60,7 @@ type CloudController interface {
 	Register(context.Context, cloudsync.RegisterInput) error
 	VerifyEmail(context.Context, string, string) error
 	ResendVerification(context.Context, string) error
-	CancelRegistration()
+	CancelRegistration() error
 	Login(context.Context, string, string) error
 	Logout(context.Context) error
 	Sync(context.Context) error

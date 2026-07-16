@@ -3,6 +3,7 @@ package cloudsync
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -170,13 +171,44 @@ func TestPendingRegistrationCanBeResentAndCancelled(t *testing.T) {
 	if resends != 1 {
 		t.Fatalf("resends = %d, want 1", resends)
 	}
-	manager.CancelRegistration()
+	if err := manager.CancelRegistration(); err != nil {
+		t.Fatal(err)
+	}
 	status = manager.Status()
 	if status.PendingVerification || status.Email != "" {
 		t.Fatalf("pending registration was not cleared: %+v", status)
 	}
 	if err := manager.ResendVerification(ctx, email); err == nil {
 		t.Fatal("resend succeeded after pending registration was cancelled")
+	}
+}
+
+func TestPendingRegistrationRestoresAfterManagerRestart(t *testing.T) {
+	cloud := newMockCloud()
+	server := httptest.NewServer(cloud)
+	defer server.Close()
+	st := openTestStore(t, "pending-restart")
+	settings := &testSettings{value: store.DefaultSettings()}
+	first := NewManager(st, settings, server.URL, "site-key", server.Client(), nil)
+	const email = "restart@example.test"
+	if err := first.Register(context.Background(), RegisterInput{Email: email, Password: "correct horse battery staple", TurnstileToken: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	first.Close()
+
+	restored := NewManager(st, settings, server.URL, "site-key", server.Client(), nil)
+	t.Cleanup(restored.Close)
+	if status := restored.Status(); !status.PendingVerification || status.Email != email {
+		t.Fatalf("pending registration was not restored: %+v", status)
+	}
+	if err := restored.VerifyEmail(context.Background(), email, "123456"); err != nil {
+		t.Fatal(err)
+	}
+	if status := restored.Status(); !status.Authenticated || status.PendingVerification {
+		t.Fatalf("unexpected verified status: %+v", status)
+	}
+	if _, err := st.LoadCloudPendingRegistration(); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("pending material remained after verification: %v", err)
 	}
 }
 

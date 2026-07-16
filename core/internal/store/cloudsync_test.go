@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -132,5 +133,30 @@ func TestCloudConflictIncludesLocalDisplayNameWithoutPersistingIt(t *testing.T) 
 	}
 	if strings.Contains(storedDetails, proxy.Name) {
 		t.Fatal("display name was persisted in conflict details")
+	}
+}
+
+func TestCloudPendingRegistrationUsesInstallationCipher(t *testing.T) {
+	st := openCloudTestStore(t)
+	payload := []byte(`{"email":"pending@example.test","auth_hash":"private-auth","vault_key":"private-vault"}`)
+	if err := st.SaveCloudPendingRegistration(payload); err != nil {
+		t.Fatal(err)
+	}
+	var stored string
+	if err := st.db.QueryRow(`SELECT payload_cipher FROM cloud_pending_registration WHERE id=1`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stored, "pending@example.test") || strings.Contains(stored, "private-auth") || strings.Contains(stored, "private-vault") {
+		t.Fatal("pending registration material was stored in plaintext")
+	}
+	loaded, err := st.LoadCloudPendingRegistration()
+	if err != nil || string(loaded) != string(payload) {
+		t.Fatalf("loaded=%q err=%v", loaded, err)
+	}
+	if err := st.DeleteCloudPendingRegistration(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.LoadCloudPendingRegistration(); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("load after delete error = %v", err)
 	}
 }

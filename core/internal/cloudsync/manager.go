@@ -3,6 +3,7 @@ package cloudsync
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -63,6 +64,12 @@ type pendingRegistration struct {
 	material *authMaterial
 }
 
+type pendingRegistrationPayload struct {
+	Email    string `json:"email"`
+	AuthHash string `json:"auth_hash"`
+	VaultKey string `json:"vault_key"`
+}
+
 type Manager struct {
 	store    *store.Store
 	settings SettingsAccess
@@ -95,6 +102,7 @@ func NewManager(st *store.Store, settings SettingsAccess, baseURL, siteKey strin
 	if manager.logger == nil {
 		manager.logger = slog.Default()
 	}
+	manager.restorePendingRegistration()
 	if err != nil {
 		manager.lastError = err.Error()
 		manager.client, _ = newCloudClient("", httpClient)
@@ -117,7 +125,51 @@ func NewManager(st *store.Store, settings SettingsAccess, baseURL, siteKey strin
 	}
 	manager.session = session
 	manager.vaultKey = vaultKey
+	if manager.pending != nil {
+		manager.pending.material.clear()
+		manager.pending = nil
+		_ = manager.store.DeleteCloudPendingRegistration()
+	}
 	return manager
+}
+
+func (m *Manager) restorePendingRegistration() {
+	payload, err := m.store.LoadCloudPendingRegistration()
+	if errors.Is(err, store.ErrNotFound) {
+		return
+	}
+	if err != nil {
+		m.lastError = "saved cloud registration could not be loaded"
+		m.logger.Warn("load pending cloud registration failed", "error_type", fmt.Sprintf("%T", err))
+		return
+	}
+	var saved pendingRegistrationPayload
+	if err := json.Unmarshal(payload, &saved); err != nil {
+		_ = m.store.DeleteCloudPendingRegistration()
+		m.lastError = "saved cloud registration was invalid and has been cleared"
+		return
+	}
+	authHash, authErr := decodeBytes(saved.AuthHash, keySize)
+	vaultKey, vaultErr := decodeBytes(saved.VaultKey, keySize)
+	email := strings.ToLower(strings.TrimSpace(saved.Email))
+	if authErr != nil || vaultErr != nil || email == "" {
+		wipe(authHash)
+		wipe(vaultKey)
+		_ = m.store.DeleteCloudPendingRegistration()
+		m.lastError = "saved cloud registration was invalid and has been cleared"
+		return
+	}
+	m.pending = &pendingRegistration{email: email, material: &authMaterial{AuthHash: authHash, VaultKey: vaultKey}}
+}
+
+func (m *Manager) persistPendingRegistration(pending *pendingRegistration) error {
+	payload, err := json.Marshal(pendingRegistrationPayload{
+		Email: pending.email, AuthHash: encodeBytes(pending.material.AuthHash), VaultKey: encodeBytes(pending.material.VaultKey),
+	})
+	if err != nil {
+		return err
+	}
+	return m.store.SaveCloudPendingRegistration(payload)
 }
 
 func (m *Manager) Configured() bool {
@@ -174,11 +226,17 @@ func (m *Manager) Register(ctx context.Context, input RegisterInput) error {
 		m.setError(err)
 		return err
 	}
+	pending := &pendingRegistration{email: email, material: material}
+	if err := m.persistPendingRegistration(pending); err != nil {
+		material.clear()
+		m.setError(err)
+		return err
+	}
 	m.mu.Lock()
 	if m.pending != nil {
 		m.pending.material.clear()
 	}
-	m.pending = &pendingRegistration{email: email, material: material}
+	m.pending = pending
 	m.lastError = ""
 	m.mu.Unlock()
 	return nil
@@ -208,12 +266,13 @@ func (m *Manager) VerifyEmail(ctx context.Context, email, code string) error {
 		wipe(vaultKey)
 		return err
 	}
+	cleanupErr := m.store.DeleteCloudPendingRegistration()
 	m.mu.Lock()
 	pending.material.clear()
 	m.pending = nil
 	m.lastError = ""
 	m.mu.Unlock()
-	return nil
+	return cleanupErr
 }
 
 func (m *Manager) ResendVerification(ctx context.Context, email string) error {
@@ -234,9 +293,10 @@ func (m *Manager) ResendVerification(ctx context.Context, email string) error {
 	return nil
 }
 
-func (m *Manager) CancelRegistration() {
+func (m *Manager) CancelRegistration() error {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
+	deleteErr := m.store.DeleteCloudPendingRegistration()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.pending != nil {
@@ -244,6 +304,7 @@ func (m *Manager) CancelRegistration() {
 	}
 	m.pending = nil
 	m.lastError = ""
+	return deleteErr
 }
 
 func (m *Manager) Login(ctx context.Context, email, password string) error {
@@ -284,6 +345,15 @@ func (m *Manager) Login(ctx context.Context, email, password string) error {
 	if err := m.installSession(login, vaultKey); err != nil {
 		return err
 	}
+	if err := m.store.DeleteCloudPendingRegistration(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	if m.pending != nil {
+		m.pending.material.clear()
+		m.pending = nil
+	}
+	m.mu.Unlock()
 	m.clearError()
 	return nil
 }

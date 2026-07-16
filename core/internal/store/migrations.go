@@ -16,7 +16,7 @@ import (
 	appcrypto "sub2api-desktop/core/internal/crypto"
 )
 
-const CurrentSchemaVersion = 8
+const CurrentSchemaVersion = 9
 
 type migration struct {
 	version int
@@ -33,6 +33,7 @@ var migrations = []migration{
 	{version: 6, name: "v0.2.4 Codex direct remote targets", apply: migrateV024CodexDirectTargets},
 	{version: 7, name: "v0.3.0 cloud sync metadata", apply: migrateV030CloudSync},
 	{version: 8, name: "v0.3.1 usage details", apply: migrateV031UsageDetails},
+	{version: 9, name: "v0.3.1 pending cloud registration", apply: migrateV031PendingCloudRegistration},
 }
 
 func databaseExists(path string) bool {
@@ -177,6 +178,15 @@ func migrateV031UsageDetails(tx *sql.Tx, _ *appcrypto.Cipher) error {
 		}
 	}
 	return nil
+}
+
+func migrateV031PendingCloudRegistration(tx *sql.Tx, _ *appcrypto.Cipher) error {
+	_, err := tx.Exec(`CREATE TABLE IF NOT EXISTS cloud_pending_registration (
+		id INTEGER PRIMARY KEY CHECK(id=1),
+		payload_cipher TEXT NOT NULL,
+		updated_at INTEGER NOT NULL
+	)`)
+	return err
 }
 
 func migrateV020(tx *sql.Tx, cipher *appcrypto.Cipher) error {

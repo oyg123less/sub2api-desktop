@@ -96,7 +96,10 @@ func (c *Control) cloudCancelRegistration(w http.ResponseWriter, _ *http.Request
 		writeControlError(w, http.StatusServiceUnavailable, "cloud_unavailable", "Amber Cloud is unavailable", true, nil)
 		return
 	}
-	c.cloud.CancelRegistration()
+	if err := c.cloud.CancelRegistration(); err != nil {
+		writeCloudControlError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, c.cloud.Status())
 }
 
