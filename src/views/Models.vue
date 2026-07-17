@@ -123,22 +123,25 @@ onMounted(async () => {
 .pricing-notice strong { font-size: 13px; }
 .pricing-notice p { margin: 3px 0 0; color: var(--text-dim); font-size: 12.5px; line-height: 1.55; }
 .pricing-section { min-width: 0; }
-.model-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
-.model-card { display: flex; flex-direction: column; gap: 12px; padding: 15px 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-elevated, transparent); }
-.model-card-head { display: flex; align-items: center; gap: 9px; }
-.model-icon { display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid var(--border-soft); border-radius: 8px; color: var(--primary); flex-shrink: 0; }
-.model-name { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
-.copy-btn { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-faint); cursor: pointer; }
-.copy-btn:hover { background: var(--border-soft); color: var(--text); }
-.price-lines { display: grid; gap: 6px; margin: 0; }
-.price-line { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.model-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.model-card { position: relative; display: flex; flex-direction: column; gap: 13px; padding: 17px 18px 15px; border: 1px solid var(--border-soft); border-radius: var(--radius); background: var(--bg-card); box-shadow: var(--shadow-xs); overflow: hidden; transition: transform var(--motion-normal) var(--motion-ease), box-shadow var(--motion-normal) var(--motion-ease), border-color var(--motion-fast) var(--motion-ease); }
+.model-card::before { content: ""; position: absolute; inset: 0 0 auto; height: 2px; background: linear-gradient(90deg, var(--primary), transparent 70%); opacity: 0.55; }
+.model-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-hover); border-color: var(--border); }
+.model-card-head { display: flex; align-items: center; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid var(--border-soft); }
+.model-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 9px; background: var(--primary-soft); color: var(--primary); flex-shrink: 0; }
+.model-name { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 14.5px; letter-spacing: -0.01em; }
+.copy-btn { display: grid; place-items: center; width: 27px; height: 27px; padding: 0; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--text-faint); cursor: pointer; transition: background var(--motion-fast) var(--motion-ease), color var(--motion-fast) var(--motion-ease); }
+.copy-btn:hover { background: var(--bg-elev); border-color: var(--border-soft); color: var(--text); }
+.price-lines { display: grid; margin: 0; }
+.price-line { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 5px 0; }
+.price-line + .price-line { border-top: 1px dashed var(--border-soft); }
 .price-line dt { color: var(--text-faint); font-size: 12px; }
-.price-line dd { margin: 0; font-size: 12.5px; white-space: nowrap; }
-.long-price { color: var(--text-dim); font-size: 11.5px; }
-.model-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; }
-.badge-tag { padding: 3px 8px; border: 1px solid var(--border-soft); border-radius: 999px; color: var(--text-dim); font-size: 10.5px; font-weight: 600; }
+.price-line dd { margin: 0; font-size: 13px; font-weight: 600; white-space: nowrap; }
+.long-price { color: var(--text-dim); font-size: 11.5px; font-weight: 500; }
+.model-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; padding-top: 11px; border-top: 1px solid var(--border-soft); }
+.badge-tag { padding: 3.5px 9px; border: 1px solid var(--border-soft); border-radius: 999px; background: var(--bg-elev); color: var(--text-dim); font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; }
 .badge-match { border-color: transparent; background: var(--success-soft); color: var(--success); }
-.badge-long { border-color: transparent; background: var(--border-soft); color: var(--text-dim); }
+.badge-long { border-color: transparent; background: var(--primary-soft); color: var(--primary); }
 .pricing-notes { display: grid; gap: 5px; padding: 14px 2px; color: var(--text-faint); font-size: 12px; line-height: 1.55; }
 .pricing-notes p { margin: 0; }
 .source-link { max-width: 100%; width: fit-content; display: inline-flex; align-items: center; gap: 5px; padding: 0; border: 0; background: transparent; color: var(--primary); font: inherit; cursor: pointer; overflow-wrap: anywhere; text-align: left; }
