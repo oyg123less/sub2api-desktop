@@ -325,6 +325,10 @@ function closeShare() {
 }
 
 async function createCloudShare() {
+  if (shareTarget.value?.account_type === "oauth") {
+    app.toast(t("accounts.oauthShareRequiresDevice"), "warn");
+    return;
+  }
   if (!shareTarget.value || !shareConsent.value || shareQuota.value < 0 || shareQuota.value > 1_000_000) {
     app.toast(t("accounts.shareIncomplete"), "error");
     return;
@@ -700,7 +704,11 @@ onUnmounted(() => clearInterval(pollTimer));
           <h3 class="modal-title">{{ t("accounts.shareTitle") }}</h3>
           <p class="modal-desc">{{ shareTarget.email }}</p>
 
-          <div class="share-custody-warning" role="note">
+          <div v-if="shareTarget.account_type === 'oauth'" class="share-custody-warning" role="note">
+            <Icon name="warn" :size="18" />
+            <div><strong>{{ t("accounts.oauthShareUnavailableTitle") }}</strong><p>{{ t("accounts.oauthShareRequiresDevice") }}</p></div>
+          </div>
+          <div v-else class="share-custody-warning" role="note">
             <Icon name="warn" :size="18" />
             <div><strong>{{ t("accounts.shareCustodyTitle") }}</strong><p>{{ t("accounts.shareCustodyDesc") }}</p></div>
           </div>
@@ -718,7 +726,7 @@ onUnmounted(() => clearInterval(pollTimer));
             <p class="share-access-note">{{ t("accounts.shareAccessHint") }}</p>
           </div>
 
-          <div class="share-create-form">
+          <div v-if="shareTarget.account_type !== 'oauth'" class="share-create-form">
             <label class="field"><span class="field-label">{{ t("accounts.shareQuota") }}</span><input v-model.number="shareQuota" class="input" type="number" min="0" max="1000000" /><small>{{ t("accounts.shareQuotaHint") }}</small></label>
             <label class="field"><span class="field-label">{{ t("accounts.shareExpires") }}</span><input v-model="shareExpires" class="input" type="date" /></label>
             <label class="share-consent"><input v-model="shareConsent" type="checkbox" /><span>{{ t("accounts.shareConsent") }}</span></label>

@@ -22,7 +22,7 @@ function bearerToken(value: string): string {
   return value.startsWith("Bearer ") ? value.slice(7).trim() : "";
 }
 
-async function claimGrant(c: Context<AppEnv>): Promise<GatewayGrant> {
+async function loadGrant(c: Context<AppEnv>): Promise<GatewayGrant> {
   const guestKey = bearerToken(c.req.header("authorization") || "");
   if (!guestKey.startsWith("sk-share-") || guestKey.length > 512) {
     throw new AppError(401, "invalid_share_key", "The share key is invalid or has been revoked.");
@@ -37,6 +37,10 @@ async function claimGrant(c: Context<AppEnv>): Promise<GatewayGrant> {
   if (grant.quota_requests > 0 && grant.used_requests >= grant.quota_requests) {
     throw new AppError(429, "share_quota_exhausted", "The share request quota has been exhausted.");
   }
+  return grant;
+}
+
+async function claimGrantUsage(c: Context<AppEnv>, grant: GatewayGrant): Promise<void> {
   const claimed = await c.env.DB.prepare(`UPDATE share_grants SET used_requests=used_requests+1,updated_at=?
     WHERE id=? AND revoked=0 AND (expires_at IS NULL OR expires_at>?)
       AND (quota_requests=0 OR used_requests<quota_requests)`).bind(
@@ -49,7 +53,6 @@ async function claimGrant(c: Context<AppEnv>): Promise<GatewayGrant> {
     if (current.expires_at && Date.parse(current.expires_at) <= Date.now()) throw new AppError(403, "share_expired", "The share has expired.");
     throw new AppError(429, "share_quota_exhausted", "The share request quota has been exhausted.");
   }
-  return grant;
 }
 
 function safeResponseHeaders(upstream: Response): Headers {
@@ -96,8 +99,12 @@ async function forward(c: Context<AppEnv>) {
   }
   const body = await c.req.arrayBuffer();
   if (body.byteLength > maxGatewayBody) throw new AppError(413, "request_too_large", "The gateway request is too large.");
-  const grant = await claimGrant(c);
+  const grant = await loadGrant(c);
   const credential = await decryptShareCredential(c.env, grant.owner_id, grant.account_uid, grant.token_cipher);
+  if (credential.account_type === "oauth") {
+    throw new AppError(409, "oauth_device_relay_required", "OAuth sharing requires the owner device to be online and is not available in v0.3.1.");
+  }
+  await claimGrantUsage(c, grant);
   const started = Date.now();
   let status = 502;
   try {
@@ -110,9 +117,6 @@ async function forward(c: Context<AppEnv>) {
       "OpenAI-Beta": "responses=experimental",
       session_id: crypto.randomUUID(),
     });
-    if (credential.account_type === "oauth" && credential.chatgpt_account_id) {
-      headers.set("chatgpt-account-id", credential.chatgpt_account_id);
-    }
     const upstream = await fetch(upstreamURL(credential.upstream_url, c.req.path, credential.account_type), {
       method: "POST",
       headers,
@@ -121,6 +125,10 @@ async function forward(c: Context<AppEnv>) {
     status = upstream.status;
     c.executionCtx.waitUntil(c.env.DB.prepare(`INSERT INTO share_usage_log(grant_id,ts,model,status,latency_ms)
       VALUES(?,?,?,?,?)`).bind(grant.id, new Date().toISOString(), requestModel(body), status, Date.now() - started).run());
+    if (upstream.status >= 400 && (upstream.headers.get("content-type") || "").toLowerCase().includes("text/html")) {
+      await upstream.body?.cancel();
+      return errorResponse(c, upstream.status, "share_upstream_rejected", "The shared upstream rejected the request.");
+    }
     return new Response(upstream.body, { status, headers: safeResponseHeaders(upstream) });
   } catch (error) {
     c.executionCtx.waitUntil(c.env.DB.prepare(`INSERT INTO share_usage_log(grant_id,ts,model,status,latency_ms)

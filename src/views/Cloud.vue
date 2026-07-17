@@ -45,6 +45,14 @@ const deleteConfirmText = ref("");
 const pendingVerification = computed(() => Boolean(status.value?.pending_verification));
 const authenticated = computed(() => Boolean(status.value?.authenticated));
 const resendSeconds = computed(() => Math.max(0, Math.ceil((resendUntil.value - clockNow.value) / 1000)));
+const retrySeconds = computed(() => {
+  if (!status.value?.next_retry_at) return 0;
+  return Math.max(0, Math.ceil((new Date(status.value.next_retry_at).getTime() - clockNow.value) / 1000));
+});
+const syncErrorMessage = computed(() => {
+  const stage = status.value?.last_error_stage;
+  return stage ? t(`cloud.syncErrorStage.${stage}`) : status.value?.last_error || "";
+});
 const filteredAdminUsers = computed(() => {
   const users = adminOverview.value?.users ?? [];
   const query = adminSearch.value.trim().toLowerCase();
@@ -55,8 +63,22 @@ function normalizeStatus(value: CloudStatus): CloudStatus {
   return {
     ...value,
     pending_items: Number.isFinite(value.pending_items) ? value.pending_items : 0,
+    consecutive_failures: Number.isFinite(value.consecutive_failures) ? value.consecutive_failures : 0,
     conflicts: Array.isArray(value.conflicts) ? value.conflicts : [],
   };
+}
+
+let statusRefreshing = false;
+async function refreshStatus(silent = true) {
+  if (statusRefreshing) return;
+  statusRefreshing = true;
+  try {
+    status.value = normalizeStatus(await api.cloudStatus());
+  } catch (error) {
+    if (!silent) app.toast((error as Error).message, "error");
+  } finally {
+    statusRefreshing = false;
+  }
 }
 
 async function load() {
@@ -176,6 +198,7 @@ async function syncNow(silent = false) {
     if (!silent) app.toast(t("cloud.syncComplete"), "success");
   } catch (error) {
     app.toast((error as Error).message, "error");
+    await refreshStatus();
   } finally {
     busy.value = "";
   }
@@ -360,11 +383,18 @@ function formatTime(value?: string): string {
 }
 
 let clockTimer = 0;
+let statusTimer = 0;
 onMounted(() => {
   void load();
   clockTimer = window.setInterval(() => { clockNow.value = Date.now(); }, 1000);
+  statusTimer = window.setInterval(() => {
+    if (authenticated.value && !loading.value) void refreshStatus();
+  }, 5000);
 });
-onUnmounted(() => window.clearInterval(clockTimer));
+onUnmounted(() => {
+  window.clearInterval(clockTimer);
+  window.clearInterval(statusTimer);
+});
 </script>
 
 <template>
@@ -548,7 +578,19 @@ onUnmounted(() => window.clearInterval(clockTimer));
       </section>
 
       <section v-if="status.last_error" class="cloud-panel cloud-notice danger" role="alert">
-        <Icon name="warn" :size="20" /><div><strong>{{ t("cloud.syncFailed") }}</strong><p>{{ status.last_error }}</p></div>
+        <Icon name="warn" :size="20" />
+        <div class="sync-error-content">
+          <strong>{{ t("cloud.syncFailed") }}</strong>
+          <p>{{ syncErrorMessage }}</p>
+          <div class="sync-error-meta">
+            <span v-if="status.last_attempt_at">{{ t("cloud.syncAttempt", { time: formatTime(status.last_attempt_at) }) }}</span>
+            <span v-if="status.consecutive_failures">{{ t("cloud.syncFailures", { count: status.consecutive_failures }) }}</span>
+            <span v-if="retrySeconds > 0">{{ t("cloud.syncRetryIn", { seconds: retrySeconds }) }}</span>
+          </div>
+          <button class="btn btn-ghost btn-sm sync-retry" data-test="cloud-sync-retry" type="button" :disabled="busy !== ''" @click="syncNow()">
+            <Icon name="refresh" :size="14" />{{ t("cloud.syncRetry") }}
+          </button>
+        </div>
       </section>
 
       <section class="cloud-section">
@@ -600,9 +642,12 @@ onUnmounted(() => window.clearInterval(clockTimer));
 .cloud-panel { min-width: 0; padding: 20px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--bg-card); }
 .cloud-skeleton { display: grid; gap: 12px; }
 .cloud-skeleton span { display: block; height: 86px; border-radius: 8px; background: linear-gradient(90deg, var(--bg-elev), var(--bg-card), var(--bg-elev)); background-size: 200% 100%; animation: cloud-shimmer 1.4s ease-in-out infinite; }
-.cloud-notice { min-height: 160px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 16px; }
+.cloud-notice { min-height: 160px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 16px; }
 .cloud-notice.danger { color: var(--danger); }
 .cloud-notice p, .section-heading p, .section-toolbar p { margin: 4px 0 0; color: var(--text-dim); }
+.sync-error-content { min-width: 0; }
+.sync-error-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; color: var(--text-faint); font-size: 11px; }
+.sync-retry { margin-top: 12px; color: var(--danger); }
 .cloud-auth-tabs { width: fit-content; display: grid; grid-template-columns: repeat(2, minmax(132px, 1fr)); gap: 3px; padding: 3px; margin-bottom: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elev); }
 .cloud-auth-tabs button { min-height: 38px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 7px 16px; border: 0; border-radius: 6px; background: transparent; color: var(--text-dim); font-weight: 600; cursor: pointer; }
 .cloud-auth-tabs button.active { background: var(--bg-card); color: var(--text); box-shadow: 0 1px 4px rgba(50, 43, 34, .1); }

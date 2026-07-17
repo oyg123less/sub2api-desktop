@@ -3,12 +3,17 @@ package cloudsync
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -19,7 +24,9 @@ type CloudError struct {
 	Status    int
 	Code      string
 	Message   string
+	Stage     string
 	Retryable bool
+	Attempt   int
 }
 
 func (e *CloudError) Error() string {
@@ -30,8 +37,9 @@ func (e *CloudError) Error() string {
 }
 
 type cloudClient struct {
-	baseURL string
-	http    *http.Client
+	baseURL     string
+	http        *http.Client
+	retryDelays []time.Duration
 }
 
 func newCloudClient(baseURL string, httpClient *http.Client) (*cloudClient, error) {
@@ -47,9 +55,13 @@ func newCloudClient(baseURL string, httpClient *http.Client) (*cloudClient, erro
 		return nil, errors.New("Amber Cloud URL must use HTTPS")
 	}
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
+		httpClient = newDefaultCloudHTTPClient()
 	}
-	return &cloudClient{baseURL: baseURL, http: httpClient}, nil
+	return &cloudClient{
+		baseURL:     baseURL,
+		http:        httpClient,
+		retryDelays: []time.Duration{500 * time.Millisecond, 1500 * time.Millisecond},
+	}, nil
 }
 
 func (c *cloudClient) configured() bool { return c != nil && c.baseURL != "" }
@@ -323,65 +335,180 @@ func (c *cloudClient) doAdminJSON(ctx context.Context, method, path, accessToken
 
 func (c *cloudClient) doJSONWithHeaders(ctx context.Context, method, path, accessToken string, body, output any, extraHeaders map[string]string) error {
 	if !c.configured() {
-		return &CloudError{Status: http.StatusServiceUnavailable, Code: "cloud_not_configured", Message: "Amber Cloud is not configured"}
+		return &CloudError{Status: http.StatusServiceUnavailable, Code: "cloud_not_configured", Message: "Amber Cloud is not configured", Stage: "local"}
 	}
-	var reader io.Reader
+	var encoded []byte
 	if body != nil {
-		encoded, err := json.Marshal(body)
+		var err error
+		encoded, err = json.Marshal(body)
 		if err != nil {
 			return err
 		}
-		reader = bytes.NewReader(encoded)
 	}
-	request, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reader)
-	if err != nil {
-		return err
+	attempts := 1
+	if method == http.MethodGet || method == http.MethodHead {
+		attempts += len(c.retryDelays)
 	}
-	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", "Amber/0.3.1")
-	if body != nil {
-		request.Header.Set("Content-Type", "application/json")
-	}
-	if accessToken != "" {
-		request.Header.Set("Authorization", "Bearer "+accessToken)
-	}
-	for key, value := range extraHeaders {
-		request.Header.Set(key, value)
-	}
-	response, err := c.http.Do(request)
-	if err != nil {
-		return &CloudError{Code: "cloud_unreachable", Message: "Amber Cloud is unreachable", Retryable: true}
-	}
-	defer response.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(response.Body, maxCloudResponseBytes+1))
-	if err != nil {
-		return &CloudError{Status: response.StatusCode, Code: "cloud_response_failed", Message: "Amber Cloud returned an unreadable response", Retryable: true}
-	}
-	if len(data) > maxCloudResponseBytes {
-		return &CloudError{Status: response.StatusCode, Code: "cloud_response_too_large", Message: "Amber Cloud returned an oversized response"}
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		var payload cloudErrorResponse
-		_ = json.Unmarshal(data, &payload)
-		if output != nil && response.StatusCode == http.StatusConflict {
-			_ = json.Unmarshal(data, output)
+	for attempt := 1; attempt <= attempts; attempt++ {
+		var reader io.Reader
+		if body != nil {
+			reader = bytes.NewReader(encoded)
 		}
-		code := payload.Error.Code
-		if code == "" {
-			code = fmt.Sprintf("cloud_http_%d", response.StatusCode)
+		request, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reader)
+		if err != nil {
+			return err
 		}
-		message := payload.Error.Message
-		if message == "" {
-			message = "Amber Cloud request failed"
+		request.Header.Set("Accept", "application/json")
+		request.Header.Set("User-Agent", "Amber/0.3.1")
+		if body != nil {
+			request.Header.Set("Content-Type", "application/json")
 		}
-		return &CloudError{Status: response.StatusCode, Code: code, Message: message, Retryable: response.StatusCode >= 500 || response.StatusCode == 429}
+		if accessToken != "" {
+			request.Header.Set("Authorization", "Bearer "+accessToken)
+		}
+		for key, value := range extraHeaders {
+			request.Header.Set(key, value)
+		}
+		response, err := c.http.Do(request)
+		if err != nil {
+			cloudErr := cloudTransportError(err, attempt)
+			if attempt < attempts && sleepContext(ctx, c.retryDelay(attempt, 0)) == nil {
+				continue
+			}
+			return cloudErr
+		}
+		data, readErr := io.ReadAll(io.LimitReader(response.Body, maxCloudResponseBytes+1))
+		_ = response.Body.Close()
+		if readErr != nil {
+			cloudErr := &CloudError{Status: response.StatusCode, Code: "cloud_response_failed", Message: "Amber Cloud returned an unreadable response", Stage: "response", Retryable: true, Attempt: attempt}
+			if attempt < attempts && sleepContext(ctx, c.retryDelay(attempt, 0)) == nil {
+				continue
+			}
+			return cloudErr
+		}
+		if len(data) > maxCloudResponseBytes {
+			return &CloudError{Status: response.StatusCode, Code: "cloud_response_too_large", Message: "Amber Cloud returned an oversized response", Stage: "response", Attempt: attempt}
+		}
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			var payload cloudErrorResponse
+			_ = json.Unmarshal(data, &payload)
+			if output != nil && response.StatusCode == http.StatusConflict {
+				_ = json.Unmarshal(data, output)
+			}
+			code := payload.Error.Code
+			if code == "" {
+				code = fmt.Sprintf("cloud_http_%d", response.StatusCode)
+			}
+			message := payload.Error.Message
+			if message == "" {
+				message = "Amber Cloud request failed"
+			}
+			cloudErr := &CloudError{Status: response.StatusCode, Code: code, Message: message, Stage: "http", Retryable: response.StatusCode >= 500 || response.StatusCode == 429, Attempt: attempt}
+			if cloudErr.Retryable && attempt < attempts && sleepContext(ctx, c.retryDelay(attempt, retryAfter(response.Header.Get("Retry-After")))) == nil {
+				continue
+			}
+			return cloudErr
+		}
+		if output != nil && len(data) != 0 {
+			if err := json.Unmarshal(data, output); err != nil {
+				return &CloudError{Status: response.StatusCode, Code: "cloud_invalid_response", Message: "Amber Cloud returned an invalid response", Stage: "response", Attempt: attempt}
+			}
+		}
+		return nil
 	}
-	if output != nil && len(data) != 0 {
-		if err := json.Unmarshal(data, output); err != nil {
-			return &CloudError{Status: response.StatusCode, Code: "cloud_invalid_response", Message: "Amber Cloud returned an invalid response"}
-		}
+	return &CloudError{Code: "cloud_unreachable", Message: "Amber Cloud is unreachable", Stage: "network", Retryable: true, Attempt: attempts}
+}
+
+func (c *cloudClient) retryDelay(attempt int, serverDelay time.Duration) time.Duration {
+	if serverDelay > 0 {
+		return min(serverDelay, 30*time.Second)
 	}
-	return nil
+	index := attempt - 1
+	if index < 0 || index >= len(c.retryDelays) {
+		return 0
+	}
+	base := c.retryDelays[index]
+	if base <= 0 {
+		return 0
+	}
+	jitter := rand.Int64N(max(1, int64(base/5)))
+	return base + time.Duration(jitter)
+}
+
+func sleepContext(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func retryAfter(value string) time.Duration {
+	value = strings.TrimSpace(value)
+	if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if date, err := http.ParseTime(value); err == nil {
+		return max(0, time.Until(date))
+	}
+	return 0
+}
+
+func cloudTransportError(err error, attempt int) *CloudError {
+	stage := cloudTransportStage(err)
+	code, message := "cloud_unreachable", "Amber Cloud is unreachable"
+	switch stage {
+	case "dns":
+		code, message = "cloud_dns_failed", "Amber Cloud DNS lookup failed"
+	case "connect":
+		code, message = "cloud_connect_failed", "Amber Cloud connection failed"
+	case "tls":
+		code, message = "cloud_tls_failed", "Amber Cloud secure connection failed"
+	case "timeout":
+		code, message = "cloud_timeout", "Amber Cloud connection timed out"
+	}
+	return &CloudError{Code: code, Message: message, Stage: stage, Retryable: true, Attempt: attempt}
+}
+
+func cloudTransportStage(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return "dns"
+	}
+	var certificateErr x509.UnknownAuthorityError
+	if errors.As(err, &certificateErr) {
+		return "tls"
+	}
+	var hostnameErr x509.HostnameError
+	if errors.As(err, &hostnameErr) {
+		return "tls"
+	}
+	var recordErr tls.RecordHeaderError
+	if errors.As(err, &recordErr) {
+		return "tls"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "timeout"
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "tls") || strings.Contains(message, "certificate") || strings.Contains(message, "handshake") {
+		return "tls"
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && (opErr.Op == "dial" || opErr.Op == "connect") {
+		return "connect"
+	}
+	return "network"
 }
 
 func (c *cloudClient) adminOverview(ctx context.Context, accessToken, adminKey string) (AdminOverview, error) {

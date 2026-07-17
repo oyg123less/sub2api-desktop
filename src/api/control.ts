@@ -200,9 +200,14 @@ export interface CloudStatus {
   role?: "user" | "admin";
   turnstile_site_key?: string;
   last_sync_at?: string;
+  last_attempt_at?: string;
   pending_items: number;
   syncing: boolean;
   last_error?: string;
+  last_error_code?: string;
+  last_error_stage?: "dns" | "connect" | "tls" | "timeout" | "response" | "http" | "network" | "local";
+  consecutive_failures: number;
+  next_retry_at?: string;
   conflicts: CloudConflict[];
 }
 

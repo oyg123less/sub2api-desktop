@@ -26,7 +26,7 @@ test("creates a one-time cloud share and manages revocation without exposing the
     const path = new URL(request.url()).pathname;
     let body: unknown = {};
     if (path === "/control/status") body = { version: "0.3.1", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "http://127.0.0.1:8080/v1", lan_addresses: [], local_api_key: "", account_count: 1, schema_version: 9 };
-    if (path === "/control/accounts") body = { accounts: [{ id: 1, account_type: "oauth", base_url: "", email: "owner@example.test", chatgpt_account_id: "acct-owner", plan_type: "plus", expires_at: "2026-08-01T00:00:00Z", status: "active", consecutive_failures: 0, created_at: "2026-07-01T00:00:00Z", client_uid: accountUID }], usage: {} };
+    if (path === "/control/accounts") body = { accounts: [{ id: 1, account_type: "api_key", base_url: "https://api.openai.com/v1", email: "API key account", chatgpt_account_id: "", plan_type: "api", expires_at: "", status: "active", consecutive_failures: 0, created_at: "2026-07-01T00:00:00Z", client_uid: accountUID }], usage: {} };
     if (path === "/control/proxies") body = { proxies: [] };
     if (path === "/control/settings") body = { account_strategy: "quota_aware", default_model: "gpt-5.6" };
     if (path === "/control/models") body = { models: ["gpt-5.6"], default_test_model: "gpt-5.6" };
@@ -81,4 +81,35 @@ test("creates a one-time cloud share and manages revocation without exposing the
   await page.getByRole("button", { name: "Revoke" }).click();
   expect(revoked).toBe(true);
   await expect(page.getByText("Revoked", { exact: true })).toBeVisible();
+});
+
+test("blocks OAuth cloud sharing until owner-device relay is available", async ({ page }) => {
+  const accountUID = "018f1f46-7a19-7cc2-88cb-f577e51d3999";
+  let createCalls = 0;
+  await page.addInitScript(() => {
+    localStorage.setItem("s2a_control_port", "45678");
+    localStorage.setItem("s2a_control_token", "fixture-control-token");
+    localStorage.setItem("s2a_lang", "en");
+  });
+  await page.route("http://127.0.0.1:45678/control/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    let body: unknown = {};
+    if (path === "/control/status") body = { version: "0.3.1", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "http://127.0.0.1:8080/v1", lan_addresses: [], local_api_key: "", account_count: 1, schema_version: 9 };
+    if (path === "/control/accounts") body = { accounts: [{ id: 1, account_type: "oauth", base_url: "", email: "owner@example.test", chatgpt_account_id: "acct-owner", plan_type: "plus", expires_at: "2026-08-01T00:00:00Z", status: "active", consecutive_failures: 0, created_at: "2026-07-01T00:00:00Z", client_uid: accountUID }], usage: {} };
+    if (path === "/control/proxies") body = { proxies: [] };
+    if (path === "/control/settings") body = { account_strategy: "quota_aware", default_model: "gpt-5.6" };
+    if (path === "/control/models") body = { models: ["gpt-5.6"], default_test_model: "gpt-5.6" };
+    if (path === "/control/cloud/status") body = { configured: true, authenticated: true, pending_verification: false, email: "owner@example.test", role: "user", pending_items: 0, syncing: false, conflicts: [] };
+    if (path === "/control/cloud/shares" && request.method() === "GET") body = { shares: [] };
+    if (path === "/control/cloud/shares" && request.method() === "POST") createCalls += 1;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+
+  await page.goto("/#/accounts");
+  await page.locator('[data-test="account-share"]').click();
+  await expect(page.getByText("OAuth accounts require owner-device relay; direct cloud sharing is unavailable in v0.3.1.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Share account through Amber Cloud" })).toBeVisible();
+  await expect(page.locator('[data-test="share-create"]')).toHaveCount(0);
+  expect(createCalls).toBe(0);
 });

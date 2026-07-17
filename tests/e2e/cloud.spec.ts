@@ -132,6 +132,48 @@ test("logs in, synchronizes, and logs out without exposing session credentials",
   expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
 });
 
+test("shows staged sync failures and clears them after a retry", async ({ page }) => {
+  await initialize(page);
+  let failed = true;
+  let syncCalls = 0;
+  const cloudStatus = () => ({
+    configured: true,
+    authenticated: true,
+    pending_verification: false,
+    email: "owner@example.test",
+    role: "user",
+    last_sync_at: "2026-07-17T08:00:00Z",
+    last_attempt_at: "2026-07-17T08:30:00Z",
+    pending_items: failed ? 1 : 0,
+    syncing: false,
+    last_error: failed ? "Amber Cloud is unreachable" : undefined,
+    last_error_code: failed ? "cloud_timeout" : undefined,
+    last_error_stage: failed ? "timeout" : undefined,
+    consecutive_failures: failed ? 2 : 0,
+    next_retry_at: failed ? new Date(Date.now() + 60_000).toISOString() : undefined,
+    conflicts: [],
+  });
+  await page.route("http://127.0.0.1:45678/control/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    let body: unknown = localStatus;
+    if (path === "/control/cloud/status") body = cloudStatus();
+    if (path === "/control/cloud/sync") {
+      syncCalls += 1;
+      failed = false;
+      body = cloudStatus();
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+
+  await page.goto("/#/cloud");
+  await expect(page.getByText("Amber Cloud connection timed out")).toBeVisible();
+  await expect(page.getByText("Consecutive failures: 2")).toBeVisible();
+  await expect(page.getByText(/Automatic retry in \d+s/)).toBeVisible();
+  await page.locator('[data-test="cloud-sync-retry"]').click();
+  expect(syncCalls).toBe(1);
+  await expect(page.getByText("The latest sync failed")).toHaveCount(0);
+});
+
 test("keeps administrator governance behind a transient second factor", async ({ page }) => {
   await initialize(page);
   const adminKey = "fixture-transient-admin-key";

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"sub2api-desktop/core/internal/cloudsync"
+	"sub2api-desktop/core/internal/store"
 )
 
 const maxCloudControlBody = 64 * 1024
@@ -201,6 +202,15 @@ func (c *Control) cloudCreateShare(w http.ResponseWriter, r *http.Request) {
 	}
 	if request.AccountID <= 0 || !request.Consent {
 		writeControlError(w, http.StatusBadRequest, "invalid_share_request", "Select an account and confirm cloud token custody", false, nil)
+		return
+	}
+	account, err := c.store.GetAccount(request.AccountID)
+	if err != nil {
+		writeControlError(w, http.StatusNotFound, "share_account_not_found", "The account selected for sharing no longer exists", false, nil)
+		return
+	}
+	if account.AccountType == store.AccountTypeOAuth {
+		writeControlError(w, http.StatusConflict, "oauth_device_relay_required", "OAuth sharing requires the owner-device relay planned for v0.4.0", false, nil)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)

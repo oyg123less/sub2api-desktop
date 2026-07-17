@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"sub2api-desktop/core/internal/openai"
 	"sub2api-desktop/core/internal/store"
 )
 
@@ -53,9 +52,14 @@ type Status struct {
 	Role                string                `json:"role,omitempty"`
 	TurnstileSiteKey    string                `json:"turnstile_site_key,omitempty"`
 	LastSyncAt          *time.Time            `json:"last_sync_at,omitempty"`
+	LastAttemptAt       *time.Time            `json:"last_attempt_at,omitempty"`
 	PendingItems        int                   `json:"pending_items"`
 	Syncing             bool                  `json:"syncing"`
 	LastError           string                `json:"last_error,omitempty"`
+	LastErrorCode       string                `json:"last_error_code,omitempty"`
+	LastErrorStage      string                `json:"last_error_stage,omitempty"`
+	ConsecutiveFailures int                   `json:"consecutive_failures"`
+	NextRetryAt         *time.Time            `json:"next_retry_at,omitempty"`
 	Conflicts           []store.CloudConflict `json:"conflicts"`
 }
 
@@ -80,14 +84,19 @@ type Manager struct {
 	opMu sync.Mutex
 	mu   sync.RWMutex
 
-	session       *store.CloudSession
-	vaultKey      []byte
-	accessToken   string
-	accessExpires time.Time
-	pending       *pendingRegistration
-	syncing       bool
-	lastError     string
-	appliedHook   func(context.Context) error
+	session             *store.CloudSession
+	vaultKey            []byte
+	accessToken         string
+	accessExpires       time.Time
+	pending             *pendingRegistration
+	syncing             bool
+	lastError           string
+	lastErrorCode       string
+	lastErrorStage      string
+	lastAttemptAt       time.Time
+	nextRetryAt         time.Time
+	consecutiveFailures int
+	appliedHook         func(context.Context) error
 }
 
 func (m *Manager) SetAppliedHook(hook func(context.Context) error) {
@@ -185,6 +194,17 @@ func (m *Manager) Status() Status {
 		TurnstileSiteKey:    m.siteKey,
 		Syncing:             m.syncing,
 		LastError:           m.lastError,
+		LastErrorCode:       m.lastErrorCode,
+		LastErrorStage:      m.lastErrorStage,
+		ConsecutiveFailures: m.consecutiveFailures,
+	}
+	if !m.lastAttemptAt.IsZero() {
+		lastAttempt := m.lastAttemptAt
+		status.LastAttemptAt = &lastAttempt
+	}
+	if !m.nextRetryAt.IsZero() {
+		nextRetry := m.nextRetryAt
+		status.NextRetryAt = &nextRetry
 	}
 	if m.session != nil {
 		status.Email = m.session.Email
@@ -483,11 +503,7 @@ func (m *Manager) CreateShare(ctx context.Context, input CreateShareInput) (Crea
 	credential := shareCredential{AccountType: string(account.AccountType), ChatGPTAccountID: account.ChatGPTAccountID}
 	switch account.AccountType {
 	case store.AccountTypeOAuth:
-		if strings.TrimSpace(account.AccessToken) == "" || (!account.ExpiresAt.IsZero() && time.Until(account.ExpiresAt) < 5*time.Minute) {
-			return CreatedShare{}, errors.New("refresh this OAuth account before sharing it")
-		}
-		credential.Token = account.AccessToken
-		credential.UpstreamURL = openai.CodexResponsesURL
+		return CreatedShare{}, errors.New("OAuth sharing requires the owner-device relay planned for v0.4.0")
 	case store.AccountTypeAPIKey:
 		if strings.TrimSpace(account.APIKey) == "" {
 			return CreatedShare{}, errors.New("the API-key account has no credential")
@@ -667,30 +683,57 @@ func (m *Manager) adminAccess(ctx context.Context, adminKey string) (string, err
 }
 
 func (m *Manager) Run(ctx context.Context) {
-	timer := time.NewTimer(10 * time.Second)
-	defer timer.Stop()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	nextPeriodic := time.Now().Add(10 * time.Second)
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-timer.C:
-			if m.Status().Authenticated {
-				if err := m.Sync(ctx); err != nil && ctx.Err() == nil {
+		case now := <-ticker.C:
+			m.mu.RLock()
+			authenticated := m.session != nil
+			syncing := m.syncing
+			nextRetryAt := m.nextRetryAt
+			lastAttemptAt := m.lastAttemptAt
+			failures := m.consecutiveFailures
+			m.mu.RUnlock()
+			if !authenticated || syncing {
+				continue
+			}
+			pendingItems, _ := m.store.PendingCloudCount()
+			due := now.After(nextPeriodic) || now.Equal(nextPeriodic)
+			if !nextRetryAt.IsZero() {
+				due = !now.Before(nextRetryAt)
+			} else if pendingItems > 0 && failures == 0 && !lastAttemptAt.IsZero() {
+				due = true
+			}
+			if !due {
+				continue
+			}
+			if err := m.Sync(ctx); err != nil {
+				if ctx.Err() == nil {
 					m.logger.Warn("cloud sync failed", "error_type", fmt.Sprintf("%T", err))
 				}
+				m.mu.RLock()
+				retryScheduled := !m.nextRetryAt.IsZero()
+				m.mu.RUnlock()
+				if !retryScheduled {
+					nextPeriodic = time.Now().Add(5 * time.Minute)
+				}
+			} else {
+				nextPeriodic = time.Now().Add(5 * time.Minute)
 			}
-			timer.Reset(5 * time.Minute)
 		}
 	}
 }
 
-func (m *Manager) Sync(ctx context.Context) error {
+func (m *Manager) Sync(ctx context.Context) (syncErr error) {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
-	m.setSyncing(true)
-	defer m.setSyncing(false)
+	m.beginSync()
+	defer func() { m.finishSync(syncErr) }()
 	if err := m.ensureAccess(ctx); err != nil {
-		m.setError(err)
 		return err
 	}
 	m.mu.RLock()
@@ -708,11 +751,9 @@ func (m *Manager) Sync(ctx context.Context) error {
 	for page := 0; page < cloudPullMaxPages; page++ {
 		pull, err := m.client.pull(ctx, accessToken, cursor)
 		if err != nil {
-			m.setError(err)
 			return err
 		}
 		if err := m.applyRemoteItems(pull.Items, vaultKey); err != nil {
-			m.setError(err)
 			return err
 		}
 		pulledItems = pulledItems || len(pull.Items) > 0
@@ -730,7 +771,6 @@ func (m *Manager) Sync(ctx context.Context) error {
 		m.mu.RUnlock()
 		if hook != nil {
 			if err := hook(ctx); err != nil {
-				m.setError(err)
 				return err
 			}
 		}
@@ -754,7 +794,6 @@ func (m *Manager) Sync(ctx context.Context) error {
 					conflicted = true
 					break
 				}
-				m.setError(pushErr)
 				return pushErr
 			}
 			if err := m.acknowledge(response.Items); err != nil {
@@ -776,20 +815,21 @@ func (m *Manager) Sync(ctx context.Context) error {
 		return errors.New("cloud sync conflict could not be resolved automatically")
 	}
 	syncedAt := time.Now()
+	m.mu.RLock()
+	refreshToken := ""
+	if m.session != nil {
+		refreshToken = m.session.RefreshToken
+	}
+	m.mu.RUnlock()
+	if err := m.store.UpdateCloudSessionProgress(refreshToken, cursor, syncedAt); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	if m.session != nil {
 		m.session.SyncCursor = cursor
 		m.session.LastSyncAt = syncedAt
 	}
-	refreshToken := ""
-	if m.session != nil {
-		refreshToken = m.session.RefreshToken
-	}
-	m.lastError = ""
 	m.mu.Unlock()
-	if err := m.store.UpdateCloudSessionProgress(refreshToken, cursor, syncedAt); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -1107,21 +1147,71 @@ func (m *Manager) acknowledge(items []remoteVaultItem) error {
 	return nil
 }
 
-func (m *Manager) setSyncing(value bool) {
+func (m *Manager) beginSync() {
 	m.mu.Lock()
-	m.syncing = value
+	m.syncing = true
+	m.lastAttemptAt = time.Now()
 	m.mu.Unlock()
+}
+
+func (m *Manager) finishSync(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.syncing = false
+	if err == nil {
+		m.lastError = ""
+		m.lastErrorCode = ""
+		m.lastErrorStage = ""
+		m.consecutiveFailures = 0
+		m.nextRetryAt = time.Time{}
+		return
+	}
+	m.lastError = err.Error()
+	m.lastErrorCode, m.lastErrorStage = cloudErrorMetadata(err)
+	m.consecutiveFailures++
+	var cloudErr *CloudError
+	if errors.As(err, &cloudErr) && cloudErr.Retryable {
+		m.nextRetryAt = time.Now().Add(syncRetryDelay(m.consecutiveFailures))
+	} else {
+		m.nextRetryAt = time.Time{}
+	}
+}
+
+func syncRetryDelay(failures int) time.Duration {
+	switch failures {
+	case 1:
+		return 5 * time.Second
+	case 2:
+		return 15 * time.Second
+	case 3:
+		return time.Minute
+	default:
+		return 5 * time.Minute
+	}
+}
+
+func cloudErrorMetadata(err error) (string, string) {
+	var cloudErr *CloudError
+	if errors.As(err, &cloudErr) {
+		return cloudErr.Code, cloudErr.Stage
+	}
+	return "cloud_local_failed", "local"
 }
 
 func (m *Manager) setError(err error) {
 	m.mu.Lock()
 	m.lastError = err.Error()
+	m.lastErrorCode, m.lastErrorStage = cloudErrorMetadata(err)
 	m.mu.Unlock()
 }
 
 func (m *Manager) clearError() {
 	m.mu.Lock()
 	m.lastError = ""
+	m.lastErrorCode = ""
+	m.lastErrorStage = ""
+	m.consecutiveFailures = 0
+	m.nextRetryAt = time.Time{}
 	m.mu.Unlock()
 }
 

@@ -56,6 +56,62 @@ async function createShare(headers: Record<string, string>, quota = 0) {
 }
 
 describe("cloud sharing", () => {
+  it("rejects OAuth relay before consuming quota or contacting the upstream", async () => {
+    const headers = await ownerSession();
+    const created = await SELF.fetch("https://amber.test/v1/shares", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        account_uid: accountUID,
+        credential: {
+          token: upstreamToken,
+          account_type: "oauth",
+          upstream_url: "https://chatgpt.com/backend-api/codex/responses",
+          chatgpt_account_id: "acct-owner",
+        },
+        quota_requests: 10,
+        consent: true,
+      }),
+    });
+    const creation = await created.json<{ guest_key: string; share: { id: number } }>();
+    const upstream = vi.fn(async () => new Response("unexpected", { status: 200 }));
+    vi.stubGlobal("fetch", upstream);
+
+    const response = await SELF.fetch("https://amber.test/v1/responses", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${creation.guest_key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.4", input: "hello" }),
+    });
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "oauth_device_relay_required" } });
+    expect(upstream).not.toHaveBeenCalled();
+    const grant = await env.DB.prepare("SELECT used_requests FROM share_grants WHERE id=?")
+      .bind(creation.share.id).first<{ used_requests: number }>();
+    expect(grant?.used_requests).toBe(0);
+    vi.unstubAllGlobals();
+  });
+
+  it("converts upstream HTML errors into safe JSON", async () => {
+    const headers = await ownerSession();
+    const creation = await (await createShare(headers)).json<{ guest_key: string }>();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("<html><body>blocked</body></html>", {
+      status: 403,
+      headers: { "Content-Type": "text/html; charset=UTF-8" },
+    })));
+
+    const response = await SELF.fetch("https://amber.test/v1/responses", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${creation.guest_key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.4", input: "hello" }),
+    });
+    expect(response.status).toBe(403);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    const text = await response.text();
+    expect(text).toContain("share_upstream_rejected");
+    expect(text).not.toContain("<html>");
+    vi.unstubAllGlobals();
+  });
+
   it("encrypts the upstream token, streams responses, enforces quota, and records metadata-only usage", async () => {
     const headers = await ownerSession();
     const created = await createShare(headers, 1);
