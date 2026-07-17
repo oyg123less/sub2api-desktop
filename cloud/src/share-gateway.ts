@@ -102,7 +102,7 @@ async function forward(c: Context<AppEnv>) {
   const grant = await loadGrant(c);
   const credential = await decryptShareCredential(c.env, grant.owner_id, grant.account_uid, grant.token_cipher);
   if (credential.account_type === "oauth") {
-    throw new AppError(409, "oauth_device_relay_required", "OAuth sharing requires the owner device to be online and is not available in v0.3.1.");
+    throw new AppError(409, "oauth_device_relay_required", "OAuth sharing requires the owner device to be online and is not available in this version.");
   }
   await claimGrantUsage(c, grant);
   const started = Date.now();
@@ -112,7 +112,7 @@ async function forward(c: Context<AppEnv>) {
       Authorization: `Bearer ${credential.token}`,
       "Content-Type": "application/json",
       Accept: c.req.header("accept") || "text/event-stream, application/json",
-      "User-Agent": "codex_cli_rs/0.3.1 (Amber Cloud Share)",
+      "User-Agent": "codex_cli_rs/0.3.2 (Amber Cloud Share)",
       originator: "codex_cli_rs",
       "OpenAI-Beta": "responses=experimental",
       session_id: crypto.randomUUID(),

@@ -16,7 +16,7 @@ import (
 	appcrypto "sub2api-desktop/core/internal/crypto"
 )
 
-const CurrentSchemaVersion = 9
+const CurrentSchemaVersion = 10
 
 type migration struct {
 	version int
@@ -34,6 +34,7 @@ var migrations = []migration{
 	{version: 7, name: "v0.3.0 cloud sync metadata", apply: migrateV030CloudSync},
 	{version: 8, name: "v0.3.1 usage details", apply: migrateV031UsageDetails},
 	{version: 9, name: "v0.3.1 pending cloud registration", apply: migrateV031PendingCloudRegistration},
+	{version: 10, name: "v0.3.2 account concurrency queue", apply: migrateV032AccountConcurrencyQueue},
 }
 
 func databaseExists(path string) bool {
@@ -186,6 +187,29 @@ func migrateV031PendingCloudRegistration(tx *sql.Tx, _ *appcrypto.Cipher) error 
 		payload_cipher TEXT NOT NULL,
 		updated_at INTEGER NOT NULL
 	)`)
+	return err
+}
+
+func migrateV032AccountConcurrencyQueue(tx *sql.Tx, _ *appcrypto.Cipher) error {
+	if err := addColumnIfMissing(tx, "accounts", "max_concurrency", `INTEGER NOT NULL DEFAULT 3`); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(tx, "accounts", "queue_capacity", `INTEGER NOT NULL DEFAULT 20`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE accounts SET max_concurrency=3 WHERE max_concurrency<1 OR max_concurrency>100`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE accounts SET queue_capacity=20 WHERE queue_capacity<0 OR queue_capacity>1000`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DROP TRIGGER IF EXISTS accounts_cloud_dirty`); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`CREATE TRIGGER accounts_cloud_dirty AFTER UPDATE OF
+		account_type,base_url,api_key,email,chatgpt_account_id,plan_type,access_token,refresh_token,id_token,expires_at,status,proxy_id,max_concurrency,queue_capacity
+		ON accounts WHEN (SELECT value FROM cloud_sync_runtime WHERE key='applying')<>'1'
+		BEGIN UPDATE accounts SET sync_dirty=1 WHERE id=NEW.id; END`)
 	return err
 }
 

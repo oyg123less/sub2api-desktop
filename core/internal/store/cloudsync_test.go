@@ -41,6 +41,19 @@ func TestCloudMigrationTracksDirtyRowsAndTombstones(t *testing.T) {
 	if err := st.MarkCloudItemSynced(CloudKindAccount, account.ClientUID, 3); err != nil {
 		t.Fatal(err)
 	}
+	if err := st.SetAccountLimits(account.ID, 8, 64); err != nil {
+		t.Fatal(err)
+	}
+	limitsUpdated, err := st.GetAccount(account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !limitsUpdated.SyncDirty || limitsUpdated.MaxConcurrency != 8 || limitsUpdated.QueueCapacity != 64 {
+		t.Fatalf("limit update did not mark account dirty: %#v", limitsUpdated)
+	}
+	if err := st.MarkCloudItemSynced(CloudKindAccount, account.ClientUID, 3); err != nil {
+		t.Fatal(err)
+	}
 	if err := st.UpdateTokens(account.ID, "new-access", "new-refresh", "", time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}

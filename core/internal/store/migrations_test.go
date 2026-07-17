@@ -29,10 +29,17 @@ func TestOpenInitializesVersionedSchema(t *testing.T) {
 	if got := st.MigrationBackup(); got != "" {
 		t.Fatalf("new database unexpectedly created backup %q", got)
 	}
-	for _, column := range []string{"credential_fingerprint", "last_success_at", "consecutive_failures", "next_retry_at"} {
+	for _, column := range []string{"credential_fingerprint", "last_success_at", "consecutive_failures", "next_retry_at", "max_concurrency", "queue_capacity"} {
 		if !testColumnExists(t, st.db, "accounts", column) {
 			t.Fatalf("accounts.%s missing", column)
 		}
+	}
+	account, err := st.CreateAccount(&Account{AccessToken: "migration-default-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if account.MaxConcurrency != DefaultAccountMaxConcurrency || account.QueueCapacity != DefaultAccountQueueCapacity {
+		t.Fatalf("schema 10 defaults are incorrect: %+v", account)
 	}
 	for _, column := range []string{"request_id", "requested_model", "resolved_model", "error_kind", "attempt_count", "terminal_event", "cached_tokens", "reasoning_tokens", "estimated"} {
 		if !testColumnExists(t, st.db, "request_logs", column) {

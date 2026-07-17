@@ -57,7 +57,7 @@ async function initialize(page: Page) {
         models: [{ model: "gpt-5.6-sol", input_per_m: 5, cached_per_m: 0.5, output_per_m: 30, long_context_threshold: 272000, long_input_per_m: 10, long_cached_per_m: 1, long_output_per_m: 45 }],
       };
     } else {
-      body = { version: "0.3.1", server_running: serverRunning, port: settings.listen_port, host: settings.allow_lan ? "0.0.0.0" : "127.0.0.1", endpoint: `http://${settings.allow_lan ? "0.0.0.0" : "127.0.0.1"}:${settings.listen_port}/v1`, lan_addresses: [], local_api_key: settings.local_api_key, account_count: 1, schema_version: 9 };
+      body = { version: "0.3.2", server_running: serverRunning, port: settings.listen_port, host: settings.allow_lan ? "0.0.0.0" : "127.0.0.1", endpoint: `http://${settings.allow_lan ? "0.0.0.0" : "127.0.0.1"}:${settings.listen_port}/v1`, lan_addresses: [], local_api_key: settings.local_api_key, account_count: 1, schema_version: 10 };
     }
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   });

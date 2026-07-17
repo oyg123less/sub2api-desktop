@@ -32,7 +32,7 @@ func (s *Store) scanAccount(row interface {
 		&accessEnc, &refreshEnc, &idTokenEnc, &expiresAt, &status, &a.StatusReason,
 		&rateUntil, &proxyID, &lastUsed, &createdAt, &updatedAt, &usageJSON,
 		&a.CredentialFingerprint, &lastSuccess, &a.ConsecutiveFailures, &nextRetry,
-		&a.ClientUID, &a.SyncVersion, &syncDirty); err != nil {
+		&a.MaxConcurrency, &a.QueueCapacity, &a.ClientUID, &a.SyncVersion, &syncDirty); err != nil {
 		return nil, err
 	}
 	if usageJSON != "" {
@@ -85,7 +85,7 @@ func (s *Store) scanAccount(row interface {
 	return &a, nil
 }
 
-const accountCols = `id, account_type, base_url, api_key, email, chatgpt_account_id, plan_type, access_token, refresh_token, id_token, expires_at, status, status_reason, rate_limited_until, proxy_id, last_used_at, created_at, updated_at, usage_snapshot, credential_fingerprint, last_success_at, consecutive_failures, next_retry_at, client_uid, sync_version, sync_dirty`
+const accountCols = `id, account_type, base_url, api_key, email, chatgpt_account_id, plan_type, access_token, refresh_token, id_token, expires_at, status, status_reason, rate_limited_until, proxy_id, last_used_at, created_at, updated_at, usage_snapshot, credential_fingerprint, last_success_at, consecutive_failures, next_retry_at, max_concurrency, queue_capacity, client_uid, sync_version, sync_dirty`
 
 // CreateAccount inserts a new account (tokens encrypted).
 func (s *Store) CreateAccount(a *Account) (*Account, error) {
@@ -220,15 +220,47 @@ func timeToUnixPtr(t *time.Time) int64 {
 
 // SetAccountStatus updates status + reason.
 func (s *Store) SetAccountStatus(id int64, status AccountStatus, reason string) error {
+	if status == AccountActive {
+		_, err := s.db.Exec(`UPDATE accounts SET status=?, status_reason='', rate_limited_until=0,
+			consecutive_failures=0, next_retry_at=0, updated_at=? WHERE id=?`,
+			string(status), time.Now().Unix(), id)
+		return err
+	}
 	_, err := s.db.Exec(`UPDATE accounts SET status=?, status_reason=?, updated_at=? WHERE id=?`,
 		string(status), reason, time.Now().Unix(), id)
 	return err
 }
 
-// SetRateLimited marks an account rate-limited until the given time.
-func (s *Store) SetRateLimited(id int64, until time.Time) error {
-	_, err := s.db.Exec(`UPDATE accounts SET status=?, rate_limited_until=?, updated_at=? WHERE id=?`,
-		string(AccountRateLimited), timeToUnix(until), time.Now().Unix(), id)
+func ValidateAccountLimits(maxConcurrency, queueCapacity int) error {
+	if maxConcurrency < MinAccountMaxConcurrency || maxConcurrency > MaxAccountMaxConcurrency {
+		return errors.New("max concurrency must be between 1 and 100")
+	}
+	if queueCapacity < MinAccountQueueCapacity || queueCapacity > MaxAccountQueueCapacity {
+		return errors.New("queue capacity must be between 0 and 1000")
+	}
+	return nil
+}
+
+func (s *Store) SetAccountLimits(id int64, maxConcurrency, queueCapacity int) error {
+	if err := ValidateAccountLimits(maxConcurrency, queueCapacity); err != nil {
+		return err
+	}
+	result, err := s.db.Exec(`UPDATE accounts SET max_concurrency=?, queue_capacity=?, updated_at=? WHERE id=?`,
+		maxConcurrency, queueCapacity, time.Now().Unix(), id)
+	if err != nil {
+		return err
+	}
+	if rows, _ := result.RowsAffected(); rows == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetRateLimited marks an account unavailable until the given time and stores
+// whether the upstream reported transient throttling or exhausted quota.
+func (s *Store) SetRateLimited(id int64, until time.Time, reason string) error {
+	_, err := s.db.Exec(`UPDATE accounts SET status=?, status_reason=?, rate_limited_until=?, updated_at=? WHERE id=?`,
+		string(AccountRateLimited), reason, timeToUnix(until), time.Now().Unix(), id)
 	return err
 }
 
@@ -260,24 +292,62 @@ func (s *Store) RecordAccountSuccess(id int64) error {
 	return err
 }
 
+// RecordAccountTestSuccess clears transient backend states after an explicit
+// successful probe while preserving a user's manual disabled state.
+func (s *Store) RecordAccountTestSuccess(id int64) error {
+	now := time.Now().Unix()
+	_, err := s.db.Exec(`UPDATE accounts SET
+		status=CASE WHEN status=? THEN status ELSE ? END,
+		status_reason=CASE WHEN status=? THEN status_reason ELSE '' END,
+		rate_limited_until=CASE WHEN status=? THEN rate_limited_until ELSE 0 END,
+		last_success_at=?, consecutive_failures=CASE WHEN status=? THEN consecutive_failures ELSE 0 END,
+		next_retry_at=CASE WHEN status=? THEN next_retry_at ELSE 0 END, updated_at=? WHERE id=?`,
+		string(AccountDisabled), string(AccountActive),
+		string(AccountDisabled), string(AccountDisabled), now,
+		string(AccountDisabled), string(AccountDisabled), now, id)
+	return err
+}
+
 // RecordAccountFailure records an authentication/refresh failure with bounded
 // exponential backoff. Network and upstream protocol errors must not call it.
 func (s *Store) RecordAccountFailure(id int64, reason string) error {
 	now := time.Now()
 	result, err := s.db.Exec(`UPDATE accounts SET
-		status=?, status_reason=?,
-		next_retry_at=?+CASE consecutive_failures
+		status=CASE WHEN status=? THEN status WHEN consecutive_failures>=2 THEN ? ELSE ? END,
+		status_reason=CASE WHEN status=? THEN status_reason WHEN consecutive_failures>=2 THEN 'auto_disabled_auth_failures' ELSE ? END,
+		next_retry_at=CASE WHEN status=? THEN next_retry_at WHEN consecutive_failures>=2 THEN 0 ELSE ?+CASE consecutive_failures
 			WHEN 0 THEN 60
 			WHEN 1 THEN 300
 			WHEN 2 THEN 900
-			ELSE 1800 END,
-		consecutive_failures=consecutive_failures+1, updated_at=? WHERE id=?`,
-		string(AccountRefreshFailed), reason, now.Unix(), now.Unix(), id)
+			ELSE 1800 END END,
+		consecutive_failures=CASE WHEN status=? THEN consecutive_failures ELSE consecutive_failures+1 END,
+		updated_at=? WHERE id=?`,
+		string(AccountDisabled), string(AccountDisabled), string(AccountRefreshFailed), string(AccountDisabled), reason,
+		string(AccountDisabled), now.Unix(), string(AccountDisabled), now.Unix(), id)
 	if err != nil {
 		return err
 	}
 	if rows, _ := result.RowsAffected(); rows == 0 {
 		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) RecordSevereAccountFailure(id int64, reason string) error {
+	if reason == "" {
+		reason = "auto_disabled_account_inactive"
+	}
+	result, err := s.db.Exec(`UPDATE accounts SET status=?,
+		status_reason=CASE WHEN status=? THEN status_reason ELSE ? END,
+		next_retry_at=CASE WHEN status=? THEN next_retry_at ELSE 0 END,
+		consecutive_failures=CASE WHEN status=? THEN consecutive_failures ELSE consecutive_failures+1 END,
+		updated_at=? WHERE id=?`, string(AccountDisabled), string(AccountDisabled), reason,
+		string(AccountDisabled), string(AccountDisabled), time.Now().Unix(), id)
+	if err != nil {
+		return err
+	}
+	if rows, _ := result.RowsAffected(); rows == 0 {
+		return ErrNotFound
 	}
 	return nil
 }
@@ -289,6 +359,32 @@ func (s *Store) RecoverExpiredRateLimits(now time.Time) error {
 		WHERE status=? AND rate_limited_until > 0 AND rate_limited_until <= ?`,
 		string(AccountActive), now.Unix(), string(AccountRateLimited), now.Unix())
 	return err
+}
+
+// ListAccountRuntimeStates reads only fields needed for live account polling.
+// It avoids decrypting credentials or calculating accumulated usage.
+func (s *Store) ListAccountRuntimeStates() ([]*AccountRuntimeState, error) {
+	rows, err := s.db.Query(`SELECT id, status, status_reason, rate_limited_until FROM accounts ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	states := make([]*AccountRuntimeState, 0)
+	for rows.Next() {
+		var state AccountRuntimeState
+		var status string
+		var limitedUntil int64
+		if err := rows.Scan(&state.ID, &status, &state.StatusReason, &limitedUntil); err != nil {
+			return nil, err
+		}
+		state.Status = AccountStatus(status)
+		if limitedUntil > 0 {
+			value := unixToTime(limitedUntil)
+			state.RateLimitedUntil = &value
+		}
+		states = append(states, &state)
+	}
+	return states, rows.Err()
 }
 
 // SetAccountCodexUsage stores the latest Codex rate-limit window snapshot.

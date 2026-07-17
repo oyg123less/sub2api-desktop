@@ -6,7 +6,8 @@ import { checkLoginLock, clearLoginFailures, rateLimit, recordLoginFailure } fro
 import {
   authUserFromRow,
   authVerifier,
-  consumeRefreshSession,
+  beginRefreshSession,
+  completeRefreshSession,
   deleteRefreshSession,
   fakeLoginParameters,
   isBase64URLBytes,
@@ -197,14 +198,19 @@ auth.post("/login", async (c) => {
 
 auth.post("/refresh", async (c) => {
   const body = await readJSON<Record<string, unknown>>(c);
-  const session = await consumeRefreshSession(c.env, typeof body.refresh_token === "string" ? body.refresh_token : "");
+  const refreshToken = typeof body.refresh_token === "string" ? body.refresh_token : "";
+  const rotation = await beginRefreshSession(c.env, refreshToken);
+  const session = rotation.session;
   const row = await c.env.DB.prepare(`SELECT ${userColumns} FROM users WHERE id=?`).bind(session.user_id).first<UserRow>();
   if (!row || !row.email_verified || row.banned || row.session_version !== session.session_version) {
+    await deleteRefreshSession(c.env, refreshToken);
     throw new AppError(401, row?.banned ? "account_disabled" : "session_expired", row?.banned
       ? "This account has been disabled."
       : "The session has expired.");
   }
-  return c.json(await issueSession(c.env, authUserFromRow(row)));
+  const response = await issueSession(c.env, authUserFromRow(row), rotation.nextRefreshToken);
+  await completeRefreshSession(c.env, refreshToken, session, rotation.nextRefreshToken, rotation.replay);
+  return c.json(response);
 });
 
 auth.post("/logout", async (c) => {

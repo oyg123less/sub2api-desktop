@@ -29,6 +29,8 @@ type accountPayload struct {
 	ExpiresAt        time.Time           `json:"expires_at"`
 	Status           store.AccountStatus `json:"status"`
 	StatusReason     string              `json:"status_reason"`
+	MaxConcurrency   int                 `json:"max_concurrency,omitempty"`
+	QueueCapacity    *int                `json:"queue_capacity,omitempty"`
 	ProxyUID         string              `json:"proxy_uid"`
 	CreatedAt        time.Time           `json:"created_at"`
 }
@@ -131,7 +133,23 @@ func validateAccountPayload(payload accountPayload) error {
 	if len(payload.Email) > 320 || len(payload.ChatGPTAccountID) > 512 || len(payload.StatusReason) > 2048 {
 		return errors.New("account metadata is too large")
 	}
+	maxConcurrency, queueCapacity := accountPayloadLimits(payload)
+	if err := store.ValidateAccountLimits(maxConcurrency, queueCapacity); err != nil {
+		return err
+	}
 	return nil
+}
+
+func accountPayloadLimits(payload accountPayload) (int, int) {
+	maxConcurrency := payload.MaxConcurrency
+	if maxConcurrency == 0 {
+		maxConcurrency = store.DefaultAccountMaxConcurrency
+	}
+	queueCapacity := store.DefaultAccountQueueCapacity
+	if payload.QueueCapacity != nil {
+		queueCapacity = *payload.QueueCapacity
+	}
+	return maxConcurrency, queueCapacity
 }
 
 func validateProxyPayload(payload proxyPayload) error {

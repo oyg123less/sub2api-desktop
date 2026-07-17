@@ -117,13 +117,23 @@ export async function verifyAccessToken(env: Bindings, token: string): Promise<A
 }
 
 interface RefreshSession {
+  kind?: "active";
   user_id: number;
   session_version: number;
   created_at: string;
 }
 
-export async function issueSession(env: Bindings, user: AuthUser) {
-  const refreshToken = randomToken();
+interface RefreshRotationReceipt {
+  kind: "rotated";
+  user_id: number;
+  session_version: number;
+  created_at: string;
+  next_token_hash: string;
+}
+
+const refreshRotationGraceSeconds = 60;
+
+export async function issueSession(env: Bindings, user: AuthUser, refreshToken = randomToken()) {
   const tokenHash = await sha256(refreshToken);
   const key = `refresh:${tokenHash}`;
   const userKey = `refresh-user:${user.id}:${tokenHash}`;
@@ -145,26 +155,77 @@ export async function issueSession(env: Bindings, user: AuthUser) {
   };
 }
 
-export async function consumeRefreshSession(env: Bindings, token: string): Promise<RefreshSession> {
+async function derivedRefreshToken(env: Bindings, token: string): Promise<string> {
+  if (!env.JWT_SECRET || env.JWT_SECRET.length < 32) {
+    throw new AppError(503, "cloud_not_configured", "Cloud authentication is not configured.");
+  }
+  return bytesToBase64URL(await hmac(env.JWT_SECRET, `amber-refresh-rotation-v1:${token}`));
+}
+
+export async function beginRefreshSession(env: Bindings, token: string): Promise<{
+  session: RefreshSession;
+  nextRefreshToken: string;
+  replay: boolean;
+}> {
   if (!token || token.length > 512) throw new AppError(401, "invalid_refresh_token", "The session has expired.");
   const key = `refresh:${await sha256(token)}`;
-  const session = await env.SESSIONS.get<RefreshSession>(key, "json");
-  if (!session) throw new AppError(401, "invalid_refresh_token", "The session has expired.");
+  const state = await env.SESSIONS.get<RefreshSession | RefreshRotationReceipt>(key, "json");
+  if (!state) throw new AppError(401, "invalid_refresh_token", "The session has expired.");
+  const nextRefreshToken = await derivedRefreshToken(env, token);
+  const nextTokenHash = await sha256(nextRefreshToken);
+  if (state.kind === "rotated") {
+    if (state.next_token_hash !== nextTokenHash) {
+      throw new AppError(401, "invalid_refresh_token", "The session has expired.");
+    }
+    const nextSession = await env.SESSIONS.get<RefreshSession | RefreshRotationReceipt>(`refresh:${nextTokenHash}`, "json");
+    if (!nextSession || nextSession.kind === "rotated") {
+      throw new AppError(401, "invalid_refresh_token", "The session has expired.");
+    }
+    return {
+      session: { user_id: state.user_id, session_version: state.session_version, created_at: state.created_at },
+      nextRefreshToken,
+      replay: true,
+    };
+  }
+  return { session: state, nextRefreshToken, replay: false };
+}
+
+export async function completeRefreshSession(
+  env: Bindings,
+  token: string,
+  session: RefreshSession,
+  nextRefreshToken: string,
+  replay: boolean,
+): Promise<void> {
+  if (replay) return;
+  const tokenHash = await sha256(token);
+  const nextTokenHash = await sha256(nextRefreshToken);
+  const receipt: RefreshRotationReceipt = {
+    kind: "rotated",
+    user_id: session.user_id,
+    session_version: session.session_version,
+    created_at: session.created_at,
+    next_token_hash: nextTokenHash,
+  };
   await Promise.all([
-    env.SESSIONS.delete(key),
-    env.SESSIONS.delete(`refresh-user:${session.user_id}:${key.slice("refresh:".length)}`),
+    env.SESSIONS.put(`refresh:${tokenHash}`, JSON.stringify(receipt), { expirationTtl: refreshRotationGraceSeconds }),
+    env.SESSIONS.delete(`refresh-user:${session.user_id}:${tokenHash}`),
   ]);
-  return session;
 }
 
 export async function deleteRefreshSession(env: Bindings, token: string): Promise<void> {
   if (!token || token.length > 512) return;
   const tokenHash = await sha256(token);
   const key = `refresh:${tokenHash}`;
-  const session = await env.SESSIONS.get<RefreshSession>(key, "json");
+  const session = await env.SESSIONS.get<RefreshSession | RefreshRotationReceipt>(key, "json");
+  const nextTokenHash = session?.kind === "rotated" ? session.next_token_hash : "";
   await Promise.all([
     env.SESSIONS.delete(key),
     ...(session ? [env.SESSIONS.delete(`refresh-user:${session.user_id}:${tokenHash}`)] : []),
+    ...(session && nextTokenHash ? [
+      env.SESSIONS.delete(`refresh:${nextTokenHash}`),
+      env.SESSIONS.delete(`refresh-user:${session.user_id}:${nextTokenHash}`),
+    ] : []),
   ]);
 }
 

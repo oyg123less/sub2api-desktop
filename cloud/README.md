@@ -1,6 +1,6 @@
 # Amber Cloud
 
-Cloudflare Worker for Amber v0.3.1. It provides account verification, short-lived access sessions, revocable refresh sessions, encrypted vault synchronization, and administrator governance. Vault payloads are opaque AES-256-GCM ciphertext; this service does not receive a vault key or plaintext upstream credential.
+Cloudflare Worker for Amber v0.3.2. It provides account verification, short-lived access sessions, revocable refresh sessions, encrypted vault synchronization, and administrator governance. Vault payloads are opaque AES-256-GCM ciphertext; this service does not receive a vault key or plaintext upstream credential.
 
 ## Resources
 

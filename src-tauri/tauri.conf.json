@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Amber",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "identifier": "com.sub2api.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -13,8 +13,8 @@
     "windows": [
       {
         "title": "Amber 琥珀",
-        "width": 1040,
-        "height": 720,
+        "width": 1280,
+        "height": 820,
         "minWidth": 900,
         "minHeight": 600,
         "resizable": true,

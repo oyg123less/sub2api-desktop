@@ -25,8 +25,8 @@ test("creates a one-time cloud share and manages revocation without exposing the
     const request = route.request();
     const path = new URL(request.url()).pathname;
     let body: unknown = {};
-    if (path === "/control/status") body = { version: "0.3.1", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "http://127.0.0.1:8080/v1", lan_addresses: [], local_api_key: "", account_count: 1, schema_version: 9 };
-    if (path === "/control/accounts") body = { accounts: [{ id: 1, account_type: "api_key", base_url: "https://api.openai.com/v1", email: "API key account", chatgpt_account_id: "", plan_type: "api", expires_at: "", status: "active", consecutive_failures: 0, created_at: "2026-07-01T00:00:00Z", client_uid: accountUID }], usage: {} };
+    if (path === "/control/status") body = { version: "0.3.2", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "http://127.0.0.1:8080/v1", lan_addresses: [], local_api_key: "", account_count: 1, schema_version: 10 };
+    if (path === "/control/accounts") body = { accounts: [{ id: 1, account_type: "api_key", base_url: "https://api.openai.com/v1", email: "API key account", chatgpt_account_id: "", plan_type: "api", expires_at: "", status: "active", consecutive_failures: 0, max_concurrency: 3, queue_capacity: 20, in_flight: 0, waiting: 0, created_at: "2026-07-01T00:00:00Z", client_uid: accountUID }], usage: {} };
     if (path === "/control/proxies") body = { proxies: [] };
     if (path === "/control/settings") body = { account_strategy: "quota_aware", default_model: "gpt-5.6" };
     if (path === "/control/models") body = { models: ["gpt-5.6"], default_test_model: "gpt-5.6" };
@@ -47,6 +47,7 @@ test("creates a one-time cloud share and manages revocation without exposing the
   });
 
   await page.goto("/#/accounts");
+  await page.locator('[data-test="account-details"]').click();
   await page.locator('[data-test="account-share"]').click();
   await page.getByLabel("Request quota").fill("25");
   await page.getByLabel(/I confirm cloud custody/).check();
@@ -76,6 +77,7 @@ test("creates a one-time cloud share and manages revocation without exposing the
   await page.screenshot({ path: `test-results/amber-share-${testInfo.project.name}.png`, fullPage: true });
 
   await page.getByRole("button", { name: "Close" }).click();
+  await page.locator('[data-test="account-details"]').click();
   await page.locator('[data-test="account-share"]').click();
   await expect(page.locator('[data-test="share-guest-key"]')).toHaveCount(0);
   await page.getByRole("button", { name: "Revoke" }).click();
@@ -95,8 +97,8 @@ test("blocks OAuth cloud sharing until owner-device relay is available", async (
     const request = route.request();
     const path = new URL(request.url()).pathname;
     let body: unknown = {};
-    if (path === "/control/status") body = { version: "0.3.1", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "http://127.0.0.1:8080/v1", lan_addresses: [], local_api_key: "", account_count: 1, schema_version: 9 };
-    if (path === "/control/accounts") body = { accounts: [{ id: 1, account_type: "oauth", base_url: "", email: "owner@example.test", chatgpt_account_id: "acct-owner", plan_type: "plus", expires_at: "2026-08-01T00:00:00Z", status: "active", consecutive_failures: 0, created_at: "2026-07-01T00:00:00Z", client_uid: accountUID }], usage: {} };
+    if (path === "/control/status") body = { version: "0.3.2", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "http://127.0.0.1:8080/v1", lan_addresses: [], local_api_key: "", account_count: 1, schema_version: 10 };
+    if (path === "/control/accounts") body = { accounts: [{ id: 1, account_type: "oauth", base_url: "", email: "owner@example.test", chatgpt_account_id: "acct-owner", plan_type: "plus", expires_at: "2026-08-01T00:00:00Z", status: "active", consecutive_failures: 0, max_concurrency: 3, queue_capacity: 20, in_flight: 0, waiting: 0, created_at: "2026-07-01T00:00:00Z", client_uid: accountUID }], usage: {} };
     if (path === "/control/proxies") body = { proxies: [] };
     if (path === "/control/settings") body = { account_strategy: "quota_aware", default_model: "gpt-5.6" };
     if (path === "/control/models") body = { models: ["gpt-5.6"], default_test_model: "gpt-5.6" };
@@ -107,8 +109,9 @@ test("blocks OAuth cloud sharing until owner-device relay is available", async (
   });
 
   await page.goto("/#/accounts");
+  await page.locator('[data-test="account-details"]').click();
   await page.locator('[data-test="account-share"]').click();
-  await expect(page.getByText("OAuth accounts require owner-device relay; direct cloud sharing is unavailable in v0.3.1.")).toBeVisible();
+  await expect(page.getByText("OAuth accounts require owner-device relay; direct cloud sharing is unavailable in this version.")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Share account through Amber Cloud" })).toBeVisible();
   await expect(page.locator('[data-test="share-create"]')).toHaveCount(0);
   expect(createCalls).toBe(0);

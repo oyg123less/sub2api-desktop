@@ -6,15 +6,18 @@ import ConfirmModal from "../components/ConfirmModal.vue";
 import EmptyState from "../components/EmptyState.vue";
 import SkeletonBlock from "../components/SkeletonBlock.vue";
 import ShareQRCode from "../components/ShareQRCode.vue";
+import AccountProxySelect from "../components/AccountProxySelect.vue";
 import {
   api,
   type Account,
+  type AccountRuntimeState,
   type AccountUsage,
   type AccountTestResult,
   type CloudShare,
   type CloudShareUsage,
   type ImportCommitResult,
   type ImportPreview,
+  type ImportProxyOptions,
   type Proxy,
 	type Settings,
 } from "../api/control";
@@ -107,22 +110,31 @@ const loginOpen = ref(false);
 const loginUrl = ref("");
 const loginState = ref("");
 const loginError = ref("");
-let pollTimer: number | undefined;
+const oauthProxyOpen = ref(false);
+const oauthProxyID = ref<number | null>(null);
+const oauthStarting = ref(false);
+let oauthPollTimer: number | undefined;
+let runtimePollTimer: number | undefined;
+let runtimePollPending = false;
+let pageMounted = false;
 
 // delete flow
 const deleteTarget = ref<Account | null>(null);
 
 // import flow
+const importChooserOpen = ref(false);
 const importOpen = ref(false);
 const importText = ref("");
 const importing = ref(false);
-const importFileName = ref("");
+const importFileNames = ref<string[]>([]);
+const importFileSize = ref(0);
 const importFileInput = ref<HTMLInputElement | null>(null);
-const importFileBlob = ref<Blob | null>(null);
 const importStage = ref<"input" | "preview" | "result">("input");
 const importPreview = ref<ImportPreview | null>(null);
 const importResult = ref<ImportCommitResult | null>(null);
 const validateAfterImport = ref(true);
+const importProxyMode = ref<ImportProxyOptions["mode"]>("preserve");
+const importProxyID = ref<number | null>(null);
 
 // API-key account flow
 const apiKeyOpen = ref(false);
@@ -130,6 +142,14 @@ const apiKeyAdding = ref(false);
 const apiKeyName = ref("");
 const apiKeyBaseURL = ref("https://chatgpt.com/backend-api/codex/responses");
 const apiKeyValue = ref("");
+const apiKeyProxyID = ref<number | null>(null);
+
+// account detail and scheduling controls
+const detailTarget = ref<Account | null>(null);
+const limitsMaxConcurrency = ref(3);
+const limitsQueueCapacity = ref(20);
+const limitsSaving = ref(false);
+const accountToggling = ref<Record<number, boolean>>({});
 
 const importExample = `[
   {
@@ -140,14 +160,21 @@ const importExample = `[
   }
 ]`;
 
+function openImportChooser() {
+	importChooserOpen.value = true;
+}
+
 function openImport() {
+	importChooserOpen.value = false;
   importText.value = "";
-  importFileName.value = "";
-  importFileBlob.value = null;
+  importFileNames.value = [];
+  importFileSize.value = 0;
   importStage.value = "input";
   importPreview.value = null;
   importResult.value = null;
   validateAfterImport.value = true;
+  importProxyMode.value = "preserve";
+  importProxyID.value = null;
   if (importFileInput.value) importFileInput.value.value = "";
   importOpen.value = true;
 }
@@ -158,9 +185,11 @@ function closeImport() {
 }
 
 function openAPIKey() {
+	importChooserOpen.value = false;
   apiKeyName.value = "";
   apiKeyBaseURL.value = "https://chatgpt.com/backend-api/codex/responses";
   apiKeyValue.value = "";
+  apiKeyProxyID.value = null;
   apiKeyOpen.value = true;
 }
 
@@ -192,6 +221,7 @@ async function addAPIKey() {
       base_url: baseURL,
       api_key: key,
       name: apiKeyName.value.trim(),
+      proxy_id: apiKeyProxyID.value,
     }]);
     const preview = await api.previewImport(raw);
     const row = preview.rows[0];
@@ -219,25 +249,44 @@ function decodeFileForPreview(bytes: Uint8Array): string {
 
 async function onImportFile(event: Event) {
   const input = event.target as HTMLInputElement;
-  const file = input.files?.[0];
-  if (!file) return;
+  const files = Array.from(input.files ?? []);
+  if (!files.length) return;
   try {
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    importText.value = decodeFileForPreview(bytes);
-    importFileBlob.value = file.slice();
-    importFileName.value = file.name;
+		const contents: string[] = [];
+		let totalSize = 0;
+		for (const file of files) {
+			const bytes = new Uint8Array(await file.arrayBuffer());
+			contents.push(decodeFileForPreview(bytes));
+			totalSize += file.size;
+		}
+		importText.value = contents.join("\n");
+		importFileNames.value = files.map((file) => file.name);
+		importFileSize.value = totalSize;
   } catch (e) {
     app.toast((e as Error).message, "error");
   }
 }
 
 function onImportTextInput() {
-  importFileBlob.value = null;
-  importFileName.value = "";
+	importFileNames.value = [];
+	importFileSize.value = 0;
 }
 
 function importPayload(): BodyInit {
-  return importFileBlob.value ?? importText.value;
+	return importText.value;
+}
+
+function currentImportProxyOptions(): ImportProxyOptions {
+  return {
+    mode: importProxyMode.value,
+    proxyId: importProxyMode.value === "override" ? importProxyID.value : null,
+  };
+}
+
+function previewProxyLabel(proxyID?: number, specified = false) {
+  if (!specified) return t("accounts.importProxyPreserveShort");
+  if (!proxyID) return t("accounts.noProxy");
+  return proxies.value.find((proxy) => proxy.id === proxyID)?.name ?? t("accounts.importProxyMissing", { id: proxyID });
 }
 
 async function previewImport() {
@@ -245,9 +294,13 @@ async function previewImport() {
     app.toast(t("accounts.importEmpty"), "error");
     return;
   }
+  if (importProxyMode.value === "override" && !importProxyID.value) {
+    app.toast(t("accounts.importProxyRequired"), "error");
+    return;
+  }
   importing.value = true;
   try {
-    importPreview.value = await api.previewImport(importPayload());
+    importPreview.value = await api.previewImport(importPayload(), currentImportProxyOptions());
     importStage.value = "preview";
   } catch (error) {
     app.toast((error as Error).message, "error");
@@ -264,6 +317,7 @@ async function commitImport() {
       importPayload(),
       importPreview.value.content_sha256,
       validateAfterImport.value,
+      currentImportProxyOptions(),
     );
     importStage.value = "result";
     await load();
@@ -281,6 +335,14 @@ async function load() {
     accounts.value = acc.accounts || [];
     usage.value = acc.usage || {};
     proxies.value = prox.proxies || [];
+		if (detailTarget.value) {
+			const refreshed = accounts.value.find((account) => account.id === detailTarget.value?.id) ?? null;
+			detailTarget.value = refreshed;
+			if (refreshed) {
+				limitsMaxConcurrency.value = refreshed.max_concurrency ?? 3;
+				limitsQueueCapacity.value = refreshed.queue_capacity ?? 20;
+			}
+		}
 		accountStrategy.value = settings.account_strategy;
     if (!testModel.value) testModel.value = settings.default_model;
     if (testModel.value && !modelOptions.value.includes(testModel.value)) {
@@ -289,7 +351,13 @@ async function load() {
     const cloudStatus = await api.cloudStatus().catch(() => null);
     cloudAuthenticated.value = Boolean(cloudStatus?.authenticated);
     if (cloudAuthenticated.value) {
-      cloudShares.value = (await api.cloudShares()).shares || [];
+      try {
+        cloudShares.value = (await api.cloudShares()).shares || [];
+      } catch {
+        cloudShares.value = [];
+        const refreshedStatus = await api.cloudStatus().catch(() => null);
+        cloudAuthenticated.value = Boolean(refreshedStatus?.authenticated);
+      }
     } else {
       cloudShares.value = [];
     }
@@ -300,11 +368,59 @@ async function load() {
   }
 }
 
+function mergeRuntimeStates(states: AccountRuntimeState[]) {
+  const byID = new Map(states.map((state) => [state.id, state]));
+  accounts.value = accounts.value.map((account) => {
+    const state = byID.get(account.id);
+    if (!state) return account;
+    return {
+      ...account,
+      status: state.status,
+      status_reason: state.status_reason || undefined,
+      rate_limited_until: state.rate_limited_until ?? null,
+      in_flight: state.in_flight,
+      waiting: state.waiting,
+    };
+  });
+  if (detailTarget.value) {
+    detailTarget.value = accounts.value.find((account) => account.id === detailTarget.value?.id) ?? null;
+  }
+}
+
+function scheduleRuntimePoll(delay = 1000) {
+  window.clearTimeout(runtimePollTimer);
+  if (!pageMounted || document.hidden) return;
+  runtimePollTimer = window.setTimeout(pollRuntime, delay);
+}
+
+async function pollRuntime() {
+  if (!pageMounted || document.hidden || runtimePollPending) return;
+  runtimePollPending = true;
+  try {
+    const response = await api.accountRuntime();
+    mergeRuntimeStates(response.accounts || []);
+  } catch {
+    // The full account load remains available if this lightweight refresh is temporarily unavailable.
+  } finally {
+    runtimePollPending = false;
+    scheduleRuntimePoll();
+  }
+}
+
+function onVisibilityChange() {
+  if (document.hidden) {
+    window.clearTimeout(runtimePollTimer);
+    return;
+  }
+  void pollRuntime();
+}
+
 function sharesForAccount(account: Account): CloudShare[] {
   return cloudShares.value.filter((share) => share.account_uid === account.client_uid);
 }
 
 function openShare(account: Account) {
+	detailTarget.value = null;
   shareTarget.value = account;
   shareQuota.value = 0;
   shareExpires.value = "";
@@ -394,7 +510,17 @@ async function copyShareValue(value: string) {
   }
 }
 
+async function copyTestDetails(value: string) {
+  try {
+    await navigator.clipboard.writeText(value);
+    app.toast(t("accounts.testErrorCopied"), "success");
+  } catch {
+    app.toast(t("accounts.copyFailed"), "error");
+  }
+}
+
 function openTest(a: Account) {
+	detailTarget.value = null;
   testTarget.value = a;
   testResult.value = null;
   testError.value = "";
@@ -432,32 +558,90 @@ async function forceReset(a: Account) {
   }
 }
 
+function openDetails(account: Account) {
+	detailTarget.value = account;
+	limitsMaxConcurrency.value = account.max_concurrency ?? 3;
+	limitsQueueCapacity.value = account.queue_capacity ?? 20;
+}
+
+function closeDetails() {
+	if (limitsSaving.value) return;
+	detailTarget.value = null;
+}
+
+async function toggleAccount(account: Account, enabled: boolean) {
+	accountToggling.value[account.id] = true;
+	try {
+		await api.setAccountStatus(account.id, enabled ? "active" : "disabled");
+		app.toast(t(enabled ? "accounts.accountEnabled" : "accounts.accountDisabled"), "success");
+		await load();
+		await app.refreshStatus();
+	} catch (error) {
+		app.toast((error as Error).message, "error");
+	} finally {
+		accountToggling.value[account.id] = false;
+	}
+}
+
+async function saveAccountLimits() {
+	if (!detailTarget.value) return;
+	if (limitsMaxConcurrency.value < 1 || limitsMaxConcurrency.value > 100 || limitsQueueCapacity.value < 0 || limitsQueueCapacity.value > 1000) {
+		app.toast(t("accounts.limitsInvalid"), "error");
+		return;
+	}
+	limitsSaving.value = true;
+	try {
+		const result = await api.setAccountLimits(detailTarget.value.id, {
+			max_concurrency: limitsMaxConcurrency.value,
+			queue_capacity: limitsQueueCapacity.value,
+		});
+		detailTarget.value = result.account;
+		app.toast(t("accounts.limitsSaved"), "success");
+		await load();
+	} catch (error) {
+		app.toast((error as Error).message, "error");
+	} finally {
+		limitsSaving.value = false;
+	}
+}
+
 function fmtCost(n?: number) {
   if (!n) return "$0.0000";
   return "$" + n.toFixed(4);
 }
 
-async function startLogin() {
+function openOAuthProxy() {
+	importChooserOpen.value = false;
+  oauthProxyID.value = null;
+  oauthProxyOpen.value = true;
+}
+
+async function startLogin(proxyID: number | null = oauthProxyID.value) {
+	importChooserOpen.value = false;
   loginError.value = "";
+  oauthStarting.value = true;
   try {
-    const r = await api.oauthStart(null);
+    const r = await api.oauthStart(proxyID);
     loginUrl.value = r.auth_url;
     loginState.value = r.state;
+    oauthProxyOpen.value = false;
     loginOpen.value = true;
     openUrl(r.auth_url);
     beginPoll();
   } catch (e) {
     app.toast((e as Error).message, "error");
+  } finally {
+    oauthStarting.value = false;
   }
 }
 
 function beginPoll() {
-  clearInterval(pollTimer);
-  pollTimer = window.setInterval(async () => {
+  clearInterval(oauthPollTimer);
+  oauthPollTimer = window.setInterval(async () => {
     try {
       const r = await api.oauthPoll(loginState.value);
       if (r.done) {
-        clearInterval(pollTimer);
+        clearInterval(oauthPollTimer);
         if (r.error) {
           loginError.value = r.error;
         } else {
@@ -474,7 +658,7 @@ function beginPoll() {
 }
 
 function cancelLogin() {
-  clearInterval(pollTimer);
+  clearInterval(oauthPollTimer);
   loginOpen.value = false;
 }
 
@@ -482,6 +666,7 @@ async function confirmDelete() {
   if (!deleteTarget.value) return;
   try {
     await api.deleteAccount(deleteTarget.value.id);
+		if (detailTarget.value?.id === deleteTarget.value.id) detailTarget.value = null;
     app.toast(t("common.delete") + " ✓", "success");
     deleteTarget.value = null;
     await load();
@@ -491,8 +676,8 @@ async function confirmDelete() {
   }
 }
 
-async function reLogin() {
-  await startLogin();
+async function reLogin(account: Account) {
+  await startLogin(account.proxy_id ?? null);
 }
 
 async function refreshToken(a: Account) {
@@ -529,8 +714,30 @@ function fmtDate(s?: string | null) {
   return new Date(s).toLocaleString();
 }
 
+function accountStatusReason(account: Account) {
+	if (!account.status_reason && account.status === "rate_limited" && account.rate_limited_until) {
+		const seconds = Math.max(0, Math.ceil((new Date(account.rate_limited_until).getTime() - Date.now()) / 1000));
+		return seconds > 0 ? t("accounts.statusReason.rate_limited_until", { time: fmtReset(seconds) }) : "";
+	}
+	if (!account.status_reason) return "";
+	if (account.status_reason === "transient_rate_limit") {
+		const seconds = account.rate_limited_until
+			? Math.max(0, Math.ceil((new Date(account.rate_limited_until).getTime() - Date.now()) / 1000))
+			: 0;
+		return seconds > 0
+			? t("accounts.statusReason.transient_rate_limit_until", { time: fmtReset(seconds) })
+			: t("accounts.statusReason.transient_rate_limit");
+	}
+	if (["manually_disabled", "auto_disabled_auth_failures", "auto_disabled_account_inactive", "transient_rate_limit", "quota_exhausted"].includes(account.status_reason)) {
+		return t(`accounts.statusReason.${account.status_reason}`);
+	}
+	return account.status_reason;
+}
+
 onMounted(() => {
-  load();
+  pageMounted = true;
+  document.addEventListener("visibilitychange", onVisibilityChange);
+  void load().then(() => pollRuntime());
   api
     .listModels()
     .then((r) => {
@@ -541,161 +748,182 @@ onMounted(() => {
     })
     .catch(() => {});
 });
-onUnmounted(() => clearInterval(pollTimer));
+onUnmounted(() => {
+  pageMounted = false;
+  clearInterval(oauthPollTimer);
+  clearTimeout(runtimePollTimer);
+  document.removeEventListener("visibilitychange", onVisibilityChange);
+});
 </script>
 
 <template>
-  <div>
+  <div class="accounts-page">
     <div class="page-header row-between">
       <div>
         <h1 class="page-title">{{ t("accounts.title") }}</h1>
         <p class="page-desc">{{ t("accounts.desc") }}</p>
 				<p class="faint text-sm">{{ t(`accounts.strategy.${accountStrategy}`) }}</p>
       </div>
-      <div class="flex gap-8" style="flex-wrap: wrap; justify-content: flex-end">
-        <button class="btn btn-ghost" @click="openAPIKey">
-          <Icon name="key" :size="16" /> {{ t("accounts.addAPIKey") }}
-        </button>
-        <button class="btn btn-ghost" @click="openImport">
-          <Icon name="upload" :size="16" /> {{ t("accounts.import") }}
-        </button>
-        <button class="btn btn-primary" @click="startLogin">
-          <Icon name="plus" :size="16" /> {{ t("accounts.login") }}
-        </button>
-      </div>
+      <button class="btn btn-primary" data-test="account-import-open" @click="openImportChooser">
+        <Icon name="upload" :size="16" /> {{ t("accounts.importAccountTitle") }}
+      </button>
     </div>
 
     <SkeletonBlock v-if="loading" :cards="2" :rows="4" />
 
     <div v-else-if="accounts.length === 0" class="card">
       <EmptyState icon="accounts" :title="t('accounts.empty')" :description="t('accounts.emptyDesc')">
-        <div class="flex gap-8"><button class="btn btn-primary" @click="startLogin"><Icon name="plus" :size="16" /> {{ t("accounts.login") }}</button><button class="btn btn-ghost" @click="openAPIKey"><Icon name="key" :size="16" /> {{ t("accounts.addAPIKey") }}</button></div>
+        <button class="btn btn-primary" @click="openImportChooser"><Icon name="upload" :size="16" /> {{ t("accounts.importAccountTitle") }}</button>
       </EmptyState>
     </div>
 
-    <div v-else class="grid grid-2">
-      <div v-for="a in accounts" :key="a.id" class="card">
-        <div class="row-between" style="margin-bottom: 12px">
-          <div class="flex items-center gap-12" style="min-width: 0; flex: 1">
-            <div class="brand-logo" style="flex-shrink: 0; background: linear-gradient(135deg, #d97757, #b8532f)">
-              {{ (a.email || "?").charAt(0).toUpperCase() }}
-            </div>
-            <div style="min-width: 0">
-              <div style="font-weight: 600">{{ a.email || t("common.unknown") }}</div>
-              <div class="flex items-center gap-8" style="margin-top: 3px">
-                <span class="badge badge-neutral">{{ t(`accounts.accountType.${a.account_type}`) }}</span>
-                <span class="faint text-sm" style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
-                  {{ a.account_type === "api_key" ? a.base_url : (a.plan_type || "ChatGPT") }}
-                </span>
-              </div>
-            </div>
-          </div>
-          <span class="badge" style="flex-shrink: 0" :class="statusBadge(a.status)">
-            <span class="badge-dot"></span>
-            {{ t("accounts.status." + a.status) }}
-          </span>
-        </div>
-
-        <div
-          v-if="a.status === 'refresh_failed'"
-          class="text-sm"
-          style="color: var(--danger); margin-bottom: 10px; overflow-wrap: anywhere"
-        >
-          {{ a.status_reason || "" }}
-        </div>
-
-        <div class="list" style="margin-bottom: 12px">
-          <div v-if="a.account_type === 'oauth'" class="list-row" style="padding: 7px 0">
-            <span class="faint text-sm" style="flex: 1">{{ t("accounts.expiresAt") }}</span>
-            <span class="text-sm">{{ fmtDate(a.expires_at) }}</span>
-          </div>
-          <div v-if="a.account_type === 'oauth'" class="list-row" style="padding: 7px 0">
-            <span class="faint text-sm" style="flex: 1">{{ t("accounts.lastUsed") }}</span>
-            <span class="text-sm">{{ fmtDate(a.last_used_at) }}</span>
-          </div>
-					<div class="list-row" style="padding: 7px 0">
-						<span class="faint text-sm" style="flex: 1">{{ t("accounts.lastSuccess") }}</span>
-						<span class="text-sm">{{ fmtDate(a.last_success_at) }}</span>
-					</div>
-					<div v-if="a.next_retry_at" class="list-row" style="padding: 7px 0">
-						<span class="faint text-sm" style="flex: 1">{{ t("accounts.nextRetry") }}</span>
-						<span class="text-sm">{{ fmtDate(a.next_retry_at) }}</span>
-					</div>
-          <div class="list-row" style="padding: 7px 0">
-            <span class="faint text-sm" style="flex: 1">{{ t("accounts.tokensUsed") }}</span>
-            <span class="text-sm mono" :title="`${exactTokens(usage[a.id]?.total_tokens)} tokens`">{{ formatTokens(usage[a.id]?.total_tokens) }}</span>
-          </div>
-          <div class="list-row" style="padding: 7px 0">
-            <span class="faint text-sm" style="flex: 1">{{ t("accounts.estCost") }}</span>
-            <span class="text-sm mono">{{ fmtCost(usage[a.id]?.cost_usd) }}</span>
-          </div>
-        </div>
-
-        <div v-if="a.account_type === 'oauth' && a.codex_usage" class="usage-windows">
-          <div v-for="(w, wi) in usageWindows(a.codex_usage)" :key="wi" class="usage-window">
-            <div class="usage-window-head">
-              <span class="faint text-sm">{{ w.label }}</span>
-              <span class="text-sm mono">{{ pctLabel(w.used) }}</span>
-            </div>
-            <div class="usage-bar">
-              <div class="usage-fill" :class="usageBarClass(w.used)" :style="{ width: pct(w.used) + '%' }"></div>
-            </div>
-            <div v-if="fmtReset(w.reset)" class="faint text-xs" style="margin-top: 3px">
-              {{ t("accounts.resetIn", { time: fmtReset(w.reset) }) }}
+    <div v-else class="account-list" data-test="account-list">
+      <article v-for="a in accounts" :key="a.id" class="account-row" :class="{ 'is-disabled': a.status === 'disabled' }" data-test="account-row">
+        <div class="account-identity">
+          <div class="brand-logo account-avatar">{{ (a.email || "?").charAt(0).toUpperCase() }}</div>
+          <div class="account-name-wrap">
+            <strong :title="a.email || t('common.unknown')">{{ a.email || t("common.unknown") }}</strong>
+            <div class="account-subline">
+              <span class="badge badge-neutral">{{ t(`accounts.accountType.${a.account_type}`) }}</span>
+              <span class="account-subtitle" :title="a.account_type === 'api_key' ? a.base_url : (a.plan_type || 'ChatGPT')">
+                {{ a.account_type === "api_key" ? a.base_url : (a.plan_type || "ChatGPT") }}
+              </span>
             </div>
           </div>
         </div>
-
-        <div class="field" style="margin-bottom: 12px">
-          <label class="field-label">{{ t("accounts.bindProxy") }}</label>
-          <select
-            class="select"
-            :value="a.proxy_id ?? ''"
-            @change="bindProxy(a, ($event.target as HTMLSelectElement).value ? Number(($event.target as HTMLSelectElement).value) : null)"
-          >
-            <option value="">{{ t("accounts.noProxy") }}</option>
-            <option v-for="p in proxies" :key="p.id" :value="p.id">
-              {{ p.name }} ({{ p.type }})
-            </option>
-          </select>
+        <div class="account-health">
+          <span class="badge" :class="statusBadge(a.status)"><span class="badge-dot"></span>{{ t("accounts.status." + a.status) }}</span>
+          <small v-if="accountStatusReason(a)" :title="accountStatusReason(a)">{{ accountStatusReason(a) }}</small>
+          <small v-else>{{ t("accounts.lastSuccess") }} · {{ fmtDate(a.last_success_at) }}</small>
         </div>
-
-        <div class="flex gap-8" style="margin-bottom: 8px">
-          <button class="btn btn-primary btn-sm" style="flex: 1" @click="openTest(a)">
+        <div class="account-metric">
+          <span>{{ t("accounts.tokensUsed") }}</span>
+          <strong class="mono" :title="`${exactTokens(usage[a.id]?.total_tokens)} tokens`">{{ formatTokens(usage[a.id]?.total_tokens) }}</strong>
+        </div>
+        <div class="account-metric">
+          <span>{{ t("accounts.estCost") }}</span>
+          <strong class="mono">{{ fmtCost(usage[a.id]?.cost_usd) }}</strong>
+        </div>
+        <div class="account-load">
+          <span>{{ t("accounts.concurrentLoad", { current: a.in_flight ?? 0, max: a.max_concurrency ?? 3 }) }}</span>
+          <span>{{ t("accounts.queueLoad", { current: a.waiting ?? 0, max: a.queue_capacity ?? 20 }) }}</span>
+        </div>
+        <div class="account-row-actions">
+          <label class="switch account-switch" :title="t(a.status === 'disabled' ? 'accounts.enableAccount' : 'accounts.disableAccount')">
+            <input
+              type="checkbox"
+              :aria-label="t(a.status === 'disabled' ? 'accounts.enableAccount' : 'accounts.disableAccount')"
+              :checked="a.status !== 'disabled'"
+              :disabled="accountToggling[a.id]"
+              @change="toggleAccount(a, ($event.target as HTMLInputElement).checked)"
+            />
+            <span class="slider"></span>
+          </label>
+          <button class="btn btn-ghost btn-sm" data-test="account-test" @click="openTest(a)">
             <Icon name="bolt" :size="14" /> {{ t("accounts.test") }}
           </button>
-          <button
-            v-if="a.status !== 'active'"
-            class="btn btn-ghost btn-sm"
-            style="flex: 1"
-            :disabled="resetting[a.id]"
-            @click="forceReset(a)"
-          >
-            <Icon name="check" :size="14" /> {{ t("accounts.forceReset") }}
+          <button class="btn btn-ghost btn-sm" data-test="account-details" @click="openDetails(a)">
+            <Icon name="info" :size="14" /> {{ t("accounts.viewDetails") }}
           </button>
         </div>
+      </article>
+    </div>
 
-        <div class="flex gap-8">
-          <button v-if="cloudAuthenticated" class="btn btn-ghost btn-sm" style="flex: 1" data-test="account-share" @click="openShare(a)">
-            <Icon name="link" :size="14" /> {{ t("accounts.share") }}<span v-if="sharesForAccount(a).length">· {{ sharesForAccount(a).length }}</span>
-          </button>
-          <button
-            v-if="a.account_type === 'oauth' && a.status === 'refresh_failed'"
-            class="btn btn-primary btn-sm"
-            style="flex: 1"
-            @click="reLogin"
-          >
-            <Icon name="refresh" :size="14" /> {{ t("accounts.relogin") }}
-          </button>
-          <button v-else-if="a.account_type === 'oauth'" class="btn btn-ghost btn-sm" style="flex: 1" @click="refreshToken(a)">
-            <Icon name="refresh" :size="14" /> {{ t("common.refresh") }}
-          </button>
-          <button class="btn btn-danger btn-sm" @click="deleteTarget = a">
-            <Icon name="trash" :size="14" />
-          </button>
+    <!-- Import method chooser -->
+    <Teleport to="body">
+      <div v-if="importChooserOpen" class="modal-backdrop" @click.self="importChooserOpen = false">
+        <div class="modal import-chooser" role="dialog" aria-modal="true" @keydown.esc="importChooserOpen = false">
+          <h3 class="modal-title">{{ t("accounts.importAccountTitle") }}</h3>
+          <p class="modal-desc">{{ t("accounts.importMethodHint") }}</p>
+          <div class="import-methods">
+            <button type="button" data-test="import-method-api" @click="openAPIKey">
+              <Icon name="key" :size="20" /><span><strong>{{ t("accounts.importMethodAPI") }}</strong><small>{{ t("accounts.importMethodAPIDesc") }}</small></span>
+            </button>
+            <button type="button" data-test="import-method-oauth" @click="openOAuthProxy">
+              <Icon name="external" :size="20" /><span><strong>{{ t("accounts.importMethodOAuth") }}</strong><small>{{ t("accounts.importMethodOAuthDesc") }}</small></span>
+            </button>
+            <button type="button" data-test="import-method-json" @click="openImport">
+              <Icon name="upload" :size="20" /><span><strong>{{ t("accounts.importMethodJSON") }}</strong><small>{{ t("accounts.importMethodJSONDesc") }}</small></span>
+            </button>
+          </div>
+          <div class="modal-actions"><button class="btn btn-ghost" @click="importChooserOpen = false">{{ t("common.cancel") }}</button></div>
         </div>
       </div>
-    </div>
+    </Teleport>
+
+    <!-- Account details -->
+    <Teleport to="body">
+      <div v-if="detailTarget" class="modal-backdrop" @click.self="closeDetails">
+        <div class="modal account-detail-modal" data-test="account-detail-modal" role="dialog" aria-modal="true" @keydown.esc="closeDetails">
+          <div class="account-detail-head">
+            <div class="account-identity">
+              <div class="brand-logo account-avatar">{{ (detailTarget.email || "?").charAt(0).toUpperCase() }}</div>
+              <div class="account-name-wrap"><h3 class="modal-title">{{ detailTarget.email || t("common.unknown") }}</h3><div class="account-subline"><span class="badge badge-neutral">{{ t(`accounts.accountType.${detailTarget.account_type}`) }}</span><span class="badge" :class="statusBadge(detailTarget.status)">{{ t(`accounts.status.${detailTarget.status}`) }}</span></div></div>
+            </div>
+            <button class="btn btn-ghost btn-sm" data-test="account-detail-close" @click="closeDetails">{{ t("common.close") }}</button>
+          </div>
+          <div class="account-detail-scroll" data-test="account-detail-scroll">
+            <p v-if="accountStatusReason(detailTarget)" class="detail-status-reason">{{ accountStatusReason(detailTarget) }}</p>
+
+            <section class="detail-section">
+              <h4>{{ t("accounts.detailIdentity") }}</h4>
+              <div class="detail-grid">
+                <div><span>{{ t("accounts.plan") }}</span><strong>{{ detailTarget.plan_type || "—" }}</strong></div>
+                <div><span>{{ t("accounts.accountId") }}</span><strong class="mono detail-value">{{ detailTarget.chatgpt_account_id || "—" }}</strong></div>
+                <div><span>{{ t("accounts.expiresAt") }}</span><strong>{{ fmtDate(detailTarget.expires_at) }}</strong></div>
+                <div><span>{{ t("accounts.createdAt") }}</span><strong>{{ fmtDate(detailTarget.created_at) }}</strong></div>
+                <div v-if="detailTarget.account_type === 'api_key'" class="detail-wide"><span>Base URL</span><strong class="mono detail-value">{{ detailTarget.base_url }}</strong></div>
+              </div>
+            </section>
+
+            <section class="detail-section">
+              <h4>{{ t("accounts.detailHealth") }}</h4>
+              <div class="detail-grid">
+                <div><span>{{ t("accounts.lastUsed") }}</span><strong>{{ fmtDate(detailTarget.last_used_at) }}</strong></div>
+                <div><span>{{ t("accounts.lastSuccess") }}</span><strong>{{ fmtDate(detailTarget.last_success_at) }}</strong></div>
+                <div><span>{{ t("accounts.nextRetry") }}</span><strong>{{ fmtDate(detailTarget.next_retry_at) }}</strong></div>
+                <div><span>{{ t("accounts.failureCount") }}</span><strong>{{ detailTarget.consecutive_failures ?? 0 }}</strong></div>
+              </div>
+            </section>
+
+            <section class="detail-section">
+              <h4>{{ t("accounts.detailUsage") }}</h4>
+              <div class="usage-stat-grid">
+                <div><span>{{ t("statistics.requests") }}</span><strong>{{ usage[detailTarget.id]?.requests ?? 0 }}</strong></div>
+                <div><span>{{ t("statistics.totalTokens") }}</span><strong class="mono">{{ formatTokens(usage[detailTarget.id]?.total_tokens) }}</strong></div>
+                <div><span>{{ t("accounts.cachedTokens") }}</span><strong class="mono">{{ formatTokens(usage[detailTarget.id]?.cached_tokens) }}</strong></div>
+                <div><span>{{ t("accounts.estCost") }}</span><strong class="mono">{{ fmtCost(usage[detailTarget.id]?.cost_usd) }}</strong></div>
+              </div>
+              <div v-if="detailTarget.account_type === 'oauth' && detailTarget.codex_usage" class="usage-windows detail-usage-windows">
+                <div v-for="(w, wi) in usageWindows(detailTarget.codex_usage)" :key="wi" class="usage-window">
+                  <div class="usage-window-head"><span class="faint text-sm">{{ w.label }}</span><span class="text-sm mono">{{ pctLabel(w.used) }}</span></div>
+                  <div class="usage-bar"><div class="usage-fill" :class="usageBarClass(w.used)" :style="{ width: pct(w.used) + '%' }"></div></div>
+                  <div v-if="fmtReset(w.reset)" class="faint text-xs">{{ t("accounts.resetIn", { time: fmtReset(w.reset) }) }}</div>
+                </div>
+              </div>
+            </section>
+
+            <section class="detail-section">
+              <div class="detail-section-head"><h4>{{ t("accounts.detailScheduling") }}</h4><span>{{ t("accounts.runtimeLoad", { active: detailTarget.in_flight ?? 0, waiting: detailTarget.waiting ?? 0 }) }}</span></div>
+              <div class="limit-grid">
+                <label class="field"><span class="field-label">{{ t("accounts.maxConcurrency") }}</span><input v-model.number="limitsMaxConcurrency" class="input" type="number" min="1" max="100" /></label>
+                <label class="field"><span class="field-label">{{ t("accounts.queueCapacity") }}</span><input v-model.number="limitsQueueCapacity" class="input" type="number" min="0" max="1000" /></label>
+                <button class="btn btn-ghost" :disabled="limitsSaving" @click="saveAccountLimits"><Icon name="check" :size="14" />{{ t("common.save") }}</button>
+              </div>
+              <label class="field detail-proxy"><span class="field-label">{{ t("accounts.bindProxy") }}</span><select class="select" :value="detailTarget.proxy_id ?? ''" @change="bindProxy(detailTarget, ($event.target as HTMLSelectElement).value ? Number(($event.target as HTMLSelectElement).value) : null)"><option value="">{{ t("accounts.noProxy") }}</option><option v-for="p in proxies" :key="p.id" :value="p.id">{{ p.name }} ({{ p.type }})</option></select></label>
+            </section>
+
+            <div class="detail-actions">
+              <button v-if="detailTarget.status !== 'active'" class="btn btn-ghost btn-sm" :disabled="resetting[detailTarget.id]" @click="forceReset(detailTarget)"><Icon name="check" :size="14" />{{ t("accounts.forceReset") }}</button>
+              <button v-if="cloudAuthenticated" class="btn btn-ghost btn-sm" data-test="account-share" @click="openShare(detailTarget)"><Icon name="link" :size="14" />{{ t("accounts.share") }}</button>
+              <button v-if="detailTarget.account_type === 'oauth' && detailTarget.status === 'refresh_failed'" class="btn btn-primary btn-sm" @click="reLogin(detailTarget)"><Icon name="refresh" :size="14" />{{ t("accounts.relogin") }}</button>
+              <button v-else-if="detailTarget.account_type === 'oauth'" class="btn btn-ghost btn-sm" @click="refreshToken(detailTarget)"><Icon name="refresh" :size="14" />{{ t("common.refresh") }}</button>
+              <button class="btn btn-danger btn-sm detail-delete" :title="t('common.delete')" @click="deleteTarget = detailTarget"><Icon name="trash" :size="14" /></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- Cloud share modal -->
     <Teleport to="body">
@@ -752,6 +980,28 @@ onUnmounted(() => clearInterval(pollTimer));
       </div>
     </Teleport>
 
+    <!-- OAuth proxy selection -->
+    <Teleport to="body">
+      <div v-if="oauthProxyOpen" class="modal-backdrop" @click.self="oauthProxyOpen = false">
+        <div class="modal oauth-proxy-modal" data-test="oauth-proxy-modal" role="dialog" aria-modal="true" @keydown.esc="oauthProxyOpen = false">
+          <h3 class="modal-title">{{ t("accounts.oauthProxyTitle") }}</h3>
+          <p class="modal-desc">{{ t("accounts.oauthProxyHint") }}</p>
+          <div class="field">
+            <span class="field-label">{{ t("accounts.importProxy") }}</span>
+            <AccountProxySelect v-model="oauthProxyID" :proxies="proxies" :disabled="oauthStarting" />
+          </div>
+          <div class="modal-actions">
+            <button class="btn btn-ghost" :disabled="oauthStarting" @click="oauthProxyOpen = false">{{ t("common.cancel") }}</button>
+            <button class="btn btn-primary" data-test="oauth-proxy-continue" :disabled="oauthStarting" @click="startLogin()">
+              <Icon v-if="oauthStarting" name="refresh" class="spin" :size="14" />
+              <Icon v-else name="external" :size="14" />
+              {{ t("accounts.oauthContinue") }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
     <!-- Login modal -->
     <Teleport to="body">
       <div v-if="loginOpen" class="modal-backdrop" @click.self="cancelLogin">
@@ -771,7 +1021,7 @@ onUnmounted(() => clearInterval(pollTimer));
           </div>
           <div class="modal-actions">
             <button class="btn btn-ghost" @click="cancelLogin">{{ t("common.cancel") }}</button>
-            <button v-if="loginError" class="btn btn-primary" @click="startLogin">
+            <button v-if="loginError" class="btn btn-primary" @click="startLogin()">
               {{ t("common.retry") }}
             </button>
           </div>
@@ -782,50 +1032,57 @@ onUnmounted(() => clearInterval(pollTimer));
     <!-- Connectivity test modal -->
     <Teleport to="body">
       <div v-if="testOpen" class="modal-backdrop" @click.self="testOpen = false">
-        <div class="modal" style="max-width: 520px">
-          <h3 class="modal-title">{{ t("accounts.testTitle") }}</h3>
-          <p class="modal-desc">{{ testTarget?.email }}</p>
-          <div class="field">
-            <label class="field-label">{{ t("accounts.testModel") }}</label>
-            <select v-model="testModel" class="select" :disabled="testRunning">
-              <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
-            </select>
+        <div class="modal account-test-modal" data-test="account-test-modal" role="dialog" aria-modal="true" @keydown.esc="testOpen = false">
+          <div class="account-test-head">
+            <h3 class="modal-title">{{ t("accounts.testTitle") }}</h3>
+            <p class="modal-desc">{{ testTarget?.email }}</p>
+          </div>
+          <div class="account-test-scroll">
+            <div class="field">
+              <label class="field-label">{{ t("accounts.testModel") }}</label>
+              <select v-model="testModel" class="select" :disabled="testRunning">
+                <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
+              </select>
+            </div>
+
+            <div v-if="testRunning" class="test-running">
+              <Icon name="refresh" class="spin" :size="18" />
+              <span class="muted">{{ t("accounts.testing") }}</span>
+            </div>
+
+            <div v-else-if="testError" class="test-result-panel is-failed">
+              <div class="test-result-head">
+                <strong>{{ t("accounts.testFailed") }}</strong>
+                <button class="copy-btn" type="button" :title="t('accounts.copyTestError')" @click="copyTestDetails(testError)"><Icon name="copy" :size="14" /></button>
+              </div>
+              <pre class="test-error-detail" data-test="account-test-error">{{ testError }}</pre>
+            </div>
+
+            <div v-else-if="testResult" class="test-result-panel" :class="{ 'is-failed': !testResult.ok }">
+              <div class="test-result-head">
+                <span class="badge" :class="testResult.ok ? 'badge-success' : 'badge-danger'">
+                  <span class="badge-dot"></span>
+                  {{ testResult.ok ? t("accounts.testPass") : t("accounts.testFailed") }}
+                </span>
+                <span class="faint text-sm">HTTP {{ testResult.status }} · {{ testResult.latency_ms }}ms</span>
+              </div>
+              <div v-if="!testResult.ok && testResult.error" class="test-error-wrap">
+                <button class="copy-btn" type="button" :title="t('accounts.copyTestError')" @click="copyTestDetails(testResult.error)"><Icon name="copy" :size="14" /></button>
+                <pre class="test-error-detail" data-test="account-test-error">{{ testResult.error }}</pre>
+              </div>
+              <pre v-if="testResult.sample" class="test-sample">{{ testResult.sample }}</pre>
+              <div class="list-row test-stat-row">
+                <span class="faint text-sm">{{ t("accounts.tokensUsed") }}</span>
+                <span class="text-sm mono" :title="`${exactTokens(testResult.total_tokens)} tokens`">{{ formatTokens(testResult.total_tokens) }} ({{ formatTokens(testResult.prompt_tokens) }}+{{ formatTokens(testResult.completion_tokens) }})</span>
+              </div>
+              <div class="list-row test-stat-row">
+                <span class="faint text-sm">{{ t("accounts.statusAfter") }}</span>
+                <span class="text-sm">{{ t("accounts.status." + testResult.account_status) }}</span>
+              </div>
+            </div>
           </div>
 
-          <div v-if="testRunning" class="flex items-center gap-12" style="margin: 14px 0">
-            <Icon name="refresh" class="spin" :size="18" style="color: var(--primary)" />
-            <span class="muted">{{ t("accounts.testing") }}</span>
-          </div>
-
-          <div v-else-if="testError" class="card" style="margin: 12px 0; border-color: var(--danger)">
-            <div class="text-sm" style="color: var(--danger)">{{ t("accounts.testFailed") }}: {{ testError }}</div>
-          </div>
-
-          <div v-else-if="testResult" class="card" style="margin: 12px 0">
-            <div class="row-between" style="margin-bottom: 8px">
-              <span class="badge" :class="testResult.ok ? 'badge-success' : 'badge-danger'">
-                <span class="badge-dot"></span>
-                {{ testResult.ok ? t("accounts.testPass") : t("accounts.testFailed") }}
-              </span>
-              <span class="faint text-sm">HTTP {{ testResult.status }} · {{ testResult.latency_ms }}ms</span>
-            </div>
-            <div v-if="!testResult.ok && testResult.error" class="text-sm" style="color: var(--danger); margin-bottom: 8px">
-              {{ testResult.error }}
-            </div>
-            <div v-if="testResult.sample" class="code-box" style="margin-bottom: 8px">
-              <span>{{ testResult.sample }}</span>
-            </div>
-            <div class="list-row" style="padding: 5px 0">
-              <span class="faint text-sm" style="flex: 1">{{ t("accounts.tokensUsed") }}</span>
-              <span class="text-sm mono" :title="`${exactTokens(testResult.total_tokens)} tokens`">{{ formatTokens(testResult.total_tokens) }} ({{ formatTokens(testResult.prompt_tokens) }}+{{ formatTokens(testResult.completion_tokens) }})</span>
-            </div>
-            <div class="list-row" style="padding: 5px 0">
-              <span class="faint text-sm" style="flex: 1">{{ t("accounts.statusAfter") }}</span>
-              <span class="text-sm">{{ t("accounts.status." + testResult.account_status) }}</span>
-            </div>
-          </div>
-
-          <div class="modal-actions">
+          <div class="modal-actions account-test-actions">
             <button class="btn btn-ghost" @click="testOpen = false">{{ t("common.close") }}</button>
             <button class="btn btn-primary" :disabled="testRunning" @click="runTest">
               <Icon v-if="testRunning" name="refresh" class="spin" :size="14" />
@@ -854,6 +1111,10 @@ onUnmounted(() => clearInterval(pollTimer));
             <label class="field-label">{{ t("accounts.apiKeyName") }}</label>
             <input v-model="apiKeyName" class="input" type="text" :placeholder="t('accounts.apiKeyNamePlaceholder')" />
           </div>
+          <div class="field">
+            <span class="field-label">{{ t("accounts.importProxy") }}</span>
+            <AccountProxySelect v-model="apiKeyProxyID" :proxies="proxies" :disabled="apiKeyAdding" />
+          </div>
           <div class="modal-actions">
             <button class="btn btn-ghost" :disabled="apiKeyAdding" @click="closeAPIKey">{{ t("common.cancel") }}</button>
             <button class="btn btn-primary" :disabled="apiKeyAdding" @click="addAPIKey">
@@ -877,15 +1138,32 @@ onUnmounted(() => clearInterval(pollTimer));
 
           <template v-if="importStage === 'input'">
             <p class="modal-desc">{{ t("accounts.importHint") }}</p>
+            <div class="import-proxy-config">
+              <label class="field">
+                <span class="field-label">{{ t("accounts.importProxyMode") }}</span>
+                <select v-model="importProxyMode" class="select" data-test="import-proxy-mode" :disabled="importing">
+                  <option value="preserve">{{ t("accounts.importProxyPreserve") }}</option>
+                  <option value="direct">{{ t("accounts.importProxyDirect") }}</option>
+                  <option value="override">{{ t("accounts.importProxyOverride") }}</option>
+                </select>
+              </label>
+              <div v-if="importProxyMode === 'override'" class="field">
+                <span class="field-label">{{ t("accounts.importProxy") }}</span>
+                <AccountProxySelect v-model="importProxyID" :proxies="proxies" :disabled="importing" />
+              </div>
+            </div>
             <div class="flex items-center gap-8" style="margin-bottom: 10px">
               <button class="btn btn-ghost btn-sm" @click="importFileInput?.click()">
                 <Icon name="upload" :size="14" /> {{ t("accounts.importChooseFile") }}
               </button>
-              <span v-if="importFileName" class="faint text-sm import-file-name">{{ importFileName }}</span>
+              <span v-if="importFileNames.length" class="faint text-sm import-file-name">
+                {{ t("accounts.importFilesSelected", { count: importFileNames.length, size: (importFileSize / 1024).toFixed(1) }) }}
+              </span>
               <input
                 ref="importFileInput"
                 type="file"
                 accept="application/json,.json,.jsonl,text/plain"
+                multiple
                 style="display: none"
                 @change="onImportFile"
               />
@@ -900,7 +1178,7 @@ onUnmounted(() => clearInterval(pollTimer));
             ></textarea>
             <div class="modal-actions">
               <button class="btn btn-ghost" @click="closeImport">{{ t("common.cancel") }}</button>
-              <button class="btn btn-primary" :disabled="importing" @click="previewImport">
+              <button class="btn btn-primary" :disabled="importing || (importProxyMode === 'override' && !importProxyID)" @click="previewImport">
                 <Icon v-if="importing" name="refresh" class="spin" :size="14" />
                 {{ t("accounts.importPreview") }}
               </button>
@@ -922,6 +1200,7 @@ onUnmounted(() => clearInterval(pollTimer));
                     <th>#</th>
                     <th>{{ t("accounts.importActionLabel") }}</th>
                     <th>{{ t("accounts.importAccount") }}</th>
+                    <th>{{ t("accounts.importProxy") }}</th>
                     <th>{{ t("accounts.importCredentials") }}</th>
                     <th>{{ t("accounts.importMessage") }}</th>
                   </tr>
@@ -936,6 +1215,7 @@ onUnmounted(() => clearInterval(pollTimer));
                       <small v-else-if="row.identity_verified" class="text-success">{{ t("accounts.importVerified") }}</small>
                       <small v-else class="faint">{{ t("accounts.importPending") }}</small>
                     </td>
+                    <td class="import-proxy-value">{{ previewProxyLabel(row.proxy_id, row.proxy_specified) }}</td>
                     <td class="import-credentials">
                       <span :class="{ active: row.has_access_token }">A</span>
                       <span :class="{ active: row.has_refresh_token }">R</span>
@@ -995,6 +1275,78 @@ onUnmounted(() => clearInterval(pollTimer));
 </template>
 
 <style scoped>
+.accounts-page { min-width: 0; container: accounts-page / inline-size; }
+.account-list { display: grid; gap: 10px; }
+.account-row { min-width: 0; min-height: 92px; display: grid; grid-template-columns: minmax(220px, 2fr) minmax(150px, 1.25fr) minmax(92px, .65fr) minmax(92px, .65fr) minmax(132px, .85fr) auto; align-items: center; gap: 14px; padding: 14px 16px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--bg-card); box-shadow: var(--shadow-xs); transform-origin: center; transition: transform var(--motion-normal) var(--motion-ease), box-shadow var(--motion-normal) var(--motion-ease), border-color var(--motion-fast) var(--motion-ease), opacity var(--motion-fast) var(--motion-ease); }
+.account-row:hover, .account-row:focus-within { transform: translateY(-1px) scale(1.002); box-shadow: var(--shadow-hover); border-color: var(--border); }
+.account-row.is-disabled { opacity: .72; }
+.account-identity { min-width: 0; display: flex; align-items: center; gap: 11px; }
+.account-avatar { flex: 0 0 auto; background: linear-gradient(135deg, #d97757, #b8532f); }
+.account-name-wrap { min-width: 0; }
+.account-name-wrap > strong, .account-name-wrap .modal-title { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-subline { min-width: 0; display: flex; align-items: center; gap: 7px; margin-top: 4px; }
+.account-subtitle { min-width: 0; overflow: hidden; color: var(--text-faint); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.account-health { min-width: 0; display: grid; justify-items: start; gap: 6px; }
+.account-health small { max-width: 100%; overflow: hidden; color: var(--text-faint); text-overflow: ellipsis; white-space: nowrap; }
+.account-metric { display: grid; gap: 4px; }
+.account-metric span, .account-load span { color: var(--text-faint); font-size: 11px; }
+.account-metric strong { font-size: 13px; }
+.account-load { display: grid; gap: 5px; }
+.account-row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+.account-switch { flex: 0 0 auto; }
+.import-chooser { max-width: 680px; }
+.import-methods { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 18px; }
+.import-methods > button { min-width: 0; min-height: 128px; display: grid; align-content: start; justify-items: start; gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-card); color: var(--text); text-align: left; cursor: pointer; }
+.import-methods > button:hover, .import-methods > button:focus-visible { border-color: var(--accent); background: var(--accent-soft); outline: none; }
+.import-methods span { min-width: 0; display: grid; gap: 6px; }
+.import-methods strong { font-size: 13px; }
+.import-methods small { color: var(--text-dim); line-height: 1.5; }
+.oauth-proxy-modal { max-width: 520px; overflow: visible; }
+.import-proxy-config { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: end; margin-bottom: 10px; }
+.import-proxy-config .field { margin: 0; }
+.import-proxy-value { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-test-modal { width: min(560px, calc(100vw - 32px)); max-width: 560px; max-height: min(86vh, 720px); display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+.account-test-head { flex: 0 0 auto; padding: 20px 22px 14px; border-bottom: 1px solid var(--border-soft); background: var(--bg-card); }
+.account-test-head .modal-desc { margin-bottom: 0; }
+.account-test-scroll { min-width: 0; min-height: 0; padding: 16px 22px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.account-test-scroll .field { margin-top: 0; }
+.account-test-actions { flex: 0 0 auto; margin: 0; padding: 14px 22px 18px; border-top: 1px solid var(--border-soft); background: var(--bg-card); }
+.test-running { display: flex; align-items: center; gap: 12px; margin: 14px 0; }
+.test-running .icon { color: var(--accent); }
+.test-result-panel { min-width: 0; max-width: 100%; margin-top: 12px; padding: 13px 14px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-elev); overflow: hidden; }
+.test-result-panel.is-failed { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); background: var(--danger-soft); }
+.test-result-head { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.test-result-head > strong { color: var(--danger); font-size: 13px; }
+.test-error-wrap { position: relative; min-width: 0; max-width: 100%; margin-top: 10px; }
+.test-error-wrap .copy-btn { position: absolute; z-index: 1; top: 6px; right: 6px; }
+.test-error-detail, .test-sample { box-sizing: border-box; min-width: 0; max-width: 100%; max-height: 180px; margin: 10px 0 0; padding: 10px 12px; overflow: auto; border: 1px solid var(--border-soft); border-radius: 6px; background: var(--bg-card); color: var(--danger); font-family: var(--font-mono); font-size: 11px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+.test-error-wrap .test-error-detail { margin-top: 0; padding-right: 42px; }
+.test-sample { color: var(--text-dim); }
+.test-stat-row { min-width: 0; gap: 12px; padding: 8px 0 0; }
+.test-stat-row > :first-child { flex: 1; }
+.test-stat-row > :last-child { min-width: 0; overflow-wrap: anywhere; text-align: right; }
+.account-detail-modal { width: min(860px, calc(100vw - 32px)); max-width: 860px; max-height: min(90vh, 900px); display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+.account-detail-head { position: relative; z-index: 1; flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 20px 22px 16px; border-bottom: 1px solid var(--border-soft); background: var(--bg-card); }
+.account-detail-scroll { min-height: 0; padding: 0 22px 22px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.detail-status-reason { margin: 12px 0 0; padding: 10px 12px; border-left: 3px solid var(--danger); background: var(--danger-soft); color: var(--danger); overflow-wrap: anywhere; }
+.detail-section { padding: 16px 0; border-bottom: 1px solid var(--border-soft); }
+.detail-section h4 { margin: 0 0 11px; font-size: 13px; }
+.detail-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.detail-section-head > span { color: var(--text-faint); font-size: 11px; }
+.detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 20px; }
+.detail-grid > div { min-width: 0; display: grid; gap: 4px; }
+.detail-grid span, .usage-stat-grid span { color: var(--text-faint); font-size: 11px; }
+.detail-grid strong, .usage-stat-grid strong { font-size: 13px; font-weight: 600; }
+.detail-wide { grid-column: 1 / -1; }
+.detail-value { overflow-wrap: anywhere; }
+.usage-stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.usage-stat-grid > div { display: grid; gap: 5px; padding: 10px 12px; background: var(--bg-elev); border-radius: 6px; }
+.detail-usage-windows { margin-top: 14px; }
+.limit-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) auto; gap: 10px; align-items: end; }
+.limit-grid .field, .detail-proxy { margin: 0; }
+.detail-proxy { margin-top: 12px; }
+.detail-actions { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 16px; }
+.detail-delete { margin-left: auto; }
 .share-modal { max-width: 720px; max-height: min(88vh, 820px); overflow-y: auto; }
 .share-custody-warning { display: flex; gap: 10px; margin: 14px 0; padding: 12px 14px; border: 1px solid rgba(193, 134, 58, .3); border-radius: 8px; background: var(--warn-soft); color: var(--warn); }
 .share-custody-warning p { margin: 3px 0 0; color: var(--text-dim); line-height: 1.5; }
@@ -1017,7 +1369,32 @@ onUnmounted(() => clearInterval(pollTimer));
 .share-row-main small { color: var(--text-faint); }
 .share-row-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .share-usage-row { display: grid; grid-template-columns: minmax(150px, 1.3fr) minmax(100px, 1fr) auto auto; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border-soft); font-size: 12px; }
+@container accounts-page (max-width: 1180px) {
+	.account-row { grid-template-columns: minmax(180px, 2fr) minmax(125px, 1.25fr) minmax(76px, .65fr) minmax(82px, .65fr) minmax(105px, .85fr) minmax(160px, auto); gap: 10px; }
+	.account-row-actions { flex-direction: column; align-items: stretch; }
+	.account-row-actions .btn { justify-content: center; }
+}
+@container accounts-page (max-width: 900px) {
+	.account-row { grid-template-columns: minmax(0, 1fr) minmax(150px, auto) minmax(160px, auto); grid-template-rows: auto auto; gap: 8px 14px; }
+	.account-identity { grid-column: 1; grid-row: 1 / span 2; }
+	.account-health { grid-column: 2; grid-row: 1; }
+	.account-load { grid-column: 2; grid-row: 2; }
+	.account-metric { display: none; }
+	.account-row-actions { grid-column: 3; grid-row: 1 / span 2; }
+}
+@container accounts-page (max-width: 720px) {
+	.account-row { grid-template-columns: minmax(0, 1fr) auto; gap: 10px 12px; }
+	.account-identity, .account-health, .account-load { grid-column: 1; grid-row: auto; }
+	.account-row-actions { grid-column: 2; grid-row: 1 / span 3; align-items: flex-end; }
+}
+@media (max-width: 1100px) {
+	.import-methods { grid-template-columns: minmax(0, 1fr); }
+	.import-methods > button { min-height: 92px; grid-template-columns: auto minmax(0, 1fr); }
+}
 @media (max-width: 720px) {
+	.detail-grid, .limit-grid, .import-proxy-config { grid-template-columns: minmax(0, 1fr); }
+	.usage-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+	.detail-wide { grid-column: auto; }
   .share-create-form { grid-template-columns: minmax(0, 1fr); }
   .share-created-content { grid-template-columns: minmax(0, 1fr); }
   .share-existing article { align-items: stretch; flex-direction: column; }

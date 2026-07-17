@@ -69,9 +69,13 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 
 	token, err := e.accounts.ValidAccessToken(ctx, authClient, acc)
 	if err != nil {
-		_ = e.store.SetAccountStatus(acc.ID, store.AccountRefreshFailed, err.Error())
+		if !isNetworkOrProxyError(err) {
+			e.recordAccountAuthFailure(acc.ID, err.Error())
+		}
 		res.Error = "令牌刷新失败: " + err.Error()
-		res.AccountStatus = string(store.AccountRefreshFailed)
+		if updated, getErr := e.store.GetAccount(acc.ID); getErr == nil {
+			res.AccountStatus = string(updated.Status)
+		}
 		e.logRequest(acc, testModel, http.StatusUnauthorized, 0, 0, time.Since(start), true, res.Error)
 		return res
 	}
@@ -118,29 +122,21 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 
 	usage := e.captureCodexUsage(acc, resp.Header)
 
-	if resp.StatusCode == http.StatusTooManyRequests {
-		until := time.Now().Add(rateLimitRetryAfter(resp.Header, usage))
-		_ = e.store.SetRateLimited(acc.ID, until)
-		res.AccountStatus = string(store.AccountRateLimited)
-		res.Error = "账号已限额（429）"
-		res.LatencyMS = time.Since(start).Milliseconds()
-		e.logRequest(acc, testModel, resp.StatusCode, 0, 0, time.Since(start), true, res.Error)
-		return res
-	}
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		msg := readUpstreamError(resp.Body)
-		_ = e.store.SetAccountStatus(acc.ID, store.AccountRefreshFailed, msg)
-		res.AccountStatus = string(store.AccountRefreshFailed)
-		res.Error = "鉴权失败: " + msg
-		res.LatencyMS = time.Since(start).Milliseconds()
-		e.logRequest(acc, testModel, resp.StatusCode, 0, 0, time.Since(start), true, res.Error)
-		return res
-	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		msg := readUpstreamError(resp.Body)
-		res.Error = msg
+		result := classifyUpstreamHTTPError(resp.StatusCode, resp.Header, msg, acc, usage)
+		switch result.outcome {
+		case outcomeRateLimited:
+			_ = e.store.SetRateLimited(acc.ID, time.Now().Add(result.retryAfter), result.statusReason)
+		case outcomeAuthFailed:
+			e.recordAccountAuthFailure(acc.ID, msg)
+		}
+		if updated, getErr := e.store.GetAccount(acc.ID); getErr == nil {
+			res.AccountStatus = string(updated.Status)
+		}
+		res.Error = result.errMsg
 		res.LatencyMS = time.Since(start).Milliseconds()
-		e.logRequest(acc, testModel, resp.StatusCode, 0, 0, time.Since(start), true, msg)
+		e.logRequestWithDetails(acc, requestLogDetails{ResolvedModel: testModel, Status: resp.StatusCode, Latency: time.Since(start), Stream: true, Error: msg, ErrorKind: result.errorKind, TerminalEvent: result.terminalEvent})
 		return res
 	}
 
@@ -179,9 +175,11 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 
 	prompt2, completion := usageCounts(state.Usage)
 	_ = e.store.TouchAccount(acc.ID)
-	_ = e.store.RecordAccountSuccess(acc.ID)
+	_ = e.store.RecordAccountTestSuccess(acc.ID)
 	res.OK = true
-	res.AccountStatus = string(store.AccountActive)
+	if updated, getErr := e.store.GetAccount(acc.ID); getErr == nil {
+		res.AccountStatus = string(updated.Status)
+	}
 	res.PromptTokens = prompt2
 	res.CompletionTokens = completion
 	res.TotalTokens = prompt2 + completion

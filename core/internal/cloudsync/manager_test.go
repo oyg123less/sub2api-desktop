@@ -212,6 +212,45 @@ func TestPendingRegistrationRestoresAfterManagerRestart(t *testing.T) {
 	}
 }
 
+func TestExpiredRefreshSessionIsClearedLocally(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/v1/auth/refresh" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"code":"invalid_refresh_token","message":"The session has expired."}}`))
+	}))
+	defer server.Close()
+
+	st := openTestStore(t, "expired-session")
+	if err := st.SaveCloudSession(store.CloudSession{
+		UserID: 1, Email: "expired@example.test", Role: "admin",
+		VaultKey: encodeBytes(make([]byte, keySize)), RefreshToken: "expired-refresh-token",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(st, &testSettings{value: store.DefaultSettings()}, server.URL, "site-key", server.Client(), nil)
+	t.Cleanup(manager.Close)
+	if !manager.Status().Authenticated {
+		t.Fatal("saved session was not restored before refresh")
+	}
+
+	err := manager.Sync(context.Background())
+	var cloudErr *CloudError
+	if !errors.As(err, &cloudErr) || cloudErr.Code != "invalid_refresh_token" {
+		t.Fatalf("sync error = %v", err)
+	}
+	status := manager.Status()
+	if status.Authenticated || status.LastErrorCode != "invalid_refresh_token" || status.NextRetryAt != nil {
+		t.Fatalf("expired session remained authenticated: %+v", status)
+	}
+	if _, err := st.LoadCloudSession(); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expired session remained persisted: %v", err)
+	}
+}
+
 func TestSyncPullsMultipleRemotePagesInOneRun(t *testing.T) {
 	cloud := newMockCloud()
 	server := httptest.NewServer(cloud)

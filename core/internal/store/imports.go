@@ -21,6 +21,8 @@ type AccountImportMutation struct {
 	ExpiresAt        time.Time
 	IdentityVerified bool
 	LiveValidated    bool
+	ProxyID          *int64
+	ProxySpecified   bool
 }
 
 type AppliedAccountImport struct {
@@ -95,9 +97,9 @@ func (s *Store) insertImportedAccount(tx *sql.Tx, mutation AccountImportMutation
 		(account_type, base_url, api_key, email, chatgpt_account_id, plan_type, access_token, refresh_token, id_token, expires_at, status, status_reason,
 		 rate_limited_until, proxy_id, last_used_at, created_at, updated_at, usage_snapshot, credential_fingerprint,
 		 last_success_at, consecutive_failures, next_retry_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,NULL,0,?,?,'',?,?,0,0)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,0,?,?,'',?,?,0,0)`,
 		string(mutation.AccountType), mutation.BaseURL, apiKeyEnc, mutation.Email, mutation.ChatGPTAccountID, mutation.PlanType,
-		accessEnc, refreshEnc, idEnc, timeToUnix(mutation.ExpiresAt), string(status), "", now, now,
+		accessEnc, refreshEnc, idEnc, timeToUnix(mutation.ExpiresAt), string(status), "", mutation.ProxyID, now, now,
 		AccountCredentialFingerprint(mutation.AccountType, mutation.AccessToken, mutation.RefreshToken, mutation.BaseURL, mutation.APIKey), lastSuccess)
 	if err != nil {
 		return 0, err
@@ -157,6 +159,9 @@ func (s *Store) updateImportedAccount(tx *sql.Tx, mutation AccountImportMutation
 			mutation.PlanType = existing.PlanType
 		}
 	}
+	if !mutation.ProxySpecified {
+		mutation.ProxyID = existing.ProxyID
+	}
 	accessEnc, err := s.cipher.Encrypt(mutation.AccessToken)
 	if err != nil {
 		return err
@@ -184,9 +189,9 @@ func (s *Store) updateImportedAccount(tx *sql.Tx, mutation AccountImportMutation
 		}
 	}
 	result, err := tx.Exec(`UPDATE accounts SET account_type=?, base_url=?, api_key=?, email=?, chatgpt_account_id=?, plan_type=?, access_token=?, refresh_token=?,
-		id_token=?, expires_at=?, status=?, status_reason=?, credential_fingerprint=?, last_success_at=?, updated_at=? WHERE id=?`,
+		id_token=?, expires_at=?, status=?, status_reason=?, proxy_id=?, credential_fingerprint=?, last_success_at=?, updated_at=? WHERE id=?`,
 		string(mutation.AccountType), mutation.BaseURL, apiKeyEnc, mutation.Email, mutation.ChatGPTAccountID, mutation.PlanType,
-		accessEnc, refreshEnc, idEnc, timeToUnix(mutation.ExpiresAt), string(status), statusReason,
+		accessEnc, refreshEnc, idEnc, timeToUnix(mutation.ExpiresAt), string(status), statusReason, mutation.ProxyID,
 		AccountCredentialFingerprint(mutation.AccountType, mutation.AccessToken, mutation.RefreshToken, mutation.BaseURL, mutation.APIKey),
 		lastSuccess, time.Now().Unix(), mutation.ExistingID)
 	if err != nil {

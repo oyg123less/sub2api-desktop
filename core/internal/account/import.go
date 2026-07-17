@@ -30,6 +30,22 @@ type ImportEntry struct {
 	ChatGPTAccountID string `json:"chatgpt_account_id"`
 	PlanType         string `json:"plan_type"`
 	ExpiresAt        string `json:"expires_at"`
+	ProxyID          *int64 `json:"proxy_id,omitempty"`
+	ProxySpecified   bool   `json:"-"`
+	ProxyError       string `json:"-"`
+}
+
+type ImportProxyMode string
+
+const (
+	ImportProxyPreserve ImportProxyMode = "preserve"
+	ImportProxyDirect   ImportProxyMode = "direct"
+	ImportProxyOverride ImportProxyMode = "override"
+)
+
+type ImportOptions struct {
+	ProxyMode ImportProxyMode
+	ProxyID   *int64
 }
 
 type ImportAction string
@@ -68,6 +84,8 @@ type ImportPreviewRow struct {
 	WarningCodes           []string      `json:"warning_codes"`
 	ErrorCode              string        `json:"error_code,omitempty"`
 	ErrorMessage           string        `json:"error_message,omitempty"`
+	ProxyID                *int64        `json:"proxy_id,omitempty"`
+	ProxySpecified         bool          `json:"proxy_specified"`
 }
 
 type ImportPreview struct {
@@ -106,12 +124,31 @@ type ImportServiceError struct {
 func (e *ImportServiceError) Error() string { return e.Message }
 
 func contentHash(raw []byte) string {
+	return contentHashWithOptions(raw, ImportOptions{})
+}
+
+func contentHashWithOptions(raw []byte, options ImportOptions) string {
 	sum := sha256.Sum256(raw)
+	if options.ProxyMode != "" && options.ProxyMode != ImportProxyPreserve {
+		value := hex.EncodeToString(sum[:]) + "\x00proxy_mode=" + string(options.ProxyMode)
+		if options.ProxyID != nil {
+			value += "\x00proxy_id=" + strconv.FormatInt(*options.ProxyID, 10)
+		}
+		sum = sha256.Sum256([]byte(value))
+	}
 	return hex.EncodeToString(sum[:])
 }
 
 func (m *Manager) PreviewImport(ctx context.Context, raw []byte) (*ImportPreview, error) {
-	preview, err := m.buildImportPreview(ctx, raw)
+	return m.PreviewImportWithOptions(ctx, raw, ImportOptions{})
+}
+
+func (m *Manager) PreviewImportWithOptions(ctx context.Context, raw []byte, options ImportOptions) (*ImportPreview, error) {
+	options, err := normalizeImportOptions(options)
+	if err != nil {
+		return nil, err
+	}
+	preview, err := m.buildImportPreview(ctx, raw, options)
 	if err != nil {
 		return nil, err
 	}
@@ -119,12 +156,12 @@ func (m *Manager) PreviewImport(ctx context.Context, raw []byte) (*ImportPreview
 	return preview, nil
 }
 
-func (m *Manager) buildImportPreview(ctx context.Context, raw []byte) (*ImportPreview, error) {
+func (m *Manager) buildImportPreview(ctx context.Context, raw []byte, options ImportOptions) (*ImportPreview, error) {
 	parsed, err := ParseImportDocument(raw)
 	if err != nil {
 		return nil, &ImportServiceError{Code: "import_parse_failed", Message: err.Error()}
 	}
-	preview := &ImportPreview{ContentSHA256: contentHash(raw), Rows: make([]ImportPreviewRow, 0, len(parsed))}
+	preview := &ImportPreview{ContentSHA256: contentHashWithOptions(raw, options), Rows: make([]ImportPreviewRow, 0, len(parsed))}
 	preview.Summary.Total = len(parsed)
 	seenIdentity := map[string]struct {
 		fingerprint string
@@ -137,6 +174,7 @@ func (m *Manager) buildImportPreview(ctx context.Context, raw []byte) (*ImportPr
 
 	for _, parsedEntry := range parsed {
 		entry := parsedEntry.Entry
+		applyImportProxyOptions(&entry, options)
 		entry.AccessToken = strings.TrimSpace(entry.AccessToken)
 		entry.RefreshToken = strings.TrimSpace(entry.RefreshToken)
 		entry.IDToken = strings.TrimSpace(entry.IDToken)
@@ -148,10 +186,23 @@ func (m *Manager) buildImportPreview(ctx context.Context, raw []byte) (*ImportPr
 			HasIDToken: entry.IDToken != "", HasAPIKey: entry.APIKey != "", IdentityLevel: IdentityUnparsed,
 			Warnings: append([]string(nil), parsedEntry.Warnings...),
 		}
+		row.ProxyID, row.ProxySpecified = entry.ProxyID, entry.ProxySpecified
 		if parsedEntry.Err != nil {
 			row.Action, row.ErrorCode, row.ErrorMessage = ImportError, "import_invalid_row", parsedEntry.Err.Error()
 			preview.addRow(row)
 			continue
+		}
+		if entry.ProxyError != "" {
+			row.Action, row.ErrorCode, row.ErrorMessage = ImportError, "import_invalid_proxy", entry.ProxyError
+			preview.addRow(row)
+			continue
+		}
+		if entry.ProxySpecified && entry.ProxyID != nil {
+			if _, err := m.store.GetProxy(*entry.ProxyID); err != nil {
+				row.Action, row.ErrorCode, row.ErrorMessage = ImportError, "import_proxy_not_found", "selected proxy does not exist"
+				preview.addRow(row)
+				continue
+			}
 		}
 
 		identity := VerifiedIdentity{Level: IdentityUnparsed}
@@ -251,6 +302,7 @@ func (m *Manager) buildImportPreview(ctx context.Context, raw []byte) (*ImportPr
 			Index: parsedEntry.Index, Email: entry.Email, ChatGPTAccountID: entry.ChatGPTAccountID, PlanType: entry.PlanType,
 			AccessToken: entry.AccessToken, RefreshToken: entry.RefreshToken, IDToken: entry.IDToken,
 			ExpiresAt: parseExpiry(entry.ExpiresAt), IdentityVerified: row.IdentityVerified,
+			ProxyID: entry.ProxyID, ProxySpecified: entry.ProxySpecified,
 		}
 		if matched != nil {
 			mutation.ExistingID = matched.ID
@@ -385,7 +437,15 @@ func (m *Manager) matchImportAccount(verifiedID, fingerprint string) (*store.Acc
 }
 
 func (m *Manager) CommitImport(ctx context.Context, raw []byte, expectedSHA string, validate bool) (*ImportCommitResult, error) {
-	actualSHA := contentHash(raw)
+	return m.CommitImportWithOptions(ctx, raw, expectedSHA, validate, ImportOptions{})
+}
+
+func (m *Manager) CommitImportWithOptions(ctx context.Context, raw []byte, expectedSHA string, validate bool, options ImportOptions) (*ImportCommitResult, error) {
+	options, err := normalizeImportOptions(options)
+	if err != nil {
+		return nil, err
+	}
+	actualSHA := contentHashWithOptions(raw, options)
 	if !strings.EqualFold(strings.TrimSpace(expectedSHA), actualSHA) {
 		return nil, &ImportServiceError{
 			Code: "import_preview_mismatch", Message: "import content differs from the preview", Details: map[string]any{
@@ -396,7 +456,7 @@ func (m *Manager) CommitImport(ctx context.Context, raw []byte, expectedSHA stri
 	preview, ok := m.takeCachedImportPreview(actualSHA)
 	if !ok {
 		var err error
-		preview, err = m.buildImportPreview(ctx, raw)
+		preview, err = m.buildImportPreview(ctx, raw, options)
 		if err != nil {
 			return nil, err
 		}
@@ -419,6 +479,36 @@ func (m *Manager) CommitImport(ctx context.Context, raw []byte, expectedSHA stri
 		result.Validated, result.Warnings = m.validateImportedAccounts(ctx, applied)
 	}
 	return result, nil
+}
+
+func normalizeImportOptions(options ImportOptions) (ImportOptions, error) {
+	if options.ProxyMode == "" {
+		options.ProxyMode = ImportProxyPreserve
+	}
+	switch options.ProxyMode {
+	case ImportProxyPreserve:
+		options.ProxyID = nil
+	case ImportProxyDirect:
+		options.ProxyID = nil
+	case ImportProxyOverride:
+		if options.ProxyID == nil || *options.ProxyID <= 0 {
+			return options, &ImportServiceError{Code: "import_invalid_proxy", Message: "a valid proxy is required for proxy override"}
+		}
+	default:
+		return options, &ImportServiceError{Code: "import_invalid_proxy", Message: "invalid import proxy mode"}
+	}
+	return options, nil
+}
+
+func applyImportProxyOptions(entry *ImportEntry, options ImportOptions) {
+	switch options.ProxyMode {
+	case ImportProxyDirect:
+		entry.ProxyID = nil
+		entry.ProxySpecified = true
+	case ImportProxyOverride:
+		entry.ProxyID = options.ProxyID
+		entry.ProxySpecified = true
+	}
 }
 
 func (m *Manager) validateImportedAccounts(ctx context.Context, applied []store.AppliedAccountImport) (int, []string) {

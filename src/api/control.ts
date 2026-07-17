@@ -119,6 +119,10 @@ export interface Account {
   last_success_at?: string | null;
   consecutive_failures: number;
   next_retry_at?: string | null;
+	max_concurrency: number;
+	queue_capacity: number;
+	in_flight: number;
+	waiting: number;
   codex_usage?: CodexUsage | null;
   created_at: string;
   client_uid: string;
@@ -180,6 +184,15 @@ export interface RequestLog {
 	attempt_count: number;
 	terminal_event?: string;
   created_at: string;
+}
+
+export interface AccountRuntimeState {
+  id: number;
+  status: Account["status"];
+  status_reason?: string;
+  rate_limited_until?: string | null;
+  in_flight: number;
+  waiting: number;
 }
 
 export interface CloudConflict {
@@ -388,6 +401,13 @@ export interface ImportPreviewRow {
   warning_codes: ("jwks_unreachable" | "signature_invalid")[];
   error_code?: string;
   error_message?: string;
+  proxy_id?: number;
+  proxy_specified: boolean;
+}
+
+export interface ImportProxyOptions {
+  mode: "preserve" | "direct" | "override";
+  proxyId?: number | null;
 }
 
 export interface ImportSummary {
@@ -415,6 +435,15 @@ export interface ImportCommitResult {
   warnings?: string[];
   rows: ImportPreviewRow[];
   summary: ImportSummary;
+}
+
+function importProxyHeaders(options?: ImportProxyOptions): Record<string, string> {
+  if (!options) return {};
+  const headers: Record<string, string> = { "X-Import-Proxy-Mode": options.mode };
+  if (options.mode === "override" && options.proxyId) {
+    headers["X-Import-Proxy-ID"] = String(options.proxyId);
+  }
+  return headers;
 }
 
 export type DiagnosticCheckStatus = "ok" | "warning" | "failed" | "info";
@@ -519,14 +548,16 @@ export const api = {
     req<{ usage: CloudShareUsage[] }>("GET", `/control/cloud/shares/${shareId}/usage`),
 
   listAccounts: () => req<{ accounts: Account[]; usage: Record<string, AccountUsage> }>("GET", "/control/accounts"),
+  accountRuntime: () => req<{ accounts: AccountRuntimeState[] }>("GET", "/control/accounts/runtime"),
   importAccounts: (rawText: string) =>
     req<ImportResult>("POST", "/control/accounts/import", undefined, rawText),
-  previewImport: (raw: BodyInit) =>
-    req<ImportPreview>("POST", "/control/accounts/import/preview", undefined, raw),
-  commitImport: (raw: BodyInit, sha256: string, validate: boolean) =>
+  previewImport: (raw: BodyInit, proxyOptions?: ImportProxyOptions) =>
+    req<ImportPreview>("POST", "/control/accounts/import/preview", undefined, raw, importProxyHeaders(proxyOptions)),
+  commitImport: (raw: BodyInit, sha256: string, validate: boolean, proxyOptions?: ImportProxyOptions) =>
     req<ImportCommitResult>("POST", "/control/accounts/import/commit", undefined, raw, {
       "X-Import-Preview-SHA256": sha256,
       "X-Validate-After-Import": String(validate),
+      ...importProxyHeaders(proxyOptions),
     }),
   deleteAccount: (id: number) => req<{ ok: boolean }>("DELETE", `/control/accounts/${id}`),
   refreshAccount: (id: number) => req<{ ok: boolean }>("POST", `/control/accounts/${id}/refresh`),
@@ -536,6 +567,8 @@ export const api = {
     req<AccountTestResult>("POST", `/control/accounts/${id}/test`, { model: model ?? "", prompt: prompt ?? "" }),
   setAccountStatus: (id: number, status: string) =>
     req<{ ok: boolean; account: Account }>("POST", `/control/accounts/${id}/status`, { status }),
+	setAccountLimits: (id: number, limits: { max_concurrency: number; queue_capacity: number }) =>
+		req<{ ok: boolean; account: Account }>("PUT", `/control/accounts/${id}/limits`, limits),
 
   oauthStart: (proxyId?: number | null) =>
     req<{ auth_url: string; state: string }>("POST", "/control/oauth/start", { proxy_id: proxyId ?? null }),

@@ -57,7 +57,7 @@ describe("authentication", () => {
     expect(row?.wrapped_vault_key).toBe(wrappedVaultKey);
   });
 
-  it("verifies email, logs in, rotates refresh tokens, and rejects refresh replay", async () => {
+  it("verifies email and makes refresh rotation idempotent during the response-loss grace period", async () => {
     await registerAndVerify();
     const parameters = await jsonRequest("/v1/auth/parameters", { email });
     expect(parameters.status).toBe(200);
@@ -78,8 +78,16 @@ describe("authentication", () => {
 
     const refresh = await jsonRequest("/v1/auth/refresh", { refresh_token: session.refresh_token });
     expect(refresh.status).toBe(200);
+    const refreshed = await refresh.json<{ refresh_token: string }>();
     const replay = await jsonRequest("/v1/auth/refresh", { refresh_token: session.refresh_token });
-    expect(replay.status).toBe(401);
+    expect(replay.status).toBe(200);
+    expect((await replay.json<{ refresh_token: string }>()).refresh_token).toBe(refreshed.refresh_token);
+
+    await env.SESSIONS.delete(`refresh:${await sha256(session.refresh_token)}`);
+    const expiredReplay = await jsonRequest("/v1/auth/refresh", { refresh_token: session.refresh_token });
+    expect(expiredReplay.status).toBe(401);
+    const nextRefresh = await jsonRequest("/v1/auth/refresh", { refresh_token: refreshed.refresh_token });
+    expect(nextRefresh.status).toBe(200);
   });
 
   it("locks repeated failed logins without revealing whether the email exists", async () => {

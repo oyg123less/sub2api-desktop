@@ -43,7 +43,7 @@ func TestAccountFailureBackoffAndSuccessRecovery(t *testing.T) {
 	}
 }
 
-func TestConcurrentAccountFailuresIncrementAtomically(t *testing.T) {
+func TestConcurrentAccountFailuresAutoDisableAtomically(t *testing.T) {
 	dir := t.TempDir()
 	cipher, err := appcrypto.LoadOrCreate(filepath.Join(dir, "key"))
 	if err != nil {
@@ -84,11 +84,77 @@ func TestConcurrentAccountFailuresIncrementAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.ConsecutiveFailures != failures {
-		t.Fatalf("consecutive failures = %d, want %d", updated.ConsecutiveFailures, failures)
+	if updated.ConsecutiveFailures != 3 {
+		t.Fatalf("consecutive failures = %d, want auto-disable threshold 3", updated.ConsecutiveFailures)
 	}
-	if updated.NextRetryAt == nil || updated.NextRetryAt.Before(time.Now().Add(29*time.Minute)) {
-		t.Fatal("concurrent failure backoff was not capped at 30 minutes")
+	if updated.Status != AccountDisabled || updated.NextRetryAt != nil || updated.StatusReason != "auto_disabled_auth_failures" {
+		t.Fatalf("concurrent auth failures did not auto-disable account: %+v", updated)
+	}
+}
+
+func TestThirdAccountFailureAutoDisablesAndActiveRecovers(t *testing.T) {
+	dir := t.TempDir()
+	cipher, err := appcrypto.LoadOrCreate(filepath.Join(dir, "key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(filepath.Join(dir, "sub2api.db"), cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	account, err := s.CreateAccount(&Account{AccessToken: "token", Status: AccountActive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 1; attempt <= 3; attempt++ {
+		if err := s.RecordAccountFailure(account.ID, "authentication failed"); err != nil {
+			t.Fatal(err)
+		}
+		updated, _ := s.GetAccount(account.ID)
+		if attempt < 3 && updated.Status != AccountRefreshFailed {
+			t.Fatalf("attempt %d status=%s, want refresh_failed", attempt, updated.Status)
+		}
+		if attempt == 3 && updated.Status != AccountDisabled {
+			t.Fatalf("third failure status=%s, want disabled", updated.Status)
+		}
+	}
+	if err := s.SetAccountStatus(account.ID, AccountActive, ""); err != nil {
+		t.Fatal(err)
+	}
+	recovered, _ := s.GetAccount(account.ID)
+	if recovered.Status != AccountActive || recovered.ConsecutiveFailures != 0 || recovered.NextRetryAt != nil {
+		t.Fatalf("manual recovery did not reset health: %+v", recovered)
+	}
+}
+
+func TestAccountLimitsPersist(t *testing.T) {
+	dir := t.TempDir()
+	cipher, err := appcrypto.LoadOrCreate(filepath.Join(dir, "key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(filepath.Join(dir, "sub2api.db"), cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	account, err := s.CreateAccount(&Account{AccessToken: "token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if account.MaxConcurrency != DefaultAccountMaxConcurrency || account.QueueCapacity != DefaultAccountQueueCapacity {
+		t.Fatalf("unexpected default limits: %+v", account)
+	}
+	if err := s.SetAccountLimits(account.ID, 7, 42); err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := s.GetAccount(account.ID)
+	if updated.MaxConcurrency != 7 || updated.QueueCapacity != 42 {
+		t.Fatalf("limits were not persisted: %+v", updated)
+	}
+	if err := s.SetAccountLimits(account.ID, 0, 42); err == nil {
+		t.Fatal("invalid concurrency was accepted")
 	}
 }
 
@@ -108,7 +174,7 @@ func TestAccountSuccessPreservesUnexpiredRateLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	until := time.Now().Add(time.Hour)
-	if err := s.SetRateLimited(account.ID, until); err != nil {
+	if err := s.SetRateLimited(account.ID, until, "transient_rate_limit"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RecordAccountSuccess(account.ID); err != nil {
@@ -127,6 +193,55 @@ func TestAccountSuccessPreservesUnexpiredRateLimit(t *testing.T) {
 	}
 	if updated.LastSuccessAt == nil {
 		t.Fatal("successful request did not record last success")
+	}
+}
+
+func TestAccountTestSuccessClearsTransientStateButPreservesManualDisable(t *testing.T) {
+	dir := t.TempDir()
+	cipher, err := appcrypto.LoadOrCreate(filepath.Join(dir, "key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(filepath.Join(dir, "sub2api.db"), cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	rateLimited, err := s.CreateAccount(&Account{AccessToken: "limited-token", Status: AccountActive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetRateLimited(rateLimited.ID, time.Now().Add(time.Hour), "transient_rate_limit"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordAccountTestSuccess(rateLimited.ID); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := s.GetAccount(rateLimited.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Status != AccountActive || recovered.StatusReason != "" || recovered.RateLimitedUntil != nil {
+		t.Fatalf("manual test did not clear transient state: %+v", recovered)
+	}
+
+	disabled, err := s.CreateAccount(&Account{AccessToken: "disabled-token", Status: AccountActive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAccountStatus(disabled.ID, AccountDisabled, "manually_disabled"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordAccountTestSuccess(disabled.ID); err != nil {
+		t.Fatal(err)
+	}
+	preserved, err := s.GetAccount(disabled.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preserved.Status != AccountDisabled || preserved.StatusReason != "manually_disabled" {
+		t.Fatalf("manual test re-enabled a manually disabled account: %+v", preserved)
 	}
 }
 

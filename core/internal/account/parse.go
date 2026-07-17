@@ -354,7 +354,55 @@ func entryFromMap(value map[string]any) (ImportEntry, []string) {
 		[]string{"tokens", "expires_at"}, []string{"tokens", "expiresAt"},
 		[]string{"credentials", "expires_at"}, []string{"expires_at"}, []string{"expiresAt"},
 	)
+	entry.ProxyID, entry.ProxySpecified, entry.ProxyError = firstOptionalID(value,
+		[]string{"proxy_id"}, []string{"proxyId"}, []string{"proxy", "id"},
+	)
 	return entry, warnings
+}
+
+func firstOptionalID(value map[string]any, paths ...[]string) (*int64, bool, string) {
+	for _, path := range paths {
+		candidate, ok := lookupPath(value, path)
+		if !ok {
+			continue
+		}
+		if candidate == nil {
+			return nil, true, ""
+		}
+		var id int64
+		switch scalar := candidate.(type) {
+		case json.Number:
+			parsed, err := scalar.Int64()
+			if err != nil {
+				return nil, true, "proxy_id must be an integer"
+			}
+			id = parsed
+		case float64:
+			id = int64(scalar)
+			if float64(id) != scalar {
+				return nil, true, "proxy_id must be an integer"
+			}
+		case string:
+			if strings.TrimSpace(scalar) == "" {
+				return nil, true, ""
+			}
+			parsed, err := strconv.ParseInt(strings.TrimSpace(scalar), 10, 64)
+			if err != nil {
+				return nil, true, "proxy_id must be an integer"
+			}
+			id = parsed
+		default:
+			return nil, true, "proxy_id must be an integer or null"
+		}
+		if id == 0 {
+			return nil, true, ""
+		}
+		if id < 0 {
+			return nil, true, "proxy_id must be positive"
+		}
+		return &id, true, ""
+	}
+	return nil, false, ""
 }
 
 func lookupPath(value map[string]any, path []string) (any, bool) {

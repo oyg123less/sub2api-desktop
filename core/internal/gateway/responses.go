@@ -75,9 +75,12 @@ func (e *Engine) Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	candidates, releaseFirst, err := e.selectAccounts()
+	candidates, releaseFirst, err := e.selectAccounts(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "account lookup failed: "+err.Error(), "internal_error")
+		if r.Context().Err() != nil {
+			return
+		}
+		writeAccountSelectionError(w, err)
 		return
 	}
 	if len(candidates) == 0 {
@@ -91,7 +94,11 @@ func (e *Engine) Responses(w http.ResponseWriter, r *http.Request) {
 	for index, acc := range candidates {
 		release := releaseFirst
 		if index > 0 {
-			release = e.scheduler.Acquire(acc.ID)
+			var acquired bool
+			release, acquired = e.scheduler.TryAcquire(acc.ID, acc.MaxConcurrency)
+			if !acquired {
+				continue
+			}
 		}
 		attempt++
 		meta := forwardMeta{RequestID: requestID, RequestedModel: requestedModel, ResolvedModel: logModel, Attempt: attempt, Stream: clientStream, EstimatedPromptTokens: estimateTokensFromBytes(len(bodyBytes))}
@@ -116,14 +123,14 @@ func (e *Engine) Responses(w http.ResponseWriter, r *http.Request) {
 		case outcomeRateLimited:
 			retry := result.retryAfter
 			if retry <= 0 {
-				retry = 10 * time.Minute
+				retry = 30 * time.Second
 			}
-			_ = e.store.SetRateLimited(acc.ID, time.Now().Add(retry))
+			_ = e.store.SetRateLimited(acc.ID, time.Now().Add(retry), result.statusReason)
 			lastErr = result.errMsg
 			lastStatus = 0
 			continue
 		case outcomeAuthFailed:
-			_ = e.store.RecordAccountFailure(acc.ID, result.errMsg)
+			e.recordAccountAuthFailure(acc.ID, result.errMsg)
 			lastErr = result.errMsg
 			lastStatus = 0
 			continue
@@ -201,19 +208,11 @@ func (e *Engine) forwardResponsesOnce(ctx context.Context, w http.ResponseWriter
 
 	usage := e.captureCodexUsage(acc, resp.Header)
 
-	if resp.StatusCode == http.StatusTooManyRequests {
-		e.logForward(acc, meta, resp.StatusCode, 0, 0, time.Since(start), "rate limited (429)", "account_rate_limited", "http_429")
-		return forwardResult{outcome: outcomeRateLimited, status: resp.StatusCode, errMsg: "账号已限额（429）", retryAfter: rateLimitRetryAfter(resp.Header, usage)}
-	}
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		msg := readUpstreamError(resp.Body)
-		e.logForward(acc, meta, resp.StatusCode, 0, 0, time.Since(start), msg, "account_unauthorized", "http_auth_error")
-		return forwardResult{outcome: outcomeAuthFailed, status: resp.StatusCode, errMsg: "鉴权失败: " + msg}
-	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		msg := readUpstreamError(resp.Body)
-		e.logForward(acc, meta, resp.StatusCode, 0, 0, time.Since(start), msg, "upstream_http_error", "http_error")
-		return forwardResult{outcome: outcomeUpstreamError, status: resp.StatusCode, errMsg: msg}
+		result := classifyUpstreamHTTPError(resp.StatusCode, resp.Header, msg, acc, usage)
+		e.logForward(acc, meta, resp.StatusCode, 0, 0, time.Since(start), msg, result.errorKind, result.terminalEvent)
+		return result
 	}
 
 	_ = e.store.TouchAccount(acc.ID)

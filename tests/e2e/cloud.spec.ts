@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 const localStatus = {
-  version: "0.3.1",
+  version: "0.3.2",
   server_running: true,
   port: 8080,
   host: "127.0.0.1",
@@ -9,7 +9,7 @@ const localStatus = {
   lan_addresses: [],
   local_api_key: "",
   account_count: 0,
-  schema_version: 9,
+  schema_version: 10,
 };
 
 async function initialize(page: import("@playwright/test").Page) {

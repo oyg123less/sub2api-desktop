@@ -21,6 +21,15 @@ const (
 	AccountPending       AccountStatus = "pending_validation"
 )
 
+const (
+	DefaultAccountMaxConcurrency = 3
+	DefaultAccountQueueCapacity  = 20
+	MinAccountMaxConcurrency     = 1
+	MaxAccountMaxConcurrency     = 100
+	MinAccountQueueCapacity      = 0
+	MaxAccountQueueCapacity      = 1000
+)
+
 // CodexUsage captures the Codex rate-limit windows reported by upstream
 // x-codex-* response headers (primary = 7-day window, secondary = 5-hour
 // window). Pointers distinguish "not reported" from zero.
@@ -58,11 +67,27 @@ type Account struct {
 	LastSuccessAt         *time.Time    `json:"last_success_at,omitempty"`
 	ConsecutiveFailures   int           `json:"consecutive_failures"`
 	NextRetryAt           *time.Time    `json:"next_retry_at,omitempty"`
+	MaxConcurrency        int           `json:"max_concurrency"`
+	QueueCapacity         int           `json:"queue_capacity"`
+	InFlight              int           `json:"in_flight"`
+	Waiting               int           `json:"waiting"`
 	CreatedAt             time.Time     `json:"created_at"`
 	UpdatedAt             time.Time     `json:"updated_at"`
 	ClientUID             string        `json:"client_uid"`
 	SyncVersion           int           `json:"-"`
 	SyncDirty             bool          `json:"-"`
+}
+
+// AccountRuntimeState is the lightweight account state used by the control
+// plane for live concurrency and recovery polling. It intentionally excludes
+// credentials and usage aggregates.
+type AccountRuntimeState struct {
+	ID               int64         `json:"id"`
+	Status           AccountStatus `json:"status"`
+	StatusReason     string        `json:"status_reason,omitempty"`
+	RateLimitedUntil *time.Time    `json:"rate_limited_until,omitempty"`
+	InFlight         int           `json:"in_flight"`
+	Waiting          int           `json:"waiting"`
 }
 
 // ProxyType enumerates supported proxy protocols.

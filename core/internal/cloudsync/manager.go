@@ -847,6 +847,9 @@ func (m *Manager) ensureAccess(ctx context.Context) error {
 	m.mu.RUnlock()
 	response, err := m.client.refresh(ctx, refreshToken)
 	if err != nil {
+		if isTerminalCloudSessionError(err) {
+			m.invalidateCloudSession(err)
+		}
 		return err
 	}
 	if response.AccessToken == "" || response.RefreshToken == "" {
@@ -859,6 +862,39 @@ func (m *Manager) ensureAccess(ctx context.Context) error {
 	session := *m.session
 	m.mu.Unlock()
 	return m.store.UpdateCloudSessionProgress(session.RefreshToken, session.SyncCursor, session.LastSyncAt)
+}
+
+func isTerminalCloudSessionError(err error) bool {
+	var cloudErr *CloudError
+	if !errors.As(err, &cloudErr) || cloudErr.Status != http.StatusUnauthorized {
+		return false
+	}
+	switch cloudErr.Code {
+	case "invalid_refresh_token", "session_expired", "account_disabled":
+		return true
+	default:
+		// ensureAccess only sends a refresh request, so any other 401 also means
+		// the persisted refresh credential cannot establish a new session.
+		return true
+	}
+}
+
+func (m *Manager) invalidateCloudSession(reason error) {
+	if err := m.store.DeleteCloudSession(); err != nil {
+		m.logger.Warn("delete expired cloud session failed", "error_type", fmt.Sprintf("%T", err))
+	}
+	code, stage := cloudErrorMetadata(reason)
+	m.mu.Lock()
+	wipe(m.vaultKey)
+	m.vaultKey = nil
+	m.session = nil
+	m.accessToken = ""
+	m.accessExpires = time.Time{}
+	m.lastError = reason.Error()
+	m.lastErrorCode = code
+	m.lastErrorStage = stage
+	m.nextRetryAt = time.Time{}
+	m.mu.Unlock()
 }
 
 func (m *Manager) installSession(login loginResponse, vaultKey []byte) error {
@@ -921,7 +957,8 @@ func (m *Manager) collectDirty(vaultKey []byte) ([]remoteVaultItem, error) {
 			AccountType: account.AccountType, BaseURL: account.BaseURL, APIKey: account.APIKey, Email: account.Email,
 			ChatGPTAccountID: account.ChatGPTAccountID, PlanType: account.PlanType, AccessToken: account.AccessToken,
 			RefreshToken: account.RefreshToken, IDToken: account.IDToken, ExpiresAt: account.ExpiresAt,
-			Status: account.Status, StatusReason: account.StatusReason, ProxyUID: proxyUID, CreatedAt: account.CreatedAt,
+			Status: account.Status, StatusReason: account.StatusReason, MaxConcurrency: account.MaxConcurrency,
+			QueueCapacity: &account.QueueCapacity, ProxyUID: proxyUID, CreatedAt: account.CreatedAt,
 		})
 		if err != nil {
 			return nil, err
@@ -1087,11 +1124,13 @@ func (m *Manager) applyRemotePayload(item remoteVaultItem, envelope vaultEnvelop
 		if err != nil || validateAccountPayload(payload) != nil {
 			return errors.New("invalid encrypted account payload")
 		}
+		maxConcurrency, queueCapacity := accountPayloadLimits(payload)
 		return m.store.ApplyCloudAccount(&store.Account{
 			AccountType: payload.AccountType, BaseURL: payload.BaseURL, APIKey: payload.APIKey, Email: payload.Email,
 			ChatGPTAccountID: payload.ChatGPTAccountID, PlanType: payload.PlanType, AccessToken: payload.AccessToken,
 			RefreshToken: payload.RefreshToken, IDToken: payload.IDToken, ExpiresAt: payload.ExpiresAt,
-			Status: payload.Status, StatusReason: payload.StatusReason, CreatedAt: payload.CreatedAt, ClientUID: item.ClientUID,
+			Status: payload.Status, StatusReason: payload.StatusReason, MaxConcurrency: maxConcurrency,
+			QueueCapacity: queueCapacity, CreatedAt: payload.CreatedAt, ClientUID: item.ClientUID,
 		}, payload.ProxyUID, item.Version, envelope.UpdatedAt)
 	case store.CloudKindCodexRemote:
 		payload, err := decodePayload[codexRemotePayload](envelope)

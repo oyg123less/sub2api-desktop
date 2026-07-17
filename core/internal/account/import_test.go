@@ -71,6 +71,108 @@ func TestCommitImportReusesCachedPreviewPlan(t *testing.T) {
 	}
 }
 
+func TestImportProxyModesCreateUpdatePreserveDirectAndOverride(t *testing.T) {
+	manager, st := newImportTestManager(t, fakeIdentityVerifier{})
+	firstProxy, err := st.CreateProxy(&store.Proxy{Name: "first", Type: store.ProxyHTTP, Host: "127.0.0.1", Port: 8080})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondProxy, err := st.CreateProxy(&store.Proxy{Name: "second", Type: store.ProxySOCKS5, Host: "127.0.0.1", Port: 1080})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := mustImportJSON(t, []ImportEntry{{AccountType: "api_key", BaseURL: "https://api.example.test/v1", APIKey: "sk-proxy-test", Email: "proxy account"}})
+
+	firstOptions := ImportOptions{ProxyMode: ImportProxyOverride, ProxyID: &firstProxy.ID}
+	preview, err := manager.PreviewImportWithOptions(context.Background(), raw, firstOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Rows) != 1 || preview.Rows[0].ProxyID == nil || *preview.Rows[0].ProxyID != firstProxy.ID || !preview.Rows[0].ProxySpecified {
+		t.Fatalf("override proxy missing from preview: %+v", preview.Rows)
+	}
+	if _, err := manager.CommitImportWithOptions(context.Background(), raw, preview.ContentSHA256, false, firstOptions); err != nil {
+		t.Fatal(err)
+	}
+	accounts, err := st.ListAccounts()
+	if err != nil || len(accounts) != 1 || accounts[0].ProxyID == nil || *accounts[0].ProxyID != firstProxy.ID {
+		t.Fatalf("create did not persist proxy: accounts=%+v err=%v", accounts, err)
+	}
+
+	preserve := ImportOptions{ProxyMode: ImportProxyPreserve}
+	preview, err = manager.PreviewImportWithOptions(context.Background(), raw, preserve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.CommitImportWithOptions(context.Background(), raw, preview.ContentSHA256, false, preserve); err != nil {
+		t.Fatal(err)
+	}
+	preserved, _ := st.GetAccount(accounts[0].ID)
+	if preserved.ProxyID == nil || *preserved.ProxyID != firstProxy.ID {
+		t.Fatalf("preserve mode replaced existing proxy: %+v", preserved)
+	}
+
+	direct := ImportOptions{ProxyMode: ImportProxyDirect}
+	preview, err = manager.PreviewImportWithOptions(context.Background(), raw, direct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.CommitImportWithOptions(context.Background(), raw, preview.ContentSHA256, false, direct); err != nil {
+		t.Fatal(err)
+	}
+	directAccount, _ := st.GetAccount(accounts[0].ID)
+	if directAccount.ProxyID != nil {
+		t.Fatalf("direct mode retained proxy: %+v", directAccount)
+	}
+
+	secondOptions := ImportOptions{ProxyMode: ImportProxyOverride, ProxyID: &secondProxy.ID}
+	preview, err = manager.PreviewImportWithOptions(context.Background(), raw, secondOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.CommitImportWithOptions(context.Background(), raw, preview.ContentSHA256, false, secondOptions); err != nil {
+		t.Fatal(err)
+	}
+	overridden, _ := st.GetAccount(accounts[0].ID)
+	if overridden.ProxyID == nil || *overridden.ProxyID != secondProxy.ID {
+		t.Fatalf("override mode did not replace proxy: %+v", overridden)
+	}
+}
+
+func TestImportProxyValidationAndOptionMismatchDoNotWrite(t *testing.T) {
+	manager, st := newImportTestManager(t, fakeIdentityVerifier{})
+	proxy, err := st.CreateProxy(&store.Proxy{Name: "existing", Type: store.ProxyHTTP, Host: "127.0.0.1", Port: 8080})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := mustImportJSON(t, []ImportEntry{{AccountType: "api_key", BaseURL: "https://api.example.test/v1", APIKey: "sk-option-mismatch"}})
+	missingProxyID := int64(999999)
+	invalidOptions := ImportOptions{ProxyMode: ImportProxyOverride, ProxyID: &missingProxyID}
+	invalidPreview, err := manager.PreviewImportWithOptions(context.Background(), raw, invalidOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invalidPreview.Summary.Error != 1 || invalidPreview.Rows[0].ErrorCode != "import_proxy_not_found" {
+		t.Fatalf("invalid proxy preview = %+v", invalidPreview)
+	}
+
+	validOptions := ImportOptions{ProxyMode: ImportProxyOverride, ProxyID: &proxy.ID}
+	validPreview, err := manager.PreviewImportWithOptions(context.Background(), raw, validOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.CommitImportWithOptions(context.Background(), raw, validPreview.ContentSHA256, false, ImportOptions{ProxyMode: ImportProxyDirect}); err == nil {
+		t.Fatal("commit accepted proxy options that differed from preview")
+	}
+	accounts, err := st.ListAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(accounts) != 0 {
+		t.Fatalf("option mismatch wrote partial accounts: %+v", accounts)
+	}
+}
+
 func TestImportConflictingVerifiedIdentityDoesNotWritePartialBatch(t *testing.T) {
 	manager, st := newImportTestManager(t, fakeIdentityVerifier{
 		idA: {Email: "same@example.com", ChatGPTAccountID: "acct_same", Level: IdentitySigned},

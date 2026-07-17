@@ -83,6 +83,18 @@ func (e *Engine) captureCodexUsage(acc *store.Account, h http.Header) *store.Cod
 // using the earliest positive Codex window reset, then Retry-After, and
 // falling back to 10 minutes.
 func rateLimitRetryAfter(h http.Header, usage *store.CodexUsage) time.Duration {
+	return rateLimitRetryAfterWithDefault(h, usage, 10*time.Minute)
+}
+
+func rateLimitRetryAfterForAccount(acc *store.Account, h http.Header, usage *store.CodexUsage) time.Duration {
+	fallback := 10 * time.Minute
+	if acc != nil && acc.AccountType == store.AccountTypeAPIKey {
+		fallback = 30 * time.Second
+	}
+	return rateLimitRetryAfterWithDefault(h, usage, fallback)
+}
+
+func rateLimitRetryAfterWithDefault(h http.Header, usage *store.CodexUsage, fallback time.Duration) time.Duration {
 	resetSeconds := 0
 	if usage != nil {
 		for _, candidate := range []*int{usage.PrimaryResetAfterSeconds, usage.SecondaryResetAfterSeconds} {
@@ -99,5 +111,5 @@ func rateLimitRetryAfter(h http.Header, usage *store.CodexUsage) time.Duration {
 			return time.Duration(secs) * time.Second
 		}
 	}
-	return 10 * time.Minute
+	return fallback
 }

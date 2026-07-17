@@ -127,6 +127,7 @@ func (c *Control) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /control/settings/regenerate-key", h(c.regenKey))
 
 	mux.HandleFunc("GET /control/accounts", h(c.listAccounts))
+	mux.HandleFunc("GET /control/accounts/runtime", h(c.listAccountRuntime))
 	mux.HandleFunc("POST /control/accounts/import", h(c.importAccounts))
 	mux.HandleFunc("POST /control/accounts/import/preview", h(c.previewImportAccounts))
 	mux.HandleFunc("POST /control/accounts/import/commit", h(c.commitImportAccounts))
@@ -135,6 +136,7 @@ func (c *Control) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /control/accounts/{id}/proxy", h(c.bindProxy))
 	mux.HandleFunc("POST /control/accounts/{id}/test", h(c.testAccount))
 	mux.HandleFunc("POST /control/accounts/{id}/status", h(c.setAccountStatus))
+	mux.HandleFunc("PUT /control/accounts/{id}/limits", h(c.setAccountLimits))
 
 	mux.HandleFunc("POST /control/oauth/start", h(c.oauthStart))
 	mux.HandleFunc("GET /control/oauth/poll", h(c.oauthPoll))
@@ -508,13 +510,33 @@ func (c *Control) usageByAccount() map[int64]*accountUsage {
 }
 
 func (c *Control) listAccounts(w http.ResponseWriter, r *http.Request) {
+	_ = c.store.RecoverExpiredRateLimits(time.Now())
 	accounts, err := c.store.ListAccounts()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
 	usage := c.usageByAccount()
+	for _, account := range accounts {
+		account.InFlight, account.Waiting = c.engine.AccountRuntime(account.ID)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"accounts": accounts, "usage": usage})
+}
+
+func (c *Control) listAccountRuntime(w http.ResponseWriter, r *http.Request) {
+	if err := c.store.RecoverExpiredRateLimits(time.Now()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	states, err := c.store.ListAccountRuntimeStates()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	for _, state := range states {
+		state.InFlight, state.Waiting = c.engine.AccountRuntime(state.ID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"accounts": states})
 }
 
 // testAccount runs a live connectivity probe through the full anti-ban pipeline
@@ -564,12 +586,50 @@ func (c *Control) setAccountStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid status"})
 		return
 	}
-	if err := c.store.SetAccountStatus(id, status, ""); err != nil {
+	reason := ""
+	if status == store.AccountDisabled {
+		reason = "manually_disabled"
+	}
+	if err := c.store.SetAccountStatus(id, status, reason); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
 	acc, _ := c.store.GetAccount(id)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "account": acc})
+}
+
+func (c *Control) setAccountLimits(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		MaxConcurrency int `json:"max_concurrency"`
+		QueueCapacity  int `json:"queue_capacity"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeControlError(w, http.StatusBadRequest, "invalid_account_limits", "invalid account limits", false, nil)
+		return
+	}
+	if err := store.ValidateAccountLimits(body.MaxConcurrency, body.QueueCapacity); err != nil {
+		writeControlError(w, http.StatusBadRequest, "invalid_account_limits", err.Error(), false, nil)
+		return
+	}
+	if err := c.store.SetAccountLimits(id, body.MaxConcurrency, body.QueueCapacity); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeControlError(w, http.StatusNotFound, "account_not_found", "account not found", false, nil)
+			return
+		}
+		writeControlError(w, http.StatusInternalServerError, "account_limits_failed", err.Error(), false, nil)
+		return
+	}
+	account, err := c.store.GetAccount(id)
+	if err != nil {
+		writeControlError(w, http.StatusNotFound, "account_not_found", "account not found", false, nil)
+		return
+	}
+	account.InFlight, account.Waiting = c.engine.AccountRuntime(id)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "account": account})
 }
 
 // importAccounts accepts a batch of accounts as JSON. The body may be a bare
@@ -600,7 +660,12 @@ func (c *Control) previewImportAccounts(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	preview, err := c.mgr.PreviewImport(r.Context(), raw)
+	options, err := importOptionsFromRequest(r)
+	if err != nil {
+		writeImportError(w, err)
+		return
+	}
+	preview, err := c.mgr.PreviewImportWithOptions(r.Context(), raw, options)
 	if err != nil {
 		writeImportError(w, err)
 		return
@@ -615,12 +680,30 @@ func (c *Control) commitImportAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 	expected := r.Header.Get("X-Import-Preview-SHA256")
 	validate, _ := strconv.ParseBool(r.Header.Get("X-Validate-After-Import"))
-	result, err := c.mgr.CommitImport(r.Context(), raw, expected, validate)
+	options, err := importOptionsFromRequest(r)
+	if err != nil {
+		writeImportError(w, err)
+		return
+	}
+	result, err := c.mgr.CommitImportWithOptions(r.Context(), raw, expected, validate, options)
 	if err != nil {
 		writeImportError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func importOptionsFromRequest(r *http.Request) (account.ImportOptions, error) {
+	mode := account.ImportProxyMode(strings.TrimSpace(r.Header.Get("X-Import-Proxy-Mode")))
+	options := account.ImportOptions{ProxyMode: mode}
+	if mode == account.ImportProxyOverride {
+		id, err := strconv.ParseInt(strings.TrimSpace(r.Header.Get("X-Import-Proxy-ID")), 10, 64)
+		if err != nil || id <= 0 {
+			return options, &account.ImportServiceError{Code: "import_invalid_proxy", Message: "a valid proxy is required for proxy override"}
+		}
+		options.ProxyID = &id
+	}
+	return options, nil
 }
 
 func readImportBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {

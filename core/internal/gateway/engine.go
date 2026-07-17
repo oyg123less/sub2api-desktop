@@ -24,6 +24,7 @@ import (
 	"sub2api-desktop/core/internal/account"
 	"sub2api-desktop/core/internal/apicompat"
 	"sub2api-desktop/core/internal/openai"
+	"sub2api-desktop/core/internal/redact"
 	"sub2api-desktop/core/internal/store"
 	apptransport "sub2api-desktop/core/internal/transport"
 )
@@ -116,6 +117,23 @@ func writeErrorCode(w http.ResponseWriter, status int, msg, typ, code string) {
 	_ = json.NewEncoder(w).Encode(apiError{Error: apiErrorBody{Message: msg, Type: typ, Code: code}})
 }
 
+var errAccountQueueTimeout = errors.New("account queue wait timed out")
+
+const accountQueueWaitTimeout = 60 * time.Second
+
+func writeAccountSelectionError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrAccountQueueFull):
+		w.Header().Set("Retry-After", "1")
+		writeErrorCode(w, http.StatusTooManyRequests, "所有账号的等待队列均已满，请稍后重试", "rate_limit_error", "account_queue_full")
+	case errors.Is(err, errAccountQueueTimeout):
+		w.Header().Set("Retry-After", "1")
+		writeErrorCode(w, http.StatusServiceUnavailable, "等待可用账号超时，请稍后重试", "server_error", "account_queue_timeout")
+	default:
+		writeError(w, http.StatusInternalServerError, "account lookup failed: "+err.Error(), "internal_error")
+	}
+}
+
 // ChatCompletions handles POST /v1/chat/completions.
 func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, 32<<20))
@@ -147,9 +165,12 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	chatReq.Model = model
 	logModel := upstreamLogModel(model)
 
-	candidates, releaseFirst, err := e.selectAccounts()
+	candidates, releaseFirst, err := e.selectAccounts(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "account lookup failed: "+err.Error(), "internal_error")
+		if r.Context().Err() != nil {
+			return
+		}
+		writeAccountSelectionError(w, err)
 		return
 	}
 	if len(candidates) == 0 {
@@ -163,7 +184,11 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	for index, acc := range candidates {
 		release := releaseFirst
 		if index > 0 {
-			release = e.scheduler.Acquire(acc.ID)
+			var acquired bool
+			release, acquired = e.scheduler.TryAcquire(acc.ID, acc.MaxConcurrency)
+			if !acquired {
+				continue
+			}
 		}
 		attempt++
 		meta := forwardMeta{RequestID: requestID, RequestedModel: requestedModel, ResolvedModel: logModel, Attempt: attempt, Stream: chatReq.Stream, EstimatedPromptTokens: estimateTokensFromBytes(len(bodyBytes))}
@@ -188,15 +213,15 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		case outcomeRateLimited:
 			retry := result.retryAfter
 			if retry <= 0 {
-				retry = 10 * time.Minute
+				retry = 30 * time.Second
 			}
 			until := time.Now().Add(retry)
-			_ = e.store.SetRateLimited(acc.ID, until)
+			_ = e.store.SetRateLimited(acc.ID, until, result.statusReason)
 			lastErr = result.errMsg
 			lastStatus = 0
 			continue // try next account
 		case outcomeAuthFailed:
-			_ = e.store.RecordAccountFailure(acc.ID, result.errMsg)
+			e.recordAccountAuthFailure(acc.ID, result.errMsg)
 			lastErr = result.errMsg
 			lastStatus = 0
 			continue
@@ -244,6 +269,9 @@ type forwardResult struct {
 	headersWritten bool
 	retryAfter     time.Duration
 	retryable      bool
+	statusReason   string
+	errorKind      string
+	terminalEvent  string
 }
 
 type forwardMeta struct {
@@ -323,19 +351,11 @@ func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq
 
 	usage := e.captureCodexUsage(acc, resp.Header)
 
-	if resp.StatusCode == http.StatusTooManyRequests {
-		e.logForward(acc, meta, resp.StatusCode, 0, 0, time.Since(start), "rate limited (429)", "account_rate_limited", "http_429")
-		return forwardResult{outcome: outcomeRateLimited, status: resp.StatusCode, errMsg: "账号已限额（429）", retryAfter: rateLimitRetryAfter(resp.Header, usage)}
-	}
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		msg := readUpstreamError(resp.Body)
-		e.logForward(acc, meta, resp.StatusCode, 0, 0, time.Since(start), msg, "account_unauthorized", "http_auth_error")
-		return forwardResult{outcome: outcomeAuthFailed, status: resp.StatusCode, errMsg: "鉴权失败: " + msg}
-	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		msg := readUpstreamError(resp.Body)
-		e.logForward(acc, meta, resp.StatusCode, 0, 0, time.Since(start), msg, "upstream_http_error", "http_error")
-		return forwardResult{outcome: outcomeUpstreamError, status: resp.StatusCode, errMsg: msg}
+		result := classifyUpstreamHTTPError(resp.StatusCode, resp.Header, msg, acc, usage)
+		e.logForward(acc, meta, resp.StatusCode, 0, 0, time.Since(start), msg, result.errorKind, result.terminalEvent)
+		return result
 	}
 
 	_ = e.store.TouchAccount(acc.ID)
@@ -409,7 +429,7 @@ func (e *Engine) logForwardUsage(acc *store.Account, meta forwardMeta, status in
 
 func readUpstreamError(body io.Reader) string {
 	data, _ := io.ReadAll(io.LimitReader(body, 64<<10))
-	s := strings.TrimSpace(string(data))
+	s := strings.TrimSpace(redact.Sanitize(string(data)))
 	if s == "" {
 		return "upstream returned an error"
 	}
@@ -419,7 +439,7 @@ func readUpstreamError(body io.Reader) string {
 	return s
 }
 
-func (e *Engine) selectAccounts() ([]*store.Account, func(), error) {
+func (e *Engine) selectAccounts(ctx context.Context) ([]*store.Account, func(), error) {
 	cfg := e.settings()
 	if cfg.AutoRecovery {
 		_ = e.store.RecoverExpiredRateLimits(time.Now())
@@ -449,8 +469,43 @@ func (e *Engine) selectAccounts() ([]*store.Account, func(), error) {
 		}
 		out = append(out, a)
 	}
-	ordered, release := e.scheduler.OrderAndAcquire(out, cfg.AccountStrategy)
-	return ordered, release, nil
+	if len(out) == 0 {
+		return out, func() {}, nil
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, accountQueueWaitTimeout)
+	defer cancel()
+	ordered, release, err := e.scheduler.OrderAndWait(waitCtx, out, cfg.AccountStrategy)
+	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+		return nil, func() {}, errAccountQueueTimeout
+	}
+	return ordered, release, err
+}
+
+func (e *Engine) AccountRuntime(accountID int64) (int, int) {
+	return e.scheduler.Runtime(accountID)
+}
+
+func (e *Engine) recordAccountAuthFailure(accountID int64, message string) {
+	if isSevereAccountFailure(message) {
+		_ = e.store.RecordSevereAccountFailure(accountID, "auto_disabled_account_inactive")
+		return
+	}
+	_ = e.store.RecordAccountFailure(accountID, message)
+}
+
+func isSevereAccountFailure(message string) bool {
+	message = strings.ToLower(message)
+	for _, marker := range []string{
+		"personal access token owner is inactive",
+		"biscuit_baker_service_auth_credential_error_status",
+		"account owner is inactive",
+		"account has been deactivated",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveModel returns the model to forward: the configured default when the

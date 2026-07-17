@@ -429,16 +429,17 @@ func (s *Store) ApplyCloudAccount(account *Account, proxyUID string, version int
 	_, err = s.db.Exec(`INSERT INTO accounts
 		(account_type,base_url,api_key,email,chatgpt_account_id,plan_type,access_token,refresh_token,id_token,expires_at,
 		status,status_reason,rate_limited_until,proxy_id,last_used_at,created_at,updated_at,usage_snapshot,credential_fingerprint,
-		last_success_at,consecutive_failures,next_retry_at,client_uid,sync_version,sync_dirty)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0,?,0,?,?, '',?,0,0,0,?,?,0)
+		last_success_at,consecutive_failures,next_retry_at,max_concurrency,queue_capacity,client_uid,sync_version,sync_dirty)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0,?,0,?,?, '',?,0,0,0,?,?,?,?,0)
 		ON CONFLICT(client_uid) DO UPDATE SET account_type=excluded.account_type,base_url=excluded.base_url,api_key=excluded.api_key,
 		email=excluded.email,chatgpt_account_id=excluded.chatgpt_account_id,plan_type=excluded.plan_type,
 		access_token=excluded.access_token,refresh_token=excluded.refresh_token,id_token=excluded.id_token,expires_at=excluded.expires_at,
-		status=excluded.status,status_reason=excluded.status_reason,proxy_id=excluded.proxy_id,updated_at=excluded.updated_at,
+		status=excluded.status,status_reason=excluded.status_reason,proxy_id=excluded.proxy_id,
+		max_concurrency=excluded.max_concurrency,queue_capacity=excluded.queue_capacity,updated_at=excluded.updated_at,
 		credential_fingerprint=excluded.credential_fingerprint,sync_version=excluded.sync_version,sync_dirty=0`,
 		string(account.AccountType), account.BaseURL, apiKeyCipher, account.Email, account.ChatGPTAccountID, account.PlanType,
 		accessCipher, refreshCipher, idCipher, timeToUnix(account.ExpiresAt), string(account.Status), account.StatusReason,
-		proxyID, createdAt.Unix(), updatedAt.Unix(), fingerprint, account.ClientUID, version)
+		proxyID, createdAt.Unix(), updatedAt.Unix(), fingerprint, account.MaxConcurrency, account.QueueCapacity, account.ClientUID, version)
 	return err
 }
 
