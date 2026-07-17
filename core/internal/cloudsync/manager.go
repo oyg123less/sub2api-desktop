@@ -2,7 +2,9 @@ package cloudsync
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +27,10 @@ const (
 	cloudPullPageSize = 1000
 	cloudPullMaxPages = 20
 )
+
+type syncOutboxPayload struct {
+	Items []remoteVaultItem `json:"items"`
+}
 
 type RegisterInput struct {
 	Email          string
@@ -761,6 +767,11 @@ func (m *Manager) Sync(ctx context.Context) (syncErr error) {
 		if pull.Cursor != "" {
 			cursor = pull.Cursor
 		}
+		if cursor != previousCursor {
+			if err := m.checkpointCursor(cursor); err != nil {
+				return err
+			}
+		}
 		if len(pull.Items) < cloudPullPageSize || cursor == previousCursor {
 			break
 		}
@@ -775,40 +786,67 @@ func (m *Manager) Sync(ctx context.Context) (syncErr error) {
 			}
 		}
 	}
-	items, err := m.collectDirty(vaultKey)
-	if err != nil {
-		return err
-	}
 	conflicted := false
 	for attempt := 0; attempt < 2; attempt++ {
 		conflicted = false
-		for start := 0; start < len(items); start += 200 {
-			end := min(start+200, len(items))
-			response, pushErr := m.client.push(ctx, accessToken, items[start:end])
+		pending, err := m.store.ListCloudOutboxBatches()
+		if err != nil {
+			return err
+		}
+		for _, batch := range pending {
+			batchConflict, nextCursor, pushErr := m.pushOutboxBatch(ctx, accessToken, vaultKey, batch)
 			if pushErr != nil {
-				var cloudErr *CloudError
-				if errors.As(pushErr, &cloudErr) && cloudErr.Status == http.StatusConflict && len(response.Conflicts) > 0 {
-					if err := m.applyRemoteItems(response.Conflicts, vaultKey); err != nil {
-						return err
-					}
-					conflicted = true
-					break
-				}
 				return pushErr
 			}
-			if err := m.acknowledge(response.Items); err != nil {
+			if nextCursor != "" {
+				cursor = nextCursor
+				if err := m.checkpointCursor(cursor); err != nil {
+					return err
+				}
+			}
+			if batchConflict {
+				conflicted = true
+				break
+			}
+		}
+		if conflicted {
+			continue
+		}
+		items, err := m.collectDirty(vaultKey)
+		if err != nil {
+			return err
+		}
+		for start := 0; start < len(items); start += 200 {
+			end := min(start+200, len(items))
+			key, err := newSyncIdempotencyKey()
+			if err != nil {
 				return err
 			}
-			if response.Cursor != "" {
-				cursor = response.Cursor
+			payload, err := json.Marshal(syncOutboxPayload{Items: items[start:end]})
+			if err != nil {
+				return err
+			}
+			if err := m.store.SaveCloudOutboxBatch(key, payload); err != nil {
+				return err
+			}
+			batch := store.CloudOutboxBatch{IdempotencyKey: key, PayloadJSON: payload, CreatedAt: time.Now()}
+			batchConflict, nextCursor, pushErr := m.pushOutboxBatch(ctx, accessToken, vaultKey, batch)
+			if pushErr != nil {
+				return pushErr
+			}
+			if nextCursor != "" {
+				cursor = nextCursor
+				if err := m.checkpointCursor(cursor); err != nil {
+					return err
+				}
+			}
+			if batchConflict {
+				conflicted = true
+				break
 			}
 		}
 		if !conflicted {
 			break
-		}
-		items, err = m.collectDirty(vaultKey)
-		if err != nil {
-			return err
 		}
 	}
 	if conflicted {
@@ -831,6 +869,60 @@ func (m *Manager) Sync(ctx context.Context) (syncErr error) {
 	}
 	m.mu.Unlock()
 	return nil
+}
+
+func newSyncIdempotencyKey() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", fmt.Errorf("generate cloud sync idempotency key: %w", err)
+	}
+	return "amber-sync-" + hex.EncodeToString(value[:]), nil
+}
+
+func (m *Manager) checkpointCursor(cursor string) error {
+	if cursor == "" {
+		return nil
+	}
+	if err := m.store.UpdateCloudSessionCursor(cursor); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	if m.session != nil {
+		m.session.SyncCursor = cursor
+	}
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *Manager) pushOutboxBatch(ctx context.Context, accessToken string, vaultKey []byte, batch store.CloudOutboxBatch) (bool, string, error) {
+	var payload syncOutboxPayload
+	if err := json.Unmarshal(batch.PayloadJSON, &payload); err != nil || len(payload.Items) == 0 || len(payload.Items) > 200 {
+		return false, "", errors.New("saved cloud sync batch is invalid")
+	}
+	response, pushErr := m.client.push(ctx, accessToken, batch.IdempotencyKey, payload.Items)
+	if pushErr != nil {
+		var cloudErr *CloudError
+		if errors.As(pushErr, &cloudErr) && cloudErr.Status == http.StatusConflict && cloudErr.Code == "vault_conflict" && len(response.Conflicts) > 0 {
+			if err := m.applyRemoteItems(response.Conflicts, vaultKey); err != nil {
+				return false, "", err
+			}
+			if err := m.store.DeleteCloudOutboxBatch(batch.IdempotencyKey); err != nil {
+				return false, "", err
+			}
+			return true, response.Cursor, nil
+		}
+		return false, "", pushErr
+	}
+	if len(response.Items) != len(payload.Items) {
+		return false, "", errors.New("Amber Cloud returned an incomplete batch acknowledgement")
+	}
+	if err := m.acknowledge(response.Items, vaultKey); err != nil {
+		return false, "", err
+	}
+	if err := m.store.DeleteCloudOutboxBatch(batch.IdempotencyKey); err != nil {
+		return false, "", err
+	}
+	return false, response.Cursor, nil
 }
 
 func (m *Manager) ensureAccess(ctx context.Context) error {
@@ -1171,15 +1263,35 @@ func (m *Manager) applyRemotePayload(item remoteVaultItem, envelope vaultEnvelop
 	}
 }
 
-func (m *Manager) acknowledge(items []remoteVaultItem) error {
+func (m *Manager) acknowledge(items []remoteVaultItem, vaultKey []byte) error {
 	for _, item := range items {
-		if item.Deleted {
-			if err := m.store.MarkCloudTombstoneSynced(item.Kind, item.ClientUID); err != nil {
-				return err
+		if item.Version <= 0 {
+			return errors.New("Amber Cloud returned an invalid batch acknowledgement")
+		}
+		envelope, err := decryptEnvelope(vaultKey, item.Ciphertext)
+		if err != nil {
+			return err
+		}
+		acknowledged, err := m.store.AcknowledgeCloudItem(
+			item.Kind, item.ClientUID, item.Version-1, item.Version, envelope.UpdatedAt, item.Deleted,
+		)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) && !item.Deleted {
+				if rebaseErr := m.store.RebaseCloudTombstone(item.Kind, item.ClientUID, item.Version); rebaseErr != nil {
+					return rebaseErr
+				}
+				continue
 			}
+			return err
+		}
+		if acknowledged {
 			continue
 		}
-		if err := m.store.MarkCloudItemSynced(item.Kind, item.ClientUID, item.Version); err != nil {
+		if item.Deleted {
+			if err := m.store.RebaseCloudTombstone(item.Kind, item.ClientUID, item.Version); err != nil {
+				return err
+			}
+		} else if err := m.store.RebaseCloudItem(item.Kind, item.ClientUID, item.Version); err != nil {
 			return err
 		}
 	}

@@ -38,21 +38,25 @@ func (s *testSettings) Save(value store.Settings) error {
 }
 
 type mockCloud struct {
-	mu         sync.Mutex
-	email      string
-	authHash   string
-	saltKDF    string
-	saltAuth   string
-	wrapped    string
-	items      map[string]remoteVaultItem
-	lastUpload string
-	resends    int
-	pullPages  [][]remoteVaultItem
-	pullCalls  int
+	mu           sync.Mutex
+	email        string
+	authHash     string
+	saltKDF      string
+	saltAuth     string
+	wrapped      string
+	items        map[string]remoteVaultItem
+	lastUpload   string
+	resends      int
+	pullPages    [][]remoteVaultItem
+	pullCalls    int
+	failPullFrom int
+	receipts     map[string][]byte
+	pushCalls    int
+	dropPush     bool
 }
 
 func newMockCloud() *mockCloud {
-	return &mockCloud{items: make(map[string]remoteVaultItem)}
+	return &mockCloud{items: make(map[string]remoteVaultItem), receipts: make(map[string][]byte)}
 }
 
 func (m *mockCloud) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -99,6 +103,12 @@ func (m *mockCloud) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"access_token":"access","access_expires_in":900,"refresh_token":"refresh-next"}`))
 	case "/v1/vault":
 		if len(m.pullPages) > 0 {
+			if m.failPullFrom > 0 && m.pullCalls >= m.failPullFrom {
+				m.pullCalls++
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":{"code":"temporary","message":"temporary"}}`))
+				return
+			}
 			index := min(m.pullCalls, len(m.pullPages)-1)
 			page := m.pullPages[index]
 			m.pullCalls++
@@ -111,6 +121,21 @@ func (m *mockCloud) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewEncoder(w).Encode(pullResponse{Items: items, Cursor: time.Now().UTC().Format(time.RFC3339Nano)})
 	case "/v1/vault/batch":
+		idempotencyKey := r.Header.Get("Idempotency-Key")
+		m.pushCalls++
+		if receipt := m.receipts[idempotencyKey]; len(receipt) > 0 {
+			if m.dropPush {
+				if hijacker, ok := w.(http.Hijacker); ok {
+					connection, _, err := hijacker.Hijack()
+					if err == nil {
+						_ = connection.Close()
+						return
+					}
+				}
+			}
+			_, _ = w.Write(receipt)
+			return
+		}
 		var body struct {
 			Items []remoteVaultItem `json:"items"`
 		}
@@ -141,7 +166,18 @@ func (m *mockCloud) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.items[key] = item
 			updated = append(updated, item)
 		}
-		_ = json.NewEncoder(w).Encode(pushResponse{Items: updated, Cursor: time.Now().UTC().Format(time.RFC3339Nano)})
+		response, _ := json.Marshal(pushResponse{Items: updated, Cursor: time.Now().UTC().Format(time.RFC3339Nano)})
+		m.receipts[idempotencyKey] = response
+		if m.dropPush {
+			if hijacker, ok := w.(http.Hijacker); ok {
+				connection, _, err := hijacker.Hijack()
+				if err == nil {
+					_ = connection.Close()
+					return
+				}
+			}
+		}
+		_, _ = w.Write(response)
 	default:
 		http.NotFound(w, r)
 	}
@@ -289,6 +325,116 @@ func TestSyncPullsMultipleRemotePagesInOneRun(t *testing.T) {
 	cloud.mu.Unlock()
 	if pullCalls != 2 {
 		t.Fatalf("pull calls = %d, want 2", pullCalls)
+	}
+}
+
+func TestSyncPersistsCursorCheckpointBeforeLaterPageFailure(t *testing.T) {
+	cloud := newMockCloud()
+	server := httptest.NewServer(cloud)
+	defer server.Close()
+	st := openTestStore(t, "page-checkpoint")
+	manager := NewManager(st, &testSettings{value: store.DefaultSettings()}, server.URL, "site-key", server.Client(), nil)
+	t.Cleanup(manager.Close)
+	ctx := context.Background()
+	if err := manager.Register(ctx, RegisterInput{Email: "checkpoint@example.test", Password: "correct horse battery staple", TurnstileToken: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.VerifyEmail(ctx, "checkpoint@example.test", "123456"); err != nil {
+		t.Fatal(err)
+	}
+	manager.client.retryDelays = []time.Duration{0, 0}
+	manager.mu.RLock()
+	vaultKey := append([]byte(nil), manager.vaultKey...)
+	manager.mu.RUnlock()
+	defer wipe(vaultKey)
+	ciphertext, err := encryptEnvelope(vaultKey, time.Now(), map[string]bool{"deleted": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := make([]remoteVaultItem, cloudPullPageSize)
+	for index := range first {
+		first[index] = remoteVaultItem{Kind: store.CloudKindAccount, ClientUID: fmt.Sprintf("checkpoint-%04d", index), Ciphertext: ciphertext, Version: 1, Deleted: true}
+	}
+	cloud.mu.Lock()
+	cloud.pullPages = [][]remoteVaultItem{first, {{Kind: store.CloudKindAccount, ClientUID: "never-applied", Ciphertext: ciphertext, Version: 1, Deleted: true}}}
+	cloud.failPullFrom = 1
+	cloud.mu.Unlock()
+	if err := manager.Sync(ctx); err == nil {
+		t.Fatal("sync unexpectedly succeeded after later page failure")
+	}
+	session, err := st.LoadCloudSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.SyncCursor != "2026-07-17T00:00:00.000Z|1000" {
+		t.Fatalf("checkpoint cursor=%q", session.SyncCursor)
+	}
+}
+
+func TestSyncResumesPersistedOutboxAfterResponseLoss(t *testing.T) {
+	cloud := newMockCloud()
+	server := httptest.NewServer(cloud)
+	defer server.Close()
+	st := openTestStore(t, "response-loss")
+	settings := &testSettings{value: store.DefaultSettings()}
+	manager := NewManager(st, settings, server.URL, "site-key", server.Client(), nil)
+	ctx := context.Background()
+	if err := manager.Register(ctx, RegisterInput{Email: "loss@example.test", Password: "correct horse battery staple", TurnstileToken: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.VerifyEmail(ctx, "loss@example.test", "123456"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateAccount(&store.Account{
+		AccountType: store.AccountTypeAPIKey, BaseURL: "https://api.openai.com/v1", APIKey: "sk-test-response-loss",
+		Email: "loss-upstream@example.test", Status: store.AccountActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager.client.retryDelays = []time.Duration{0, 0}
+	cloud.mu.Lock()
+	cloud.dropPush = true
+	cloud.mu.Unlock()
+	if err := manager.Sync(ctx); err == nil {
+		t.Fatal("sync unexpectedly succeeded after every response was dropped")
+	}
+	outbox, err := st.ListCloudOutboxBatches()
+	if err != nil || len(outbox) != 1 {
+		t.Fatalf("outbox=%d err=%v, want one persisted batch", len(outbox), err)
+	}
+	cloud.mu.Lock()
+	cloud.dropPush = false
+	remoteVersion := 0
+	for _, item := range cloud.items {
+		remoteVersion = item.Version
+	}
+	cloud.mu.Unlock()
+	if remoteVersion != 1 {
+		t.Fatalf("remote version=%d, want one committed write", remoteVersion)
+	}
+
+	manager.Close()
+	recovered := NewManager(st, settings, server.URL, "site-key", server.Client(), nil)
+	t.Cleanup(recovered.Close)
+	recovered.client.retryDelays = []time.Duration{0, 0}
+	if err := recovered.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	outbox, err = st.ListCloudOutboxBatches()
+	if err != nil || len(outbox) != 0 {
+		t.Fatalf("outbox=%d err=%v after recovery", len(outbox), err)
+	}
+	pending, err := st.PendingCloudCount()
+	if err != nil || pending != 0 {
+		t.Fatalf("pending=%d err=%v after recovery", pending, err)
+	}
+	cloud.mu.Lock()
+	for _, item := range cloud.items {
+		remoteVersion = item.Version
+	}
+	cloud.mu.Unlock()
+	if remoteVersion != 1 {
+		t.Fatalf("remote version=%d after replay, want 1", remoteVersion)
 	}
 }
 

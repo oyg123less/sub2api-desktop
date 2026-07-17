@@ -1,6 +1,6 @@
 # Amber Cloud
 
-Cloudflare Worker for Amber v0.3.2. It provides account verification, short-lived access sessions, revocable refresh sessions, encrypted vault synchronization, and administrator governance. Vault payloads are opaque AES-256-GCM ciphertext; this service does not receive a vault key or plaintext upstream credential.
+Cloudflare Worker for Amber v0.3.3. It provides account verification, short-lived access sessions, revocable refresh sessions, idempotent encrypted vault synchronization, and administrator governance. Vault payloads are opaque AES-256-GCM ciphertext; this service does not receive a vault key or plaintext upstream credential.
 
 ## Resources
 
@@ -22,11 +22,12 @@ npx wrangler secret put JWT_SECRET
 npx wrangler secret put TURNSTILE_SECRET
 npx wrangler secret put RESEND_API_KEY
 npx wrangler secret put ADMIN_API_KEY
+npx wrangler secret put SHARE_KMS_KEY
 ```
 
-`JWT_SECRET` and `ADMIN_API_KEY` must be independent random values of at least 32 bytes. M2 will additionally require `SHARE_KMS_KEY`. Set `RESEND_FROM` to a verified Resend sender and `TURNSTILE_HOSTNAME` to the production desktop registration host when deploying.
+`JWT_SECRET`, `ADMIN_API_KEY`, and `SHARE_KMS_KEY` must be independent random values of at least 32 bytes. Set `RESEND_FROM` to a verified Resend sender and `TURNSTILE_HOSTNAME` to the production desktop registration host when deploying.
 
-The checked-in `RESEND_FROM` uses Resend's `onboarding@resend.dev` test sender. That sender is intentionally limited and normally delivers only to the Resend account owner's email address. Replace it with a verified sender domain before opening registration to other users.
+The production `RESEND_FROM` uses the verified `mail.amberapp.asia` sender domain. Keep alternative development senders outside production configuration.
 
 ## Local development
 
@@ -53,11 +54,11 @@ All API errors use stable codes and a request ID. Request bodies, vault cipherte
 - `POST /v1/auth/parameters` returns only the KDF and authentication salts; the wrapped vault key is returned only by a successful `POST /v1/auth/login`.
 - `POST /v1/auth/refresh` rotates refresh tokens, while `POST /v1/auth/logout` revokes one session.
 - `PUT /v1/auth/master-password` rewraps the vault key and invalidates every existing session.
-- `GET /v1/vault` and `PUT /v1/vault/batch` synchronize opaque encrypted items using optimistic versions and composite cursors.
+- `GET /v1/vault` and `PUT /v1/vault/batch` synchronize opaque encrypted items using optimistic versions, composite cursors, and idempotent batch receipts.
 - `/v1/admin/*` requires both an administrator access token and the independent `X-Admin-Key` second factor.
 
 ## Sharing gateway
 
 M2 share owners create and manage grants through `/v1/shares`. A grant stores the upstream credential only as AES-256-GCM ciphertext encrypted under `SHARE_KMS_KEY`; the one-time `sk-share-*` guest key is represented in D1 only by its SHA-256 hash. Friends call the returned Base URL with that guest key and do not need Amber installed.
 
-`POST /v1/responses` supports OAuth and API-key grants with streamed response passthrough. `POST /v1/chat/completions` is available for API-key grants. For the hard guarantee that an upstream cannot reflect an Authorization header, production sharing accepts only `chatgpt.com` and `api.openai.com` upstream hosts. Usage logs store only timestamp, model, HTTP status, and latency; request and response bodies are never stored.
+`POST /v1/responses` supports API-key grants with streamed response passthrough. OAuth grants return `oauth_device_relay_required` until the v0.4.0 owner-device relay is available. `POST /v1/chat/completions` is available for API-key grants. For the hard guarantee that an upstream cannot reflect an Authorization header, production sharing accepts only `chatgpt.com` and `api.openai.com` upstream hosts. Usage logs store only timestamp, model, HTTP status, and latency; request and response bodies are never stored. Quota is reserved before forwarding, settled only for successful upstream responses, and released for network or HTTP failures.

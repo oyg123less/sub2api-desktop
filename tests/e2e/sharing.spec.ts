@@ -25,7 +25,7 @@ test("creates a one-time cloud share and manages revocation without exposing the
     const request = route.request();
     const path = new URL(request.url()).pathname;
     let body: unknown = {};
-    if (path === "/control/status") body = { version: "0.3.2", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "http://127.0.0.1:8080/v1", lan_addresses: [], local_api_key: "", account_count: 1, schema_version: 10 };
+    if (path === "/control/status") body = { version: "0.3.3", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "http://127.0.0.1:8080/v1", lan_addresses: [], local_api_key: "", account_count: 1, schema_version: 11 };
     if (path === "/control/accounts") body = { accounts: [{ id: 1, account_type: "api_key", base_url: "https://api.openai.com/v1", email: "API key account", chatgpt_account_id: "", plan_type: "api", expires_at: "", status: "active", consecutive_failures: 0, max_concurrency: 3, queue_capacity: 20, in_flight: 0, waiting: 0, created_at: "2026-07-01T00:00:00Z", client_uid: accountUID }], usage: {} };
     if (path === "/control/proxies") body = { proxies: [] };
     if (path === "/control/settings") body = { account_strategy: "quota_aware", default_model: "gpt-5.6" };
@@ -97,7 +97,7 @@ test("blocks OAuth cloud sharing until owner-device relay is available", async (
     const request = route.request();
     const path = new URL(request.url()).pathname;
     let body: unknown = {};
-    if (path === "/control/status") body = { version: "0.3.2", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "http://127.0.0.1:8080/v1", lan_addresses: [], local_api_key: "", account_count: 1, schema_version: 10 };
+    if (path === "/control/status") body = { version: "0.3.3", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "http://127.0.0.1:8080/v1", lan_addresses: [], local_api_key: "", account_count: 1, schema_version: 11 };
     if (path === "/control/accounts") body = { accounts: [{ id: 1, account_type: "oauth", base_url: "", email: "owner@example.test", chatgpt_account_id: "acct-owner", plan_type: "plus", expires_at: "2026-08-01T00:00:00Z", status: "active", consecutive_failures: 0, max_concurrency: 3, queue_capacity: 20, in_flight: 0, waiting: 0, created_at: "2026-07-01T00:00:00Z", client_uid: accountUID }], usage: {} };
     if (path === "/control/proxies") body = { proxies: [] };
     if (path === "/control/settings") body = { account_strategy: "quota_aware", default_model: "gpt-5.6" };

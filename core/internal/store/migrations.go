@@ -16,7 +16,7 @@ import (
 	appcrypto "sub2api-desktop/core/internal/crypto"
 )
 
-const CurrentSchemaVersion = 10
+const CurrentSchemaVersion = 11
 
 type migration struct {
 	version int
@@ -35,6 +35,7 @@ var migrations = []migration{
 	{version: 8, name: "v0.3.1 usage details", apply: migrateV031UsageDetails},
 	{version: 9, name: "v0.3.1 pending cloud registration", apply: migrateV031PendingCloudRegistration},
 	{version: 10, name: "v0.3.2 account concurrency queue", apply: migrateV032AccountConcurrencyQueue},
+	{version: 11, name: "v0.3.3 cloud sync outbox", apply: migrateV033CloudSyncOutbox},
 }
 
 func databaseExists(path string) bool {
@@ -210,6 +211,16 @@ func migrateV032AccountConcurrencyQueue(tx *sql.Tx, _ *appcrypto.Cipher) error {
 		account_type,base_url,api_key,email,chatgpt_account_id,plan_type,access_token,refresh_token,id_token,expires_at,status,proxy_id,max_concurrency,queue_capacity
 		ON accounts WHEN (SELECT value FROM cloud_sync_runtime WHERE key='applying')<>'1'
 		BEGIN UPDATE accounts SET sync_dirty=1 WHERE id=NEW.id; END`)
+	return err
+}
+
+func migrateV033CloudSyncOutbox(tx *sql.Tx, _ *appcrypto.Cipher) error {
+	_, err := tx.Exec(`CREATE TABLE IF NOT EXISTS cloud_sync_outbox (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		idempotency_key TEXT NOT NULL UNIQUE,
+		payload_json TEXT NOT NULL,
+		created_at INTEGER NOT NULL
+	)`)
 	return err
 }
 

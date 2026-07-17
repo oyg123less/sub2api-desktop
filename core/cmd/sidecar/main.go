@@ -34,7 +34,7 @@ import (
 )
 
 // version is overridable at build time via -ldflags.
-var version = "0.3.2-dev"
+var version = "0.3.3-dev"
 
 func main() {
 	var (

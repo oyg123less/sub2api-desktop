@@ -49,26 +49,29 @@ func TestCloudClientRetriesSafeReads(t *testing.T) {
 	}
 }
 
-func TestCloudClientDoesNotReplayVaultWrites(t *testing.T) {
+func TestCloudClientRetriesIdempotentVaultWrites(t *testing.T) {
 	attempts := 0
-	client, err := newCloudClient("https://cloud.example", &http.Client{Transport: cloudRoundTripFunc(func(*http.Request) (*http.Response, error) {
+	client, err := newCloudClient("https://cloud.example", &http.Client{Transport: cloudRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		attempts++
+		if request.Header.Get("Idempotency-Key") != "amber-sync-test-request" {
+			t.Fatalf("idempotency key = %q", request.Header.Get("Idempotency-Key"))
+		}
 		return nil, context.DeadlineExceeded
 	})})
 	if err != nil {
 		t.Fatal(err)
 	}
 	client.retryDelays = []time.Duration{0, 0}
-	_, err = client.push(context.Background(), "access", []remoteVaultItem{{Kind: "account", ClientUID: "018f1f46-7a19-7cc2-88cb-f577e51d3999", Ciphertext: "v1.test"}})
+	_, err = client.push(context.Background(), "access", "amber-sync-test-request", []remoteVaultItem{{Kind: "account", ClientUID: "018f1f46-7a19-7cc2-88cb-f577e51d3999", Ciphertext: "v1.test"}})
 	if err == nil {
 		t.Fatal("push unexpectedly succeeded")
 	}
 	var cloudErr *CloudError
-	if !errors.As(err, &cloudErr) || cloudErr.Code != "cloud_timeout" || cloudErr.Attempt != 1 {
+	if !errors.As(err, &cloudErr) || cloudErr.Code != "cloud_timeout" || cloudErr.Attempt != 3 {
 		t.Fatalf("unexpected error: %#v", err)
 	}
-	if attempts != 1 {
-		t.Fatalf("write attempts=%d, want 1", attempts)
+	if attempts != 3 {
+		t.Fatalf("write attempts=%d, want 3", attempts)
 	}
 }
 

@@ -59,6 +59,13 @@ type CloudConflict struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+type CloudOutboxBatch struct {
+	ID             int64
+	IdempotencyKey string
+	PayloadJSON    []byte
+	CreatedAt      time.Time
+}
+
 func (s *Store) SaveCloudSession(session CloudSession) error {
 	vaultCipher, err := s.cipher.Encrypt(session.VaultKey)
 	if err != nil {
@@ -154,6 +161,52 @@ func (s *Store) UpdateCloudSessionProgress(refreshToken, cursor string, syncedAt
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (s *Store) UpdateCloudSessionCursor(cursor string) error {
+	result, err := s.db.Exec(`UPDATE cloud_session SET sync_cursor=?,updated_at=? WHERE id=1`, cursor, time.Now().Unix())
+	if err != nil {
+		return err
+	}
+	if count, _ := result.RowsAffected(); count != 1 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) SaveCloudOutboxBatch(idempotencyKey string, payload []byte) error {
+	if idempotencyKey == "" || len(payload) == 0 {
+		return errors.New("invalid cloud outbox batch")
+	}
+	_, err := s.db.Exec(`INSERT INTO cloud_sync_outbox(idempotency_key,payload_json,created_at) VALUES(?,?,?)`,
+		idempotencyKey, string(payload), time.Now().Unix())
+	return err
+}
+
+func (s *Store) ListCloudOutboxBatches() ([]CloudOutboxBatch, error) {
+	rows, err := s.db.Query(`SELECT id,idempotency_key,payload_json,created_at FROM cloud_sync_outbox ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []CloudOutboxBatch
+	for rows.Next() {
+		var item CloudOutboxBatch
+		var payload string
+		var createdAt int64
+		if err := rows.Scan(&item.ID, &item.IdempotencyKey, &payload, &createdAt); err != nil {
+			return nil, err
+		}
+		item.PayloadJSON = []byte(payload)
+		item.CreatedAt = unixToTime(createdAt)
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) DeleteCloudOutboxBatch(idempotencyKey string) error {
+	_, err := s.db.Exec(`DELETE FROM cloud_sync_outbox WHERE idempotency_key=?`, idempotencyKey)
+	return err
 }
 
 func (s *Store) SetCloudApplying(value bool) error {
@@ -253,6 +306,57 @@ func (s *Store) RebaseCloudItem(kind, clientUID string, version int) error {
 
 func (s *Store) MarkCloudTombstoneSynced(kind, clientUID string) error {
 	_, err := s.db.Exec(`DELETE FROM cloud_sync_tombstones WHERE kind=? AND client_uid=?`, kind, clientUID)
+	return err
+}
+
+func (s *Store) AcknowledgeCloudItem(kind, clientUID string, baseVersion, remoteVersion int, updatedAt time.Time, deleted bool) (bool, error) {
+	if deleted {
+		result, err := s.db.Exec(`DELETE FROM cloud_sync_tombstones
+			WHERE kind=? AND client_uid=? AND sync_version=? AND updated_at=?`,
+			kind, clientUID, baseVersion, updatedAt.Unix())
+		if err != nil {
+			return false, err
+		}
+		if count, _ := result.RowsAffected(); count == 1 {
+			return true, nil
+		}
+		var exists int
+		err = s.db.QueryRow(`SELECT COUNT(*) FROM cloud_sync_tombstones WHERE kind=? AND client_uid=?`, kind, clientUID).Scan(&exists)
+		return exists == 0, err
+	}
+
+	var table string
+	switch kind {
+	case CloudKindAccount:
+		table = "accounts"
+	case CloudKindProxy:
+		table = "proxies"
+	case CloudKindCodexRemote:
+		table = "codex_remote_targets"
+	case CloudKindSettings:
+		table = "cloud_sync_settings"
+	default:
+		return false, fmt.Errorf("unknown cloud item kind %q", kind)
+	}
+	result, err := s.db.Exec(`UPDATE `+table+` SET sync_version=?,sync_dirty=0
+		WHERE client_uid=? AND sync_version=? AND sync_dirty=1 AND updated_at=?`,
+		remoteVersion, clientUID, baseVersion, updatedAt.Unix())
+	if err != nil {
+		return false, err
+	}
+	if count, _ := result.RowsAffected(); count == 1 {
+		return true, nil
+	}
+	var version, dirty int
+	err = s.db.QueryRow(`SELECT sync_version,sync_dirty FROM `+table+` WHERE client_uid=?`, clientUID).Scan(&version, &dirty)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, ErrNotFound
+	}
+	return err == nil && dirty == 0 && version >= remoteVersion, err
+}
+
+func (s *Store) RebaseCloudTombstone(kind, clientUID string, version int) error {
+	_, err := s.db.Exec(`UPDATE cloud_sync_tombstones SET sync_version=? WHERE kind=? AND client_uid=?`, version, kind, clientUID)
 	return err
 }
 

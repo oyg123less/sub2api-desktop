@@ -61,7 +61,7 @@ async function initialize(page: Page, accounts: FixtureAccount[], hooks: {
     const path = new URL(request.url()).pathname;
     let body: unknown = {};
     let responseStatus = 200;
-    if (path === "/control/status") body = { version: "0.3.2", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "http://127.0.0.1:8080/v1", lan_addresses: [], local_api_key: "", account_count: accounts.length, schema_version: 10 };
+    if (path === "/control/status") body = { version: "0.3.3", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "http://127.0.0.1:8080/v1", lan_addresses: [], local_api_key: "", account_count: accounts.length, schema_version: 11 };
     if (path === "/control/accounts" && request.method() === "GET") body = {
       accounts,
       usage: { 1: { account_id: 1, requests: 12, prompt_tokens: 800, cached_tokens: 300, completion_tokens: 200, reasoning_tokens: 40, total_tokens: 1040, cost_usd: 0.1234 } },
@@ -221,6 +221,7 @@ test("polls live account load without overlap and pauses while hidden", async ({
     Object.defineProperty(document, "hidden", { configurable: true, value: true });
     document.dispatchEvent(new Event("visibilitychange"));
   });
+  await page.waitForTimeout(150);
   const callsWhileVisible = runtimeCalls;
   await page.waitForTimeout(1_250);
   expect(runtimeCalls).toBe(callsWhileVisible);
@@ -319,5 +320,7 @@ test("submits selected proxies for API, OAuth, and JSON imports", async ({ page 
   await page.getByRole("button", { name: "Preview" }).click();
   expect(importHeaders["x-import-proxy-mode"]).toBe("override");
   expect(importHeaders["x-import-proxy-id"]).toBe("7");
-  await expect(page.getByText("Tokyo relay", { exact: true })).toBeVisible();
+  const previewProxies = page.locator(".import-table .import-proxy-value");
+  await expect(previewProxies).toHaveCount(2);
+  await expect(previewProxies).toHaveText(["Tokyo relay", "Tokyo relay"]);
 });

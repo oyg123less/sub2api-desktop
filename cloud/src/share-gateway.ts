@@ -14,6 +14,7 @@ interface GatewayGrant {
   token_cipher: string;
   quota_requests: number;
   used_requests: number;
+  reserved_requests: number;
   expires_at: string | null;
   revoked: number;
 }
@@ -28,31 +29,41 @@ async function loadGrant(c: Context<AppEnv>): Promise<GatewayGrant> {
     throw new AppError(401, "invalid_share_key", "The share key is invalid or has been revoked.");
   }
   const hash = await sha256(guestKey);
-  const grant = await c.env.DB.prepare(`SELECT id,owner_id,account_uid,token_cipher,quota_requests,used_requests,expires_at,revoked
+  const grant = await c.env.DB.prepare(`SELECT id,owner_id,account_uid,token_cipher,quota_requests,used_requests,reserved_requests,expires_at,revoked
     FROM share_grants WHERE guest_key_hash=?`).bind(hash).first<GatewayGrant>();
   if (!grant || grant.revoked) throw new AppError(401, "invalid_share_key", "The share key is invalid or has been revoked.");
   if (grant.expires_at && Date.parse(grant.expires_at) <= Date.now()) {
     throw new AppError(403, "share_expired", "The share has expired.");
   }
-  if (grant.quota_requests > 0 && grant.used_requests >= grant.quota_requests) {
+  if (grant.quota_requests > 0 && grant.used_requests + grant.reserved_requests >= grant.quota_requests) {
     throw new AppError(429, "share_quota_exhausted", "The share request quota has been exhausted.");
   }
   return grant;
 }
 
-async function claimGrantUsage(c: Context<AppEnv>, grant: GatewayGrant): Promise<void> {
-  const claimed = await c.env.DB.prepare(`UPDATE share_grants SET used_requests=used_requests+1,updated_at=?
-    WHERE id=? AND revoked=0 AND (expires_at IS NULL OR expires_at>?)
-      AND (quota_requests=0 OR used_requests<quota_requests)`).bind(
-        new Date().toISOString(), grant.id, new Date().toISOString(),
+async function reserveGrantUsage(c: Context<AppEnv>, grant: GatewayGrant): Promise<string> {
+  const now = new Date().toISOString();
+  await c.env.DB.prepare("DELETE FROM share_request_reservations WHERE expires_at<=?").bind(now).run();
+  const reservationID = randomToken(18);
+  try {
+    await c.env.DB.prepare(`INSERT INTO share_request_reservations(id,grant_id,state,created_at,updated_at,expires_at)
+      VALUES(?,?,'pending',?,?,?)`).bind(
+        reservationID, grant.id, now, now, new Date(Date.now() + 10 * 60 * 1000).toISOString(),
       ).run();
-  if (!claimed.meta.changes) {
-    const current = await c.env.DB.prepare("SELECT revoked,quota_requests,used_requests,expires_at FROM share_grants WHERE id=?")
-      .bind(grant.id).first<Pick<GatewayGrant, "revoked" | "quota_requests" | "used_requests" | "expires_at">>();
+    return reservationID;
+  } catch {
+    const current = await c.env.DB.prepare(`SELECT revoked,quota_requests,used_requests,reserved_requests,expires_at
+      FROM share_grants WHERE id=?`).bind(grant.id)
+      .first<Pick<GatewayGrant, "revoked" | "quota_requests" | "used_requests" | "reserved_requests" | "expires_at">>();
     if (!current || current.revoked) throw new AppError(401, "invalid_share_key", "The share key is invalid or has been revoked.");
     if (current.expires_at && Date.parse(current.expires_at) <= Date.now()) throw new AppError(403, "share_expired", "The share has expired.");
     throw new AppError(429, "share_quota_exhausted", "The share request quota has been exhausted.");
   }
+}
+
+async function finalizeGrantUsage(c: Context<AppEnv>, reservationID: string, state: "settled" | "released"): Promise<void> {
+  await c.env.DB.prepare(`UPDATE share_request_reservations SET state=?,updated_at=? WHERE id=? AND state='pending'`)
+    .bind(state, new Date().toISOString(), reservationID).run();
 }
 
 function safeResponseHeaders(upstream: Response): Headers {
@@ -104,7 +115,7 @@ async function forward(c: Context<AppEnv>) {
   if (credential.account_type === "oauth") {
     throw new AppError(409, "oauth_device_relay_required", "OAuth sharing requires the owner device to be online and is not available in this version.");
   }
-  await claimGrantUsage(c, grant);
+  const reservationID = await reserveGrantUsage(c, grant);
   const started = Date.now();
   let status = 502;
   try {
@@ -112,7 +123,7 @@ async function forward(c: Context<AppEnv>) {
       Authorization: `Bearer ${credential.token}`,
       "Content-Type": "application/json",
       Accept: c.req.header("accept") || "text/event-stream, application/json",
-      "User-Agent": "codex_cli_rs/0.3.2 (Amber Cloud Share)",
+      "User-Agent": "codex_cli_rs/0.3.3 (Amber Cloud Share)",
       originator: "codex_cli_rs",
       "OpenAI-Beta": "responses=experimental",
       session_id: crypto.randomUUID(),
@@ -123,6 +134,7 @@ async function forward(c: Context<AppEnv>) {
       body,
     });
     status = upstream.status;
+    await finalizeGrantUsage(c, reservationID, status < 400 ? "settled" : "released");
     c.executionCtx.waitUntil(c.env.DB.prepare(`INSERT INTO share_usage_log(grant_id,ts,model,status,latency_ms)
       VALUES(?,?,?,?,?)`).bind(grant.id, new Date().toISOString(), requestModel(body), status, Date.now() - started).run());
     if (upstream.status >= 400 && (upstream.headers.get("content-type") || "").toLowerCase().includes("text/html")) {
@@ -131,6 +143,7 @@ async function forward(c: Context<AppEnv>) {
     }
     return new Response(upstream.body, { status, headers: safeResponseHeaders(upstream) });
   } catch (error) {
+    await finalizeGrantUsage(c, reservationID, "released");
     c.executionCtx.waitUntil(c.env.DB.prepare(`INSERT INTO share_usage_log(grant_id,ts,model,status,latency_ms)
       VALUES(?,?,?,?,?)`).bind(grant.id, new Date().toISOString(), requestModel(body), status, Date.now() - started).run());
     if (error instanceof AppError) throw error;

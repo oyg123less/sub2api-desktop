@@ -20,7 +20,7 @@ app.use("*", async (c, next) => {
   await next();
 });
 
-app.get("/health", (c) => c.json({ ok: true, service: "amber-cloud", version: "0.3.2" }));
+app.get("/health", (c) => c.json({ ok: true, service: "amber-cloud", version: "0.3.3" }));
 app.route("/v1/auth", authRoutes);
 app.route("/v1/vault", vaultRoutes);
 app.route("/v1/admin", adminRoutes);

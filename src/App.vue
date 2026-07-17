@@ -74,7 +74,7 @@ const backendColor = computed(() => {
   return "var(--text-faint)";
 });
 const backendLabel = computed(() => t(`backend.${backendPhase.value}`));
-const currentVersion = computed(() => app.status?.version || "0.3.2");
+const currentVersion = computed(() => app.status?.version || "0.3.3");
 const darkThemeActive = computed(() => themeMode.value === "dark" || (themeMode.value === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches));
 
 function applyTheme(mode: string) {

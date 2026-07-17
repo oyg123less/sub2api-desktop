@@ -76,6 +76,40 @@ func TestCloudMigrationTracksDirtyRowsAndTombstones(t *testing.T) {
 	}
 }
 
+func TestCloudAcknowledgementPreservesANewerLocalEdit(t *testing.T) {
+	st := openCloudTestStore(t)
+	account, err := st.CreateAccount(&Account{
+		AccountType: AccountTypeAPIKey, BaseURL: "https://api.openai.com/v1", APIKey: "sk-original",
+		Email: "original@example.test", Status: AccountActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outgoingUpdatedAt := account.UpdatedAt
+	if _, err := st.db.Exec(`UPDATE accounts SET email=?,updated_at=updated_at+1 WHERE id=?`, "newer@example.test", account.ID); err != nil {
+		t.Fatal(err)
+	}
+	acknowledged, err := st.AcknowledgeCloudItem(
+		CloudKindAccount, account.ClientUID, 0, 1, outgoingUpdatedAt, false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acknowledged {
+		t.Fatal("stale acknowledgement cleared a newer local edit")
+	}
+	if err := st.RebaseCloudItem(CloudKindAccount, account.ClientUID, 1); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := st.GetAccount(account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.SyncDirty || updated.SyncVersion != 1 || updated.Email != "newer@example.test" {
+		t.Fatalf("newer edit was not preserved: %#v", updated)
+	}
+}
+
 func TestCloudSessionSecretsUseInstallationCipher(t *testing.T) {
 	st := openCloudTestStore(t)
 	session := CloudSession{

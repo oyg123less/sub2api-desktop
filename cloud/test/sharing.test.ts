@@ -160,6 +160,38 @@ describe("cloud sharing", () => {
     vi.unstubAllGlobals();
   });
 
+  it("releases a quota reservation after an upstream failure and settles only a successful request", async () => {
+    const headers = await ownerSession();
+    const creation = await (await createShare(headers, 1)).json<{ guest_key: string; share: { id: number } }>();
+    const upstream = vi.fn()
+      .mockImplementationOnce(async () => new Response(JSON.stringify({ error: "temporary" }), {
+        status: 503, headers: { "content-type": "application/json" },
+      }))
+      .mockImplementationOnce(async () => new Response(JSON.stringify({ id: "response-ok" }), {
+        status: 200, headers: { "content-type": "application/json" },
+      }));
+    vi.stubGlobal("fetch", upstream);
+
+    const request = () => SELF.fetch("https://amber.test/v1/responses", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${creation.guest_key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6", input: "retry-safe" }),
+    });
+    expect((await request()).status).toBe(503);
+    let grant = await env.DB.prepare("SELECT used_requests,reserved_requests FROM share_grants WHERE id=?")
+      .bind(creation.share.id).first<{ used_requests: number; reserved_requests: number }>();
+    expect(grant).toEqual({ used_requests: 0, reserved_requests: 0 });
+
+    expect((await request()).status).toBe(200);
+    grant = await env.DB.prepare("SELECT used_requests,reserved_requests FROM share_grants WHERE id=?")
+      .bind(creation.share.id).first<{ used_requests: number; reserved_requests: number }>();
+    expect(grant).toEqual({ used_requests: 1, reserved_requests: 0 });
+    const states = await env.DB.prepare("SELECT state FROM share_request_reservations ORDER BY created_at,id")
+      .all<{ state: string }>();
+    expect(states.results.map((row) => row.state).sort()).toEqual(["released", "settled"]);
+    vi.unstubAllGlobals();
+  });
+
   it("resolves API-key endpoints and passes a delayed stream through without buffering", async () => {
     const headers = await ownerSession();
     const creation = await (await createShare(headers)).json<{ guest_key: string }>();

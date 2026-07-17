@@ -285,9 +285,10 @@ func (c *cloudClient) pull(ctx context.Context, accessToken, cursor string) (pul
 	return response, err
 }
 
-func (c *cloudClient) push(ctx context.Context, accessToken string, items []remoteVaultItem) (pushResponse, error) {
+func (c *cloudClient) push(ctx context.Context, accessToken, idempotencyKey string, items []remoteVaultItem) (pushResponse, error) {
 	var response pushResponse
-	err := c.doJSON(ctx, http.MethodPut, "/v1/vault/batch", accessToken, map[string]any{"items": items}, &response)
+	err := c.doJSONWithHeaders(ctx, http.MethodPut, "/v1/vault/batch", accessToken, map[string]any{"items": items}, &response,
+		map[string]string{"Idempotency-Key": idempotencyKey})
 	var cloudErr *CloudError
 	if errors.As(err, &cloudErr) && cloudErr.Status == http.StatusConflict {
 		return response, err
@@ -346,7 +347,7 @@ func (c *cloudClient) doJSONWithHeaders(ctx context.Context, method, path, acces
 		}
 	}
 	attempts := 1
-	if method == http.MethodGet || method == http.MethodHead {
+	if method == http.MethodGet || method == http.MethodHead || (method == http.MethodPut && extraHeaders["Idempotency-Key"] != "") {
 		attempts += len(c.retryDelays)
 	}
 	for attempt := 1; attempt <= attempts; attempt++ {
@@ -359,7 +360,7 @@ func (c *cloudClient) doJSONWithHeaders(ctx context.Context, method, path, acces
 			return err
 		}
 		request.Header.Set("Accept", "application/json")
-		request.Header.Set("User-Agent", "Amber/0.3.2")
+		request.Header.Set("User-Agent", "Amber/0.3.3")
 		if body != nil {
 			request.Header.Set("Content-Type", "application/json")
 		}

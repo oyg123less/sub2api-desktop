@@ -157,6 +157,66 @@ describe("authentication", () => {
 });
 
 describe("encrypted vault", () => {
+  it("replays an idempotent batch without incrementing the vault version twice", async () => {
+    await registerAndVerify();
+    const session = await (await login()).json<{ access_token: string }>();
+    const clientUID = "018f1f46-7a19-7cc2-88cb-f577e51d3555";
+    const ciphertext = `v1.${bytesToBase64URL(new Uint8Array(80).fill(31))}`;
+    const headers = {
+      Authorization: `Bearer ${session.access_token}`,
+      "Content-Type": "application/json",
+      "Idempotency-Key": "amber-sync-replay-test-0001",
+    };
+    const body = JSON.stringify({ items: [{ kind: "account", client_uid: clientUID, ciphertext, version: 0, deleted: false }] });
+    const first = await SELF.fetch("https://amber.test/v1/vault/batch", { method: "PUT", headers, body });
+    expect(first.status).toBe(200);
+    const firstBody = await first.text();
+    const replay = await SELF.fetch("https://amber.test/v1/vault/batch", { method: "PUT", headers, body });
+    expect(replay.status).toBe(200);
+    expect(replay.headers.get("Idempotency-Replayed")).toBe("true");
+    expect(await replay.text()).toBe(firstBody);
+
+    const row = await env.DB.prepare("SELECT version FROM vault_items WHERE user_id=1 AND client_uid=?")
+      .bind(clientUID).first<{ version: number }>();
+    expect(row?.version).toBe(1);
+    const reused = await SELF.fetch("https://amber.test/v1/vault/batch", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ items: [{ kind: "account", client_uid: clientUID, ciphertext, version: 1, deleted: true }] }),
+    });
+    expect(reused.status).toBe(409);
+    await expect(reused.json()).resolves.toMatchObject({ error: { code: "idempotency_key_reused" } });
+  });
+
+  it("allows only one concurrent writer to claim the same vault base version", async () => {
+    await registerAndVerify();
+    const session = await (await login()).json<{ access_token: string }>();
+    const clientUID = "018f1f46-7a19-7cc2-88cb-f577e51d3666";
+    const makeRequest = (key: string, fill: number) => SELF.fetch("https://amber.test/v1/vault/batch", {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": key,
+      },
+      body: JSON.stringify({ items: [{
+        kind: "account",
+        client_uid: clientUID,
+        ciphertext: `v1.${bytesToBase64URL(new Uint8Array(80).fill(fill))}`,
+        version: 0,
+        deleted: false,
+      }] }),
+    });
+    const responses = await Promise.all([
+      makeRequest("amber-sync-concurrent-a-0001", 61),
+      makeRequest("amber-sync-concurrent-b-0001", 62),
+    ]);
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+    const row = await env.DB.prepare("SELECT version FROM vault_items WHERE user_id=1 AND client_uid=?")
+      .bind(clientUID).first<{ version: number }>();
+    expect(row?.version).toBe(1);
+  });
+
   it("upserts opaque ciphertext, returns tombstones, and detects optimistic-lock conflicts", async () => {
     await registerAndVerify();
     const session = await (await login()).json<{ access_token: string }>();

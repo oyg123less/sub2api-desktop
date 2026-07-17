@@ -1,11 +1,31 @@
 import { Hono } from "hono";
 import { requireAuth } from "./auth-middleware";
 import { AppError, readJSON, requireJSONSize } from "./errors";
+import { sha256 } from "./security";
 import type { AppEnv, VaultRow } from "./types";
 
 const vault = new Hono<AppEnv>();
 const kinds = new Set(["account", "proxy", "codex_remote", "settings"]);
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const idempotencyKeyPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/;
+const receiptTTL = 7 * 24 * 60 * 60 * 1000;
+
+interface BatchReceipt {
+  request_hash: string;
+  response_status: number;
+  response_body: string;
+}
+
+function receiptResponse(receipt: BatchReceipt, replayed: boolean): Response {
+  return new Response(receipt.response_body, {
+    status: receipt.response_status,
+    headers: {
+      "Content-Type": "application/json; charset=UTF-8",
+      "Cache-Control": "no-store",
+      ...(replayed ? { "Idempotency-Replayed": "true" } : {}),
+    },
+  });
+}
 
 function publicItem(row: VaultRow) {
   return {
@@ -84,11 +104,41 @@ vault.put("/batch", async (c) => {
   }
   const user = c.get("auth");
   const items = body.items.map(validateItem);
+  const idempotencyKey = (c.req.header("idempotency-key") || "").trim();
+  if (idempotencyKey && !idempotencyKeyPattern.test(idempotencyKey)) {
+    throw new AppError(400, "invalid_idempotency_key", "The idempotency key is invalid.");
+  }
   const seen = new Set<string>();
   for (const item of items) {
     const key = `${item.kind}:${item.client_uid}`;
     if (seen.has(key)) throw new AppError(400, "duplicate_vault_item", "The batch contains duplicate vault items.");
     seen.add(key);
+  }
+
+  const requestHash = await sha256(JSON.stringify(items.map((item) => ({
+    kind: item.kind,
+    client_uid: item.client_uid,
+    ciphertext: item.ciphertext,
+    version: item.version,
+    deleted: item.deleted,
+  }))));
+  const now = new Date().toISOString();
+  c.executionCtx.waitUntil(c.env.DB.prepare("DELETE FROM vault_batch_receipts WHERE expires_at<=?").bind(now).run());
+  c.executionCtx.waitUntil(c.env.DB.prepare("DELETE FROM vault_write_claims WHERE expires_at<=?").bind(now).run());
+
+  const findReceipt = () => c.env.DB.prepare(`SELECT request_hash,response_status,response_body
+    FROM vault_batch_receipts WHERE user_id=? AND idempotency_key=?`)
+    .bind(user.id, idempotencyKey).first<BatchReceipt>();
+  if (idempotencyKey) {
+    await c.env.DB.prepare(`DELETE FROM vault_batch_receipts
+      WHERE user_id=? AND idempotency_key=? AND expires_at<=?`).bind(user.id, idempotencyKey, now).run();
+    const receipt = await findReceipt();
+    if (receipt) {
+      if (receipt.request_hash !== requestHash) {
+        throw new AppError(409, "idempotency_key_reused", "The idempotency key was already used for a different batch.");
+      }
+      return receiptResponse(receipt, true);
+    }
   }
 
   const existing = new Map<string, VaultRow>();
@@ -101,10 +151,43 @@ vault.put("/batch", async (c) => {
     const row = existing.get(`${item.kind}:${item.client_uid}`);
     return row && row.version !== item.version ? [publicItem(row)] : [];
   });
-  if (conflicts.length) return c.json({ error: { code: "vault_conflict", message: "One or more items changed on another device." }, conflicts }, 409);
+  if (conflicts.length) {
+    const responseBody = JSON.stringify({
+      error: { code: "vault_conflict", message: "One or more items changed on another device." },
+      conflicts,
+    });
+    if (idempotencyKey) {
+      const expiresAt = new Date(Date.now() + receiptTTL).toISOString();
+      try {
+        await c.env.DB.prepare(`INSERT INTO vault_batch_receipts
+          (user_id,idempotency_key,request_hash,response_status,response_body,created_at,expires_at)
+          VALUES(?,?,?,?,?,?,?)`).bind(user.id, idempotencyKey, requestHash, 409, responseBody, now, expiresAt).run();
+      } catch {
+        const receipt = await findReceipt();
+        if (receipt?.request_hash === requestHash) return receiptResponse(receipt, true);
+        if (receipt) throw new AppError(409, "idempotency_key_reused", "The idempotency key was already used for a different batch.");
+        throw new AppError(503, "idempotency_receipt_failed", "The batch receipt could not be saved.");
+      }
+    }
+    return new Response(responseBody, { status: 409, headers: { "Content-Type": "application/json; charset=UTF-8" } });
+  }
 
-  const now = new Date().toISOString();
-  const statements = items.map((item) => {
+  const updated = items.map((item) => ({
+    kind: item.kind,
+    client_uid: item.client_uid,
+    ciphertext: item.ciphertext,
+    version: item.version + 1,
+    deleted: item.deleted,
+    updated_at: now,
+  }));
+  const responseBody = JSON.stringify({ items: updated, cursor: `${now}|0` });
+  const claimExpiry = new Date(Date.now() + receiptTTL).toISOString();
+  const requestKey = idempotencyKey || c.get("requestId");
+  const statements = items.map((item) => c.env.DB.prepare(`INSERT INTO vault_write_claims
+    (user_id,kind,client_uid,base_version,request_key,expires_at) VALUES(?,?,?,?,?,?)`).bind(
+      user.id, item.kind, item.client_uid, item.version, requestKey, claimExpiry,
+    ));
+  statements.push(...items.map((item) => {
     const row = existing.get(`${item.kind}:${item.client_uid}`);
     if (row) {
       return c.env.DB.prepare(`UPDATE vault_items SET ciphertext=?, deleted=?, version=version+1, updated_at=?
@@ -115,24 +198,48 @@ vault.put("/batch", async (c) => {
     if (item.version !== 0) throw new AppError(409, "vault_conflict", "A new vault item must start at version zero.");
     return c.env.DB.prepare(`INSERT INTO vault_items(user_id,kind,client_uid,ciphertext,version,deleted,updated_at)
       VALUES(?,?,?,?,1,?,?)`).bind(user.id, item.kind, item.client_uid, item.ciphertext, item.deleted ? 1 : 0, now);
-  });
-  await c.env.DB.batch(statements);
-
+  }));
   const deletedAccounts = items.filter((item) => item.kind === "account" && item.deleted);
-  if (deletedAccounts.length) {
-    await c.env.DB.batch(deletedAccounts.map((item) => c.env.DB.prepare(`UPDATE share_grants
-      SET revoked=1,updated_at=? WHERE owner_id=? AND account_uid=? AND revoked=0`).bind(now, user.id, item.client_uid)));
+  statements.push(...deletedAccounts.map((item) => c.env.DB.prepare(`UPDATE share_grants
+    SET revoked=1,updated_at=? WHERE owner_id=? AND account_uid=? AND revoked=0`).bind(now, user.id, item.client_uid)));
+  if (idempotencyKey) {
+    statements.unshift(c.env.DB.prepare(`INSERT INTO vault_batch_receipts
+      (user_id,idempotency_key,request_hash,response_status,response_body,created_at,expires_at)
+      VALUES(?,?,?,?,?,?,?)`).bind(
+        user.id, idempotencyKey, requestHash, 200, responseBody, now, new Date(Date.now() + receiptTTL).toISOString(),
+      ));
   }
-
-  const updated: VaultRow[] = [];
-  for (const item of items) {
-    const row = await c.env.DB.prepare(`SELECT id, kind, client_uid, ciphertext, version, deleted, updated_at
-      FROM vault_items WHERE user_id=? AND kind=? AND client_uid=?`).bind(user.id, item.kind, item.client_uid).first<VaultRow>();
-    if (row) updated.push(row);
+  try {
+    await c.env.DB.batch(statements);
+  } catch (error) {
+    if (idempotencyKey) {
+      const receipt = await findReceipt();
+      if (receipt?.request_hash === requestHash) return receiptResponse(receipt, true);
+      if (receipt) throw new AppError(409, "idempotency_key_reused", "The idempotency key was already used for a different batch.");
+    }
+    const racedConflicts: ReturnType<typeof publicItem>[] = [];
+    for (const item of items) {
+      const row = await c.env.DB.prepare(`SELECT id,kind,client_uid,ciphertext,version,deleted,updated_at
+        FROM vault_items WHERE user_id=? AND kind=? AND client_uid=?`).bind(user.id, item.kind, item.client_uid).first<VaultRow>();
+      if (row && row.version !== item.version) racedConflicts.push(publicItem(row));
+    }
+    if (racedConflicts.length) {
+      const conflictBody = JSON.stringify({
+        error: { code: "vault_conflict", message: "One or more items changed on another device." },
+        conflicts: racedConflicts,
+      });
+      if (idempotencyKey) {
+        await c.env.DB.prepare(`INSERT OR IGNORE INTO vault_batch_receipts
+          (user_id,idempotency_key,request_hash,response_status,response_body,created_at,expires_at)
+          VALUES(?,?,?,?,?,?,?)`).bind(
+            user.id, idempotencyKey, requestHash, 409, conflictBody, now, new Date(Date.now() + receiptTTL).toISOString(),
+          ).run();
+      }
+      return new Response(conflictBody, { status: 409, headers: { "Content-Type": "application/json; charset=UTF-8" } });
+    }
+    throw error;
   }
-  const latest = updated.reduce<VaultRow | null>((current, row) => !current || row.updated_at > current.updated_at ||
-    (row.updated_at === current.updated_at && row.id > current.id) ? row : current, null);
-  return c.json({ items: updated.map(publicItem), cursor: latest ? cursorFor(latest) : `${now}|0` });
+  return new Response(responseBody, { status: 200, headers: { "Content-Type": "application/json; charset=UTF-8" } });
 });
 
 export default vault;
