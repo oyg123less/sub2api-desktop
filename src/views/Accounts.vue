@@ -18,6 +18,7 @@ import {
   type Proxy,
 	type Settings,
 } from "../api/control";
+import { exactTokens, formatTokens } from "../format";
 import { useAppStore } from "../store";
 import { openUrl } from "../platform";
 
@@ -431,9 +432,6 @@ function fmtCost(n?: number) {
   if (!n) return "$0.0000";
   return "$" + n.toFixed(4);
 }
-function fmtNum(n?: number) {
-  return (n ?? 0).toLocaleString();
-}
 
 async function startLogin() {
   loginError.value = "";
@@ -621,7 +619,7 @@ onUnmounted(() => clearInterval(pollTimer));
 					</div>
           <div class="list-row" style="padding: 7px 0">
             <span class="faint text-sm" style="flex: 1">{{ t("accounts.tokensUsed") }}</span>
-            <span class="text-sm mono">{{ fmtNum(usage[a.id]?.total_tokens) }}</span>
+            <span class="text-sm mono" :title="`${exactTokens(usage[a.id]?.total_tokens)} tokens`">{{ formatTokens(usage[a.id]?.total_tokens) }}</span>
           </div>
           <div class="list-row" style="padding: 7px 0">
             <span class="faint text-sm" style="flex: 1">{{ t("accounts.estCost") }}</span>
@@ -811,7 +809,7 @@ onUnmounted(() => clearInterval(pollTimer));
             </div>
             <div class="list-row" style="padding: 5px 0">
               <span class="faint text-sm" style="flex: 1">{{ t("accounts.tokensUsed") }}</span>
-              <span class="text-sm mono">{{ fmtNum(testResult.total_tokens) }} ({{ fmtNum(testResult.prompt_tokens) }}+{{ fmtNum(testResult.completion_tokens) }})</span>
+              <span class="text-sm mono" :title="`${exactTokens(testResult.total_tokens)} tokens`">{{ formatTokens(testResult.total_tokens) }} ({{ formatTokens(testResult.prompt_tokens) }}+{{ formatTokens(testResult.completion_tokens) }})</span>
             </div>
             <div class="list-row" style="padding: 5px 0">
               <span class="faint text-sm" style="flex: 1">{{ t("accounts.statusAfter") }}</span>

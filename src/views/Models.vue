@@ -7,19 +7,33 @@ import { api, type PricingResponse } from "../api/control";
 import { openUrl } from "../platform";
 import { useAppStore } from "../store";
 
+type PricedModel = PricingResponse["models"][number];
+
 const { t } = useI18n();
 const app = useAppStore();
 const pricing = ref<PricingResponse | null>(null);
 const loading = ref(true);
+const copiedModel = ref("");
+let copiedTimer = 0;
 
 function money(value?: number): string {
-  if (value === undefined) return "-";
+  if (value === undefined) return "—";
   return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 3 })}`;
 }
 
-function longPrice(model: PricingResponse["models"][number]): string {
-  if (!model.long_context_threshold) return "-";
+function longPrice(model: PricedModel): string {
   return `${money(model.long_input_per_m)} / ${money(model.long_cached_per_m)} / ${money(model.long_output_per_m)}`;
+}
+
+async function copyModel(name: string) {
+  try {
+    await navigator.clipboard.writeText(name);
+    copiedModel.value = name;
+    window.clearTimeout(copiedTimer);
+    copiedTimer = window.setTimeout(() => (copiedModel.value = ""), 1600);
+  } catch {
+    app.toast(t("models.copyFailed"), "error");
+  }
 }
 
 onMounted(async () => {
@@ -45,21 +59,49 @@ onMounted(async () => {
       <div><strong>{{ t("models.standardTitle") }}</strong><p>{{ t("models.standardDesc") }}</p></div>
     </section>
 
-    <SkeletonBlock v-if="loading" :cards="1" :rows="8" />
+    <SkeletonBlock v-if="loading" :cards="3" :rows="4" />
     <section v-else-if="pricing" class="pricing-section">
-      <div class="pricing-table-wrap">
-        <table class="pricing-table">
-          <thead><tr><th>{{ t("models.model") }}</th><th>{{ t("models.input") }}</th><th>{{ t("models.cached") }}</th><th>{{ t("models.output") }}</th><th>{{ t("models.longContext") }}</th></tr></thead>
-          <tbody>
-            <tr v-for="model in pricing.models" :key="model.model">
-              <td><strong class="mono">{{ model.model }}</strong><span class="price-match">{{ t("models.priceMatch") }}</span></td>
-              <td>{{ money(model.input_per_m) }}</td>
-              <td>{{ money(model.cached_per_m) }}</td>
-              <td>{{ money(model.output_per_m) }}</td>
-              <td class="long-price">{{ longPrice(model) }}</td>
-            </tr>
-          </tbody>
-        </table>
+      <div class="model-grid">
+        <article v-for="model in pricing.models" :key="model.model" class="model-card">
+          <header class="model-card-head">
+            <span class="model-icon"><Icon name="database" :size="18" /></span>
+            <strong class="mono model-name">{{ model.model }}</strong>
+            <button
+              class="copy-btn"
+              type="button"
+              :title="t('models.copyModel')"
+              :aria-label="t('models.copyModel')"
+              @click="copyModel(model.model)"
+            >
+              <Icon :name="copiedModel === model.model ? 'check' : 'copy'" :size="14" />
+            </button>
+          </header>
+
+          <dl class="price-lines">
+            <div class="price-line">
+              <dt>{{ t("models.inputPrice") }}</dt>
+              <dd class="mono">{{ money(model.input_per_m) }} / 1M Tokens</dd>
+            </div>
+            <div class="price-line">
+              <dt>{{ t("models.outputPrice") }}</dt>
+              <dd class="mono">{{ money(model.output_per_m) }} / 1M Tokens</dd>
+            </div>
+            <div class="price-line">
+              <dt>{{ t("models.cachedPrice") }}</dt>
+              <dd class="mono">{{ model.cached_per_m === undefined ? "—" : `${money(model.cached_per_m)} / 1M Tokens` }}</dd>
+            </div>
+            <div v-if="model.long_context_threshold" class="price-line">
+              <dt>{{ t("models.longPrice") }}</dt>
+              <dd class="mono long-price">{{ longPrice(model) }}</dd>
+            </div>
+          </dl>
+
+          <footer class="model-badges">
+            <span class="badge-tag">{{ t("models.standardBadge") }}</span>
+            <span class="badge-tag badge-match">{{ t("models.priceMatch") }}</span>
+            <span v-if="model.long_context_threshold" class="badge-tag badge-long">272K+</span>
+          </footer>
+        </article>
       </div>
 
       <footer class="pricing-notes">
@@ -81,16 +123,25 @@ onMounted(async () => {
 .pricing-notice strong { font-size: 13px; }
 .pricing-notice p { margin: 3px 0 0; color: var(--text-dim); font-size: 12.5px; line-height: 1.55; }
 .pricing-section { min-width: 0; }
-.pricing-table-wrap { overflow-x: auto; border-block: 1px solid var(--border); }
-.pricing-table { width: 100%; min-width: 820px; border-collapse: collapse; font-size: 13px; }
-.pricing-table th { padding: 11px 12px; color: var(--text-faint); font-size: 11px; text-align: right; text-transform: uppercase; }
-.pricing-table th:first-child { text-align: left; }
-.pricing-table td { padding: 13px 12px; border-top: 1px solid var(--border-soft); text-align: right; white-space: nowrap; }
-.pricing-table td:first-child { display: flex; align-items: center; justify-content: space-between; gap: 10px; text-align: left; }
-.price-match { padding: 3px 6px; border-radius: 4px; background: var(--success-soft); color: var(--success); font-size: 10px; font-weight: 700; }
-.long-price { color: var(--text-dim); font-family: var(--mono); font-size: 12px; }
+.model-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.model-card { display: flex; flex-direction: column; gap: 12px; padding: 15px 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-elevated, transparent); }
+.model-card-head { display: flex; align-items: center; gap: 9px; }
+.model-icon { display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid var(--border-soft); border-radius: 8px; color: var(--primary); flex-shrink: 0; }
+.model-name { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
+.copy-btn { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-faint); cursor: pointer; }
+.copy-btn:hover { background: var(--border-soft); color: var(--text); }
+.price-lines { display: grid; gap: 6px; margin: 0; }
+.price-line { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.price-line dt { color: var(--text-faint); font-size: 12px; }
+.price-line dd { margin: 0; font-size: 12.5px; white-space: nowrap; }
+.long-price { color: var(--text-dim); font-size: 11.5px; }
+.model-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; }
+.badge-tag { padding: 3px 8px; border: 1px solid var(--border-soft); border-radius: 999px; color: var(--text-dim); font-size: 10.5px; font-weight: 600; }
+.badge-match { border-color: transparent; background: var(--success-soft); color: var(--success); }
+.badge-long { border-color: transparent; background: var(--border-soft); color: var(--text-dim); }
 .pricing-notes { display: grid; gap: 5px; padding: 14px 2px; color: var(--text-faint); font-size: 12px; line-height: 1.55; }
 .pricing-notes p { margin: 0; }
 .source-link { max-width: 100%; width: fit-content; display: inline-flex; align-items: center; gap: 5px; padding: 0; border: 0; background: transparent; color: var(--primary); font: inherit; cursor: pointer; overflow-wrap: anywhere; text-align: left; }
-@media (max-width: 760px) { .pricing-table td, .pricing-table th { padding-inline: 9px; } }
+@media (max-width: 1100px) { .model-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 680px) { .model-grid { grid-template-columns: minmax(0, 1fr); } }
 </style>

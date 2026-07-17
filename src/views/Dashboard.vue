@@ -9,6 +9,7 @@ import AnimatedNumber from "../components/AnimatedNumber.vue";
 import SkeletonBlock from "../components/SkeletonBlock.vue";
 import { api, type RequestLog, type Settings, type StatsResponse } from "../api/control";
 import { localDateString } from "../date";
+import { exactTokens, formatTokens } from "../format";
 import { useAppStore } from "../store";
 
 const { t } = useI18n();
@@ -165,9 +166,6 @@ function statusClass(code: number) {
   if (code === 499) return "badge-neutral";
   return code >= 200 && code < 300 ? "badge-success" : "badge-danger";
 }
-function fmtNum(n: number) {
-  return n.toLocaleString();
-}
 
 let timer: number | undefined;
 onMounted(() => {
@@ -248,7 +246,7 @@ onUnmounted(() => clearInterval(timer));
       </div>
       <div class="stat">
         <div class="stat-label">{{ t("dashboard.todayTokens") }}</div>
-        <div class="stat-value"><AnimatedNumber :value="todayTokens" /></div>
+        <div class="stat-value" :title="`${exactTokens(todayTokens)} tokens`"><AnimatedNumber :value="todayTokens" :formatter="formatTokens" /></div>
       </div>
     </div>
 
@@ -338,7 +336,7 @@ onUnmounted(() => clearInterval(timer));
             {{ l.status_code }}
           </span>
           <span class="mono" style="flex: 1">{{ l.model }}</span>
-          <span class="faint text-sm">{{ l.estimated ? "≈" : "" }}{{ fmtNum(l.total_tokens) }} tok</span>
+          <span class="faint text-sm" :title="`${exactTokens(l.total_tokens)} tokens`">{{ l.estimated ? "≈" : "" }}{{ formatTokens(l.total_tokens) }} tok</span>
           <span class="faint text-sm" style="width: 62px; text-align: right">{{ l.latency_ms }}ms</span>
           <span class="faint text-sm" style="width: 84px; text-align: right">{{ fmtTime(l.created_at) }}</span>
           <Icon v-if="l.error" name="chevron-down" :size="14" class="log-chevron" :class="{ open: expandedLog === l.id }" />

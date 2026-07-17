@@ -8,6 +8,7 @@ import AnimatedNumber from "../components/AnimatedNumber.vue";
 import SkeletonBlock from "../components/SkeletonBlock.vue";
 import { api, type RequestLog, type StatsResponse } from "../api/control";
 import { localDateString } from "../date";
+import { exactTokens, formatTokens } from "../format";
 import { useAppStore } from "../store";
 
 const { t } = useI18n();
@@ -135,7 +136,7 @@ onMounted(load);
       </div>
       <div class="stat">
         <div class="stat-label">{{ t("statistics.totalTokens") }}</div>
-        <div class="stat-value"><AnimatedNumber :value="stats?.summary.total_tokens || 0" /></div>
+        <div class="stat-value" :title="`${exactTokens(stats?.summary.total_tokens)} tokens`"><AnimatedNumber :value="stats?.summary.total_tokens || 0" :formatter="formatTokens" /></div>
       </div>
       <div class="stat">
         <div class="stat-label">{{ t("statistics.avgLatency") }}</div>
@@ -152,8 +153,8 @@ onMounted(load);
     <div v-show="!loading" class="quality-strip">
       <div><span>{{ t("statistics.clientCancelled") }}</span><strong>{{ fmtNum(stats?.summary.client_cancelled) }}</strong><small>{{ cancelledRate }}</small></div>
       <div><span>{{ t("statistics.estimatedUsage") }}</span><strong>{{ fmtNum(stats?.summary.estimated_requests) }}</strong><small>{{ estimatedRate }}</small></div>
-      <div><span>{{ t("statistics.cachedTokens") }}</span><strong>{{ fmtNum(stats?.summary.cached_tokens) }}</strong></div>
-      <div><span>{{ t("statistics.reasoningTokens") }}</span><strong>{{ fmtNum(stats?.summary.reasoning_tokens) }}</strong></div>
+      <div><span>{{ t("statistics.cachedTokens") }}</span><strong :title="`${exactTokens(stats?.summary.cached_tokens)} tokens`">{{ formatTokens(stats?.summary.cached_tokens) }}</strong></div>
+      <div><span>{{ t("statistics.reasoningTokens") }}</span><strong :title="`${exactTokens(stats?.summary.reasoning_tokens)} tokens`">{{ formatTokens(stats?.summary.reasoning_tokens) }}</strong></div>
     </div>
 		<p v-show="!loading" class="faint text-sm" style="margin-top: 10px">
 			{{ t("logs.retentionScope", { rows: fmtNum(stats?.retention.retained_rows), days: stats?.retention.days === 0 ? t("logs.forever") : stats?.retention.days }) }}
@@ -167,7 +168,7 @@ onMounted(load);
           <div v-for="m in stats!.by_model" :key="m.model" class="list-row">
             <span class="mono" style="flex: 1">{{ m.model }}</span>
             <span class="faint text-sm">{{ fmtNum(m.requests) }} {{ t("statistics.requests") }}</span>
-            <span class="faint text-sm" style="width: 90px; text-align: right">{{ fmtNum(m.total_tokens) }} tok</span>
+            <span class="faint text-sm" style="width: 90px; text-align: right" :title="`${exactTokens(m.total_tokens)} tokens`">{{ formatTokens(m.total_tokens) }} tok</span>
           </div>
         </div>
       </div>

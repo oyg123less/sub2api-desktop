@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref, watch } from "vue";
 
-const props = defineProps<{ value: number }>();
+const props = defineProps<{ value: number; formatter?: (n: number) => string }>();
 const display = ref(0);
 let frame = 0;
 
@@ -25,4 +25,4 @@ watch(() => props.value, (value) => animate(Number.isFinite(value) ? value : 0),
 onBeforeUnmount(() => cancelAnimationFrame(frame));
 </script>
 
-<template>{{ display.toLocaleString() }}</template>
+<template>{{ props.formatter ? props.formatter(display) : display.toLocaleString() }}</template>
