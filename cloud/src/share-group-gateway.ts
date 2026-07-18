@@ -54,6 +54,17 @@ function requestModel(body: ArrayBuffer): string {
   } catch { return ""; }
 }
 
+function isConnectionTestInput(input: unknown): boolean {
+  if (input === "Reply with OK.") return true;
+  if (!Array.isArray(input) || input.length !== 1) return false;
+  const message = input[0] as Record<string, unknown> | undefined;
+  if (!message || message.type !== "message" || message.role !== "user" || !Array.isArray(message.content) || message.content.length !== 1) {
+    return false;
+  }
+  const content = message.content[0] as Record<string, unknown> | undefined;
+  return content?.type === "input_text" && content.text === "Reply with OK.";
+}
+
 function normalizeGatewayBody(body: ArrayBuffer): ArrayBuffer {
   try {
     const parsed = JSON.parse(new TextDecoder().decode(body)) as Record<string, unknown>;
@@ -69,6 +80,16 @@ function normalizeGatewayBody(body: ArrayBuffer): ArrayBuffer {
         content: [{ type: "input_text", text: parsed.input }],
       }];
       changed = true;
+    }
+    if (isConnectionTestInput(parsed.input)) {
+      if (parsed.max_output_tokens === 1) {
+        delete parsed.max_output_tokens;
+        changed = true;
+      }
+      if (parsed.stream !== true) {
+        parsed.stream = true;
+        changed = true;
+      }
     }
     if (!changed) return body;
     return new Uint8Array(gatewayEncoder.encode(JSON.stringify(parsed))).buffer;

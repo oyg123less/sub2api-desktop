@@ -20,6 +20,9 @@ func TestReceivedShareUsesCatalogDefaultTestModel(t *testing.T) {
 		vaultKey[index] = byte(index + 1)
 	}
 	var receivedModel string
+	var receivedStream bool
+	var receivedMaxOutputTokens *int
+	var receivedAccept string
 	var receivedInput []struct {
 		Type    string `json:"type"`
 		Role    string `json:"role"`
@@ -35,8 +38,10 @@ func TestReceivedShareUsesCatalogDefaultTestModel(t *testing.T) {
 			_, _ = w.Write([]byte(`{"access_token":"access","access_expires_in":900,"refresh_token":"refresh-next"}`))
 		case "/v1/responses":
 			var payload struct {
-				Model string `json:"model"`
-				Input []struct {
+				Model           string `json:"model"`
+				Stream          bool   `json:"stream"`
+				MaxOutputTokens *int   `json:"max_output_tokens"`
+				Input           []struct {
 					Type    string `json:"type"`
 					Role    string `json:"role"`
 					Content []struct {
@@ -49,6 +54,9 @@ func TestReceivedShareUsesCatalogDefaultTestModel(t *testing.T) {
 				t.Errorf("decode test request: %v", err)
 			}
 			receivedModel = payload.Model
+			receivedStream = payload.Stream
+			receivedMaxOutputTokens = payload.MaxOutputTokens
+			receivedAccept = r.Header.Get("Accept")
 			receivedInput = payload.Input
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"id":"shared-test"}`))
@@ -78,6 +86,9 @@ func TestReceivedShareUsesCatalogDefaultTestModel(t *testing.T) {
 	}
 	if !result.OK || receivedModel != openai.DefaultTestModel {
 		t.Fatalf("received share test = %#v, model = %q", result, receivedModel)
+	}
+	if !receivedStream || receivedMaxOutputTokens != nil || receivedAccept != "text/event-stream" {
+		t.Fatalf("received share test stream = %v, max_output_tokens = %v, accept = %q", receivedStream, receivedMaxOutputTokens, receivedAccept)
 	}
 	if len(receivedInput) != 1 || receivedInput[0].Type != "message" || receivedInput[0].Role != "user" ||
 		len(receivedInput[0].Content) != 1 || receivedInput[0].Content[0].Type != "input_text" ||

@@ -167,21 +167,24 @@ describe("Amber Cloud 2.0", () => {
     vi.stubGlobal("fetch", upstream);
     const gateway = await SELF.fetch("https://amber.test/v1/responses", {
       method: "POST", headers: { Authorization: `Bearer ${guestKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "gpt-5.6", input: "hello" }),
+      body: JSON.stringify({ model: "gpt-5.6", input: "Reply with OK.", max_output_tokens: 1, store: false }),
     });
     expect(gateway.status).toBe(200);
     expect(await gateway.json()).toEqual({ id: "response-v4" });
     expect(upstream).toHaveBeenCalledTimes(1);
     const upstreamBody = upstream.mock.calls[0]?.[1]?.body;
     expect(upstreamBody).toBeInstanceOf(ArrayBuffer);
-    expect(JSON.parse(new TextDecoder().decode(upstreamBody as ArrayBuffer))).toMatchObject({
+    const normalizedBody = JSON.parse(new TextDecoder().decode(upstreamBody as ArrayBuffer));
+    expect(normalizedBody).toMatchObject({
       model: "gpt-5.6-sol",
+      stream: true,
       input: [{
         type: "message",
         role: "user",
-        content: [{ type: "input_text", text: "hello" }],
+        content: [{ type: "input_text", text: "Reply with OK." }],
       }],
     });
+    expect(normalizedBody).not.toHaveProperty("max_output_tokens");
 
     const paused = await SELF.fetch(`https://amber.test/v1/share-groups/${creation.group.public_id}/recipients/${creation.recipients[0]!.public_id}`, {
       method: "PATCH", headers: owner.headers, body: JSON.stringify({ status: "paused" }),

@@ -722,8 +722,8 @@ func (m *Manager) TestReceivedShare(ctx context.Context, shareID string) (CloudS
 				"text": "Reply with OK.",
 			}},
 		}},
-		"max_output_tokens": 1,
-		"store":             false,
+		"stream": true,
+		"store":  false,
 	})
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), bytes.NewReader(payload))
 	if err != nil {
@@ -731,7 +731,7 @@ func (m *Manager) TestReceivedShare(ctx context.Context, shareID string) (CloudS
 	}
 	request.Header.Set("Authorization", "Bearer "+key.GuestKey)
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Accept", "text/event-stream")
 	response, err := m.client.do(request)
 	if err != nil {
 		return CloudShareConnectionTest{OK: false, Code: "share_test_unreachable", Message: "The shared gateway is unreachable."}, nil
