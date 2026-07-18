@@ -22,6 +22,8 @@ npx wrangler secret put JWT_SECRET
 npx wrangler secret put TURNSTILE_SECRET
 npx wrangler secret put RESEND_API_KEY
 npx wrangler secret put RESEND_WEBHOOK_SECRET
+npx wrangler secret put QQ_SMTP_USER
+npx wrangler secret put QQ_SMTP_AUTH_CODE
 npx wrangler secret put ADMIN_API_KEY
 npx wrangler secret put SHARE_KMS_KEY
 ```
@@ -29,6 +31,8 @@ npx wrangler secret put SHARE_KMS_KEY
 `JWT_SECRET`, `ADMIN_API_KEY`, and `SHARE_KMS_KEY` must be independent random values of at least 32 bytes. Set `RESEND_FROM` to a verified Resend sender and `TURNSTILE_HOSTNAME` to the production desktop registration host when deploying.
 
 The production `RESEND_FROM` uses `Amber Verification <verify@mail.amberapp.asia>` on the verified sender domain. Keep alternative development senders outside production configuration. Configure the Resend webhook endpoint as `https://<worker-host>/v1/webhooks/resend`, subscribe to sent, delivered, delayed, bounced, complained, failed, and suppressed events, then store its `whsec_...` signing secret with `wrangler secret put RESEND_WEBHOOK_SECRET`.
+
+When both `QQ_SMTP_USER` and `QQ_SMTP_AUTH_CODE` are configured, common mainland mailbox domains (QQ/Foxmail, NetEase, China Mobile/Telecom/Unicom, Sina, Sohu, Aliyun, TOM, 21CN, and 263) are sent through the dedicated QQ SMTP account over TLS. Other domains continue to use Resend. The QQ authorization code must be stored only as a Worker secret; use a dedicated low-volume sender account and never a personal primary mailbox.
 
 ## Local development
 

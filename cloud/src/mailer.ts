@@ -1,9 +1,24 @@
 import { AppError } from "./errors";
+import { sendQQSmtpVerification } from "./qq-smtp";
 import { sha256 } from "./security";
 import type { Bindings } from "./types";
 
 export interface Mailer {
   sendVerification(email: string, code: string): Promise<{ id: string }>;
+}
+
+const domesticMailboxDomains = new Set([
+  "qq.com", "vip.qq.com", "foxmail.com",
+  "163.com", "vip.163.com", "126.com", "vip.126.com", "yeah.net",
+  "139.com", "189.cn", "wo.cn", "21cn.com",
+  "sina.com", "sina.cn", "vip.sina.com", "sohu.com", "vip.sohu.com",
+  "aliyun.com", "tom.com", "263.net",
+]);
+
+export function shouldUseQQSmtp(email: string): boolean {
+  const separator = email.lastIndexOf("@");
+  if (separator < 1 || separator === email.length - 1) return false;
+  return domesticMailboxDomains.has(email.slice(separator + 1).trim().toLowerCase());
 }
 
 export function verificationEmailPayload(from: string, email: string, code: string) {
@@ -49,6 +64,22 @@ class ResendMailer implements Mailer {
   }
 }
 
+class ProductionMailer implements Mailer {
+  private readonly resend: ResendMailer;
+
+  constructor(private readonly env: Bindings) {
+    this.resend = new ResendMailer(env);
+  }
+
+  async sendVerification(email: string, code: string): Promise<{ id: string }> {
+    if (shouldUseQQSmtp(email) && this.env.QQ_SMTP_USER && this.env.QQ_SMTP_AUTH_CODE) {
+      const payload = verificationEmailPayload(this.env.QQ_SMTP_USER, email, code);
+      return sendQQSmtpVerification(this.env, email, payload);
+    }
+    return this.resend.sendVerification(email, code);
+  }
+}
+
 class ConsoleMailer implements Mailer {
   async sendVerification(email: string, code: string): Promise<{ id: string }> {
     const [name = "", domain = ""] = email.split("@", 2);
@@ -71,5 +102,5 @@ class TestMailer implements Mailer {
 export function mailerFor(env: Bindings): Mailer {
   if (env.ENVIRONMENT === "test") return new TestMailer(env);
   if (env.ENVIRONMENT !== "production" && env.MAILER_MODE === "console") return new ConsoleMailer();
-  return new ResendMailer(env);
+  return new ProductionMailer(env);
 }
