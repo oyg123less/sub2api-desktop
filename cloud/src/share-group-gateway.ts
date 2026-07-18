@@ -57,8 +57,20 @@ function requestModel(body: ArrayBuffer): string {
 function normalizeGatewayBody(body: ArrayBuffer): ArrayBuffer {
   try {
     const parsed = JSON.parse(new TextDecoder().decode(body)) as Record<string, unknown>;
-    if (parsed.model !== "gpt-5.6") return body;
-    parsed.model = "gpt-5.6-sol";
+    let changed = false;
+    if (parsed.model === "gpt-5.6") {
+      parsed.model = "gpt-5.6-sol";
+      changed = true;
+    }
+    if (typeof parsed.input === "string") {
+      parsed.input = [{
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: parsed.input }],
+      }];
+      changed = true;
+    }
+    if (!changed) return body;
     return new Uint8Array(gatewayEncoder.encode(JSON.stringify(parsed))).buffer;
   } catch {
     return body;

@@ -174,7 +174,14 @@ describe("Amber Cloud 2.0", () => {
     expect(upstream).toHaveBeenCalledTimes(1);
     const upstreamBody = upstream.mock.calls[0]?.[1]?.body;
     expect(upstreamBody).toBeInstanceOf(ArrayBuffer);
-    expect(JSON.parse(new TextDecoder().decode(upstreamBody as ArrayBuffer))).toMatchObject({ model: "gpt-5.6-sol" });
+    expect(JSON.parse(new TextDecoder().decode(upstreamBody as ArrayBuffer))).toMatchObject({
+      model: "gpt-5.6-sol",
+      input: [{
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "hello" }],
+      }],
+    });
 
     const paused = await SELF.fetch(`https://amber.test/v1/share-groups/${creation.group.public_id}/recipients/${creation.recipients[0]!.public_id}`, {
       method: "PATCH", headers: owner.headers, body: JSON.stringify({ status: "paused" }),
