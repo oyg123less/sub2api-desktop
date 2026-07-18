@@ -154,6 +154,7 @@ export interface AccountTestResult {
   ok: boolean;
   status: number;
   error?: string;
+  error_kind?: string;
   model: string;
   prompt_tokens: number;
   completion_tokens: number;
@@ -184,6 +185,42 @@ export interface RequestLog {
 	attempt_count: number;
 	terminal_event?: string;
   created_at: string;
+}
+
+export interface AccountTestRunItem {
+  account_id: number;
+  account_label: string;
+  status: "pending" | "running" | "succeeded" | "failed" | "cancelled" | "skipped";
+  http_status?: number;
+  latency_ms?: number;
+  error_kind?: string;
+  error?: string;
+  account_status?: string;
+}
+
+export interface AccountTestRun {
+  run_id: string;
+  status: "running" | "completed" | "cancelled";
+  model: string;
+  total: number;
+  completed: number;
+  succeeded: number;
+  failed: number;
+  cancelled: number;
+  skipped: number;
+  running: number;
+  started_at: string;
+  finished_at?: string;
+  results: AccountTestRunItem[];
+}
+
+export interface AccountProxySummary {
+  total: number;
+  bound: number;
+  unbound: number;
+  uniform_proxy_id?: number;
+  mixed: boolean;
+  bindings: Array<{ proxy_id: number; count: number }>;
 }
 
 export interface AccountRuntimeState {
@@ -222,6 +259,32 @@ export interface CloudStatus {
   consecutive_failures: number;
   next_retry_at?: string;
   conflicts: CloudConflict[];
+}
+
+export interface CloudNetworkSettings {
+  mode: "system" | "proxy" | "direct";
+  proxy_id?: number;
+  proxy_name?: string;
+  proxy_type?: "http" | "https" | "socks5";
+  effective_source: "environment" | "windows" | "amber_proxy" | "direct" | "custom" | "unavailable";
+  updated_at?: string;
+}
+
+export interface CloudNetworkProbe {
+  ok: boolean;
+  target: string;
+  effective_source: string;
+  proxy_name?: string;
+  proxy_type?: string;
+  stages: Array<{
+    id: "dns" | "connect" | "tls" | "http";
+    status: "ok" | "failed" | "skipped" | "not_run";
+    latency_ms?: number;
+    http_status?: number;
+  }>;
+  error_code?: string;
+  error_stage?: string;
+  error?: string;
 }
 
 export interface CloudAdminUser {
@@ -544,9 +607,12 @@ export interface StatsResponse {
     reasoning_tokens: number;
     estimated_requests: number;
     avg_latency_ms: number;
+    cost_usd: number;
+    pricing_fallback_requests: number;
   };
-  daily: { date: string; requests: number; total_tokens: number }[];
-  by_model: { model: string; requests: number; total_tokens: number }[];
+  daily: { date: string; requests: number; total_tokens: number; cost_usd: number }[];
+  by_model: { model: string; requests: number; total_tokens: number; cost_usd: number }[];
+	pricing: { version: string; source_url: string; tier: "standard"; currency: "USD" };
 	failure_breakdown: { kind: "upstream_error" | "rate_limited" | "authentication" | "stream_interrupted"; requests: number }[];
 	retention: {
 		days: number;
@@ -688,6 +754,10 @@ export const api = {
   regenerateKey: () => req<{ local_api_key: string }>("POST", "/control/settings/regenerate-key"),
 
   cloudStatus: () => req<CloudStatus>("GET", "/control/cloud/status"),
+  cloudNetwork: () => req<CloudNetworkSettings>("GET", "/control/cloud/network"),
+  saveCloudNetwork: (input: { mode: CloudNetworkSettings["mode"]; proxy_id?: number | null }) =>
+    req<CloudNetworkSettings>("PUT", "/control/cloud/network", input),
+  probeCloudNetwork: () => req<CloudNetworkProbe>("POST", "/control/cloud/network/probe"),
   cloudRegister: (input: { email: string; password: string; turnstile_token: string; recovery_acknowledged: boolean }) =>
     req<{ ok: boolean; verification_required: boolean }>("POST", "/control/cloud/register", input),
   cloudVerifyEmail: (email: string, code: string) =>
@@ -776,6 +846,13 @@ export const api = {
       ...importProxyHeaders(proxyOptions),
     }),
   deleteAccount: (id: number) => req<{ ok: boolean }>("DELETE", `/control/accounts/${id}`),
+  deleteAccounts: (accountIds: number[]) => req<{ ok: boolean; requested: number; deleted: number[]; missing: number[]; failed: number[] }>("POST", "/control/accounts/batch-delete", { account_ids: accountIds }),
+  accountProxySummary: () => req<AccountProxySummary>("GET", "/control/accounts/proxy-summary"),
+  bindAllAccountsProxy: (proxyId: number | null) => req<{ ok: boolean; matched: number; updated: number; unchanged: number; proxy_id?: number | null }>("POST", "/control/accounts/batch-proxy", { scope: "all", proxy_id: proxyId }),
+  startAccountTestRun: (input: { scope: "all" | "selected"; account_ids?: number[]; model?: string }) => req<AccountTestRun>("POST", "/control/accounts/test-runs", input),
+  activeAccountTestRun: () => req<{ run: AccountTestRun | null }>("GET", "/control/accounts/test-runs/active"),
+  accountTestRun: (runId: string) => req<AccountTestRun>("GET", `/control/accounts/test-runs/${encodeURIComponent(runId)}`),
+  cancelAccountTestRun: (runId: string) => req<AccountTestRun>("DELETE", `/control/accounts/test-runs/${encodeURIComponent(runId)}`),
   refreshAccount: (id: number) => req<{ ok: boolean }>("POST", `/control/accounts/${id}/refresh`),
   bindProxy: (id: number, proxyId: number | null) =>
     req<{ ok: boolean }>("POST", `/control/accounts/${id}/proxy`, { proxy_id: proxyId }),

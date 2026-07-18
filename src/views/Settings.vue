@@ -26,8 +26,6 @@ const s = ref<Settings | null>(null);
 const loading = ref(true);
 const saving = ref(false);
 const regenOpen = ref(false);
-const lanConfirmOpen = ref(false);
-const initialAllowLAN = ref(false);
 const savedListenPort = ref(0);
 const updateChecksEnabled = ref(isUpdateCheckEnabled());
 const diagnosticsOpen = ref(false);
@@ -105,7 +103,6 @@ async function loadModels(current: string) {
 async function load() {
   try {
     s.value = await api.getSettings();
-		initialAllowLAN.value = s.value.allow_lan;
     savedListenPort.value = s.value.listen_port;
     s.value.language = normLang(s.value.language || locale.value);
     await loadModels(s.value.default_model);
@@ -116,26 +113,16 @@ async function load() {
   }
 }
 
-async function save(forceLAN = false) {
+async function save() {
   if (!s.value) return;
-	if (s.value.allow_lan && !initialAllowLAN.value && !forceLAN) {
-		lanConfirmOpen.value = true;
-		return;
-	}
   saving.value = true;
   const listenPortChanged = s.value.listen_port !== savedListenPort.value;
-  const lanChanged = s.value.allow_lan !== initialAllowLAN.value;
   try {
     s.value = await api.saveSettings(s.value);
 		setUpdateCheckEnabled(updateChecksEnabled.value);
-		initialAllowLAN.value = s.value.allow_lan;
     savedListenPort.value = s.value.listen_port;
     applyLanguage(s.value.language);
     app.toast(t("settings.saved"), "success");
-    if (lanChanged && app.serverRunning) {
-      await api.stopServer();
-      await api.startServer();
-    }
     await app.refreshStatus();
     if (listenPortChanged) await warnIfCodexStale();
   } catch (e) {
@@ -143,16 +130,6 @@ async function save(forceLAN = false) {
   } finally {
     saving.value = false;
   }
-}
-
-function cancelLAN() {
-	lanConfirmOpen.value = false;
-	if (s.value) s.value.allow_lan = false;
-}
-
-async function confirmLAN() {
-	lanConfirmOpen.value = false;
-	await save(true);
 }
 
 function normLang(lang: string): string {
@@ -225,16 +202,6 @@ onMounted(() => {
           </div>
           <label class="switch">
             <input type="checkbox" v-model="s.auto_start_server" />
-            <span class="slider"></span>
-          </label>
-        </div>
-        <div class="setting-row">
-          <div class="setting-info">
-            <h4>{{ t("settings.allowLan") }}</h4>
-            <p>{{ t("settings.allowLanDesc") }}</p>
-          </div>
-          <label class="switch">
-            <input type="checkbox" v-model="s.allow_lan" />
             <span class="slider"></span>
           </label>
         </div>
@@ -372,15 +339,6 @@ onMounted(() => {
       @confirm="confirmRegen"
       @cancel="regenOpen = false"
       />
-			<ConfirmModal
-				:open="lanConfirmOpen"
-				:title="t('settings.lanConfirm')"
-				:desc="t('settings.lanConfirmDesc')"
-				danger
-				@confirm="confirmLAN"
-				@cancel="cancelLAN"
-			/>
-
     <ConfirmModal
       :open="dirConfirmOpen"
       :title="t('settings.dataDirConfirm')"

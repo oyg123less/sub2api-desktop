@@ -18,6 +18,13 @@ import {
 } from "./security";
 import { verifyTurnstile } from "./turnstile";
 import type { AppEnv, UserRow } from "./types";
+import {
+  newVerificationRecord,
+  normalizeVerificationRecord,
+  rotateVerificationRecord,
+  verificationKVOptions,
+  verificationMatches,
+} from "./verification";
 
 const auth = new Hono<AppEnv>();
 
@@ -91,13 +98,9 @@ auth.post("/register", async (c) => {
 
   const code = randomVerificationCode();
   const verificationKey = `verify:${await sha256(email)}`;
-  await c.env.SESSIONS.put(verificationKey, JSON.stringify({
-    user_id: userID,
-    code_hash: await sha256(`amber-verify-v1:${code}`),
-    attempts: 0,
-    expires_at: Date.now() + 10 * 60 * 1000,
-  }), { expirationTtl: 10 * 60 });
-  await mailerFor(c.env).sendVerification(email, code);
+  const delivery = await mailerFor(c.env).sendVerification(email, code);
+  const record = newVerificationRecord(userID, await sha256(`amber-verify-v1:${code}`), delivery.id);
+  await c.env.SESSIONS.put(verificationKey, JSON.stringify(record), verificationKVOptions(record));
   return c.json({ ok: true, verification_required: true }, 202);
 });
 
@@ -110,8 +113,9 @@ auth.post("/resend-verification", async (c) => {
   if (!user || user.email_verified) return c.json({ ok: true }, 202);
 
   const code = randomVerificationCode();
+  let delivery: { id: string };
   try {
-    await mailerFor(c.env).sendVerification(email, code);
+    delivery = await mailerFor(c.env).sendVerification(email, code);
   } catch (error) {
     console.error(JSON.stringify({
       event: "verification_resend_failed",
@@ -120,12 +124,9 @@ auth.post("/resend-verification", async (c) => {
     return c.json({ ok: true }, 202);
   }
   const verificationKey = `verify:${await sha256(email)}`;
-  await c.env.SESSIONS.put(verificationKey, JSON.stringify({
-    user_id: user.id,
-    code_hash: await sha256(`amber-verify-v1:${code}`),
-    attempts: 0,
-    expires_at: Date.now() + 10 * 60 * 1000,
-  }), { expirationTtl: 10 * 60 });
+  const previous = normalizeVerificationRecord(await c.env.SESSIONS.get(verificationKey, "json"));
+  const record = rotateVerificationRecord(previous, user.id, await sha256(`amber-verify-v1:${code}`), delivery.id);
+  await c.env.SESSIONS.put(verificationKey, JSON.stringify(record), verificationKVOptions(record));
   return c.json({ ok: true }, 202);
 });
 
@@ -135,16 +136,16 @@ auth.post("/verify-email", async (c) => {
   const code = typeof body.code === "string" ? body.code.trim() : "";
   if (!/^\d{6}$/.test(code)) throw new AppError(400, "invalid_verification_code", "The verification code is invalid.");
   const key = `verify:${await sha256(email)}`;
-  const record = await c.env.SESSIONS.get<{ user_id: number; code_hash: string; attempts: number; expires_at: number }>(key, "json");
+  const record = normalizeVerificationRecord(await c.env.SESSIONS.get(key, "json"));
   if (!record || record.expires_at <= Date.now()) {
     if (record) await c.env.SESSIONS.delete(key);
     throw new AppError(400, "verification_expired", "The verification code has expired.");
   }
-  const matches = safeEqual(record.code_hash, await sha256(`amber-verify-v1:${code}`));
+  const matches = verificationMatches(record, await sha256(`amber-verify-v1:${code}`));
   if (!matches) {
     const attempts = record.attempts + 1;
     if (attempts >= 5) await c.env.SESSIONS.delete(key);
-    else await c.env.SESSIONS.put(key, JSON.stringify({ ...record, attempts }), { expiration: Math.ceil(record.expires_at / 1000) });
+    else await c.env.SESSIONS.put(key, JSON.stringify({ ...record, attempts }), verificationKVOptions(record));
     throw new AppError(400, attempts >= 5 ? "verification_exhausted" : "invalid_verification_code",
       attempts >= 5 ? "Too many incorrect codes. Register again." : "The verification code is invalid.");
   }

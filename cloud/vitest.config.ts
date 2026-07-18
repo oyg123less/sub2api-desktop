@@ -20,6 +20,7 @@ export default defineConfig({
           MAILER_MODE: "console",
           JWT_SECRET: "test-jwt-secret-that-is-at-least-32-bytes-long",
           TURNSTILE_SECRET: "test-turnstile-secret",
+          RESEND_WEBHOOK_SECRET: "whsec_dGVzdC1yZXNlbmQtd2ViaG9vay1zZWNyZXQtMzItYnl0ZXM=",
           ADMIN_API_KEY: "test-admin-second-factor-at-least-32-bytes",
           SHARE_KMS_KEY: "Hx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8",
         },

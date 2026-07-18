@@ -1,4 +1,5 @@
 JWT_SECRET=replace-with-at-least-32-random-bytes
 TURNSTILE_SECRET=replace-with-turnstile-secret
 RESEND_API_KEY=replace-with-resend-api-key
+RESEND_WEBHOOK_SECRET=replace-with-resend-webhook-signing-secret
 ADMIN_API_KEY=replace-with-admin-second-factor

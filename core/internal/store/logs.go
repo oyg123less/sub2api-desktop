@@ -101,18 +101,20 @@ func scanLog(rows interface {
 
 // StatsSummary is an aggregate view over request logs.
 type StatsSummary struct {
-	TotalRequests     int64 `json:"total_requests"`
-	EligibleRequests  int64 `json:"eligible_requests"`
-	SuccessRequests   int64 `json:"success_requests"`
-	FailedRequests    int64 `json:"failed_requests"`
-	ClientCancelled   int64 `json:"client_cancelled"`
-	TotalTokens       int64 `json:"total_tokens"`
-	PromptTokens      int64 `json:"prompt_tokens"`
-	CachedTokens      int64 `json:"cached_tokens"`
-	CompletionTok     int64 `json:"completion_tokens"`
-	ReasoningTokens   int64 `json:"reasoning_tokens"`
-	EstimatedRequests int64 `json:"estimated_requests"`
-	AvgLatencyMS      int64 `json:"avg_latency_ms"`
+	TotalRequests           int64   `json:"total_requests"`
+	EligibleRequests        int64   `json:"eligible_requests"`
+	SuccessRequests         int64   `json:"success_requests"`
+	FailedRequests          int64   `json:"failed_requests"`
+	ClientCancelled         int64   `json:"client_cancelled"`
+	TotalTokens             int64   `json:"total_tokens"`
+	PromptTokens            int64   `json:"prompt_tokens"`
+	CachedTokens            int64   `json:"cached_tokens"`
+	CompletionTok           int64   `json:"completion_tokens"`
+	ReasoningTokens         int64   `json:"reasoning_tokens"`
+	EstimatedRequests       int64   `json:"estimated_requests"`
+	AvgLatencyMS            int64   `json:"avg_latency_ms"`
+	CostUSD                 float64 `json:"cost_usd"`
+	PricingFallbackRequests int64   `json:"pricing_fallback_requests"`
 }
 
 // Summary computes an aggregate over logs newer than `since` (zero = all time).
@@ -172,9 +174,10 @@ func (s *Store) FailureBreakdown(since time.Time) ([]FailurePoint, error) {
 
 // DailyPoint is a per-day aggregate.
 type DailyPoint struct {
-	Date        string `json:"date"`
-	Requests    int64  `json:"requests"`
-	TotalTokens int64  `json:"total_tokens"`
+	Date        string  `json:"date"`
+	Requests    int64   `json:"requests"`
+	TotalTokens int64   `json:"total_tokens"`
+	CostUSD     float64 `json:"cost_usd"`
 }
 
 // Daily returns per-day aggregates for the last n days.
@@ -238,9 +241,47 @@ func (s *Store) UsageByAccountModel() ([]AccountModelUsage, error) {
 
 // ModelPoint aggregates usage per model.
 type ModelPoint struct {
-	Model       string `json:"model"`
-	Requests    int64  `json:"requests"`
-	TotalTokens int64  `json:"total_tokens"`
+	Model       string  `json:"model"`
+	Requests    int64   `json:"requests"`
+	TotalTokens int64   `json:"total_tokens"`
+	CostUSD     float64 `json:"cost_usd"`
+}
+
+// UsageCostRow retains request-level token dimensions so pricing thresholds
+// are applied before any account, date, or model aggregation.
+type UsageCostRow struct {
+	AccountID        int64
+	CreatedAt        time.Time
+	Model            string
+	PromptTokens     int64
+	CachedTokens     int64
+	CompletionTokens int64
+	ReasoningTokens  int64
+	TotalTokens      int64
+}
+
+func (s *Store) UsageCostRows(since time.Time, accountsOnly bool) ([]UsageCostRow, error) {
+	query := `SELECT COALESCE(account_id,0),created_at,model,prompt_tokens,cached_tokens,completion_tokens,reasoning_tokens,total_tokens
+		FROM request_logs WHERE created_at>=?`
+	if accountsOnly {
+		query += ` AND account_id IS NOT NULL`
+	}
+	rows, err := s.db.Query(query, timeToUnix(since))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []UsageCostRow
+	for rows.Next() {
+		var row UsageCostRow
+		var createdAt int64
+		if err := rows.Scan(&row.AccountID, &createdAt, &row.Model, &row.PromptTokens, &row.CachedTokens, &row.CompletionTokens, &row.ReasoningTokens, &row.TotalTokens); err != nil {
+			return nil, err
+		}
+		row.CreatedAt = unixToTime(createdAt)
+		result = append(result, row)
+	}
+	return result, rows.Err()
 }
 
 // ByModel returns per-model aggregates.

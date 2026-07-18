@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { requireAuth } from "./auth-middleware";
-import { AppError, readJSON, requireJSONSize } from "./errors";
+import { AppError, readJSON } from "./errors";
 import { sha256 } from "./security";
 import type { AppEnv, VaultRow } from "./types";
 
@@ -97,8 +97,7 @@ vault.get("/", async (c) => {
 });
 
 vault.put("/batch", async (c) => {
-  requireJSONSize(c, 2 * 1024 * 1024);
-  const body = await readJSON<{ items?: unknown[] }>(c);
+  const body = await readJSON<{ items?: unknown[] }>(c, 2 * 1024 * 1024);
   if (!Array.isArray(body.items) || body.items.length === 0 || body.items.length > 200) {
     throw new AppError(400, "invalid_vault_batch", "Provide between 1 and 200 vault items.");
   }

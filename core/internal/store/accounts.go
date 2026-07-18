@@ -405,6 +405,6 @@ func (s *Store) SetAccountProxy(id int64, proxyID *int64) error {
 
 // DeleteAccount removes an account.
 func (s *Store) DeleteAccount(id int64) error {
-	_, err := s.db.Exec(`DELETE FROM accounts WHERE id=?`, id)
+	_, err := s.DeleteAccounts([]int64{id})
 	return err
 }

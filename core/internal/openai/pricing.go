@@ -75,6 +75,13 @@ func PriceForModel(model string) ModelPrice {
 // the long-context tier once prompt tokens exceed the published threshold.
 func CostUSD(model string, promptTokens, cachedTokens, completionTokens int64) float64 {
 	p := PriceForModel(model)
+	return CostUSDForPrice(p, promptTokens, cachedTokens, completionTokens)
+}
+
+// CostUSDForPrice prices one request using an already resolved catalog entry.
+// Callers that aggregate logs must invoke this before summing requests so the
+// long-context threshold is evaluated per request rather than on token totals.
+func CostUSDForPrice(p ModelPrice, promptTokens, cachedTokens, completionTokens int64) float64 {
 	if promptTokens < 0 {
 		promptTokens = 0
 	}

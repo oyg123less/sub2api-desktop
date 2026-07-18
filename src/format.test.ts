@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { exactTokens, formatTokens } from "./format";
+import { exactTokens, exactUSD, formatTokens, formatUSD } from "./format";
 
 describe("formatTokens", () => {
   it("keeps small numbers unabbreviated", () => {
@@ -43,5 +43,20 @@ describe("exactTokens", () => {
   it("renders precise grouped values", () => {
     expect(exactTokens(3421532)).toBe("3,421,532");
     expect(exactTokens(undefined)).toBe("0");
+  });
+});
+
+describe("USD formatting", () => {
+  it("keeps ordinary estimates precise and abbreviates large totals", () => {
+    expect(formatUSD(0)).toBe("$0.0000");
+    expect(formatUSD(842.6159)).toBe("$842.6159");
+    expect(formatUSD(3009.9833)).toBe("$3.0100K");
+    expect(formatUSD(1_500_000)).toBe("$1.5000M");
+    expect(formatUSD(-2500)).toBe("-$2.5000K");
+  });
+
+  it("keeps the exact value available for tooltips", () => {
+    expect(exactUSD(3009.9833)).toBe("$3,009.9833");
+    expect(exactUSD(undefined)).toBe("$0.0000");
   });
 });

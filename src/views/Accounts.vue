@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import Icon from "../components/Icon.vue";
 import ConfirmModal from "../components/ConfirmModal.vue";
@@ -12,6 +12,7 @@ import {
   type AccountRuntimeState,
   type AccountUsage,
   type AccountTestResult,
+  type AccountTestRun,
   type ImportCommitResult,
   type ImportPreview,
   type ImportProxyOptions,
@@ -106,6 +107,40 @@ let pageMounted = false;
 
 // delete flow
 const deleteTarget = ref<Account | null>(null);
+const selectedAccountIDs = ref<Set<number>>(new Set());
+const batchDeleteOpen = ref(false);
+const batchDeleting = ref(false);
+
+// batch connectivity test flow
+const batchTestOpen = ref(false);
+const batchTestStarting = ref(false);
+const batchTestRun = ref<AccountTestRun | null>(null);
+const batchTestFilter = ref<"all" | "succeeded" | "failed">("all");
+let batchTestPollTimer: number | undefined;
+
+const accountsPerPage = 20;
+const currentPage = ref(1);
+const totalPages = computed(() => Math.max(1, Math.ceil(accounts.value.length / accountsPerPage)));
+const pagedAccounts = computed(() => {
+  const start = (currentPage.value - 1) * accountsPerPage;
+  return accounts.value.slice(start, start + accountsPerPage);
+});
+const pageNumbers = computed(() => {
+  const count = Math.min(5, totalPages.value);
+  const start = Math.max(1, Math.min(currentPage.value - 2, totalPages.value - count + 1));
+  return Array.from({ length: count }, (_, index) => start + index);
+});
+const pageStart = computed(() => accounts.value.length ? (currentPage.value - 1) * accountsPerPage + 1 : 0);
+const pageEnd = computed(() => Math.min(currentPage.value * accountsPerPage, accounts.value.length));
+const allAccountsSelected = computed(() => pagedAccounts.value.length > 0 && pagedAccounts.value.every((account) => selectedAccountIDs.value.has(account.id)));
+const someAccountsSelected = computed(() => pagedAccounts.value.some((account) => selectedAccountIDs.value.has(account.id)) && !allAccountsSelected.value);
+const batchTestTargetCount = computed(() => selectedAccountIDs.value.size || accounts.value.length);
+const filteredBatchResults = computed(() => {
+  const rows = batchTestRun.value?.results || [];
+  if (batchTestFilter.value === "succeeded") return rows.filter((row) => row.status === "succeeded");
+  if (batchTestFilter.value === "failed") return rows.filter((row) => row.status === "failed" || row.status === "skipped");
+  return rows;
+});
 
 // import flow
 const importChooserOpen = ref(false);
@@ -319,6 +354,9 @@ async function load() {
   try {
 		const [acc, prox, settings] = await Promise.all([api.listAccounts(), api.listProxies(), api.getSettings()]);
     accounts.value = acc.accounts || [];
+    currentPage.value = Math.min(currentPage.value, totalPages.value);
+    const existingIDs = new Set(accounts.value.map((account) => account.id));
+    selectedAccountIDs.value = new Set([...selectedAccountIDs.value].filter((id) => existingIDs.has(id)));
     usage.value = acc.usage || {};
     proxies.value = prox.proxies || [];
 		if (detailTarget.value) {
@@ -554,6 +592,113 @@ async function confirmDelete() {
   }
 }
 
+function toggleAccountSelection(id: number, selected: boolean) {
+  const next = new Set(selectedAccountIDs.value);
+  if (selected) next.add(id);
+  else next.delete(id);
+  selectedAccountIDs.value = next;
+}
+
+function toggleAllAccounts(selected: boolean) {
+  const next = new Set(selectedAccountIDs.value);
+  for (const account of pagedAccounts.value) {
+    if (selected) next.add(account.id);
+    else next.delete(account.id);
+  }
+  selectedAccountIDs.value = next;
+}
+
+function goToPage(page: number) {
+  currentPage.value = Math.max(1, Math.min(page, totalPages.value));
+}
+
+async function confirmBatchDelete() {
+  const ids = [...selectedAccountIDs.value];
+  if (!ids.length) return;
+  batchDeleting.value = true;
+  try {
+    const result = await api.deleteAccounts(ids);
+    selectedAccountIDs.value = new Set();
+    batchDeleteOpen.value = false;
+    app.toast(t("accounts.batchDeleteComplete", { deleted: result.deleted?.length ?? 0, missing: result.missing?.length ?? 0 }), "success");
+    await load();
+    await app.refreshStatus();
+  } catch (error) {
+    app.toast((error as Error).message, "error");
+  } finally {
+    batchDeleting.value = false;
+  }
+}
+
+function scheduleBatchTestPoll(delay = 900) {
+  window.clearTimeout(batchTestPollTimer);
+  if (!pageMounted || !batchTestRun.value || batchTestRun.value.status !== "running") return;
+  batchTestPollTimer = window.setTimeout(refreshBatchTestRun, delay);
+}
+
+async function refreshBatchTestRun() {
+  if (!batchTestRun.value?.run_id) return;
+  try {
+    batchTestRun.value = await api.accountTestRun(batchTestRun.value.run_id);
+    if (batchTestRun.value.status !== "running") await load();
+  } catch {
+    // Keep the last visible snapshot; the next explicit open can retry.
+  } finally {
+    scheduleBatchTestPoll();
+  }
+}
+
+async function restoreBatchTestRun() {
+  try {
+    const response = await api.activeAccountTestRun();
+    if (response.run) {
+      batchTestRun.value = response.run;
+      scheduleBatchTestPoll();
+    }
+  } catch {
+    // Older sidecars do not expose batch runs.
+  }
+}
+
+function openBatchTest() {
+  batchTestFilter.value = "all";
+  batchTestOpen.value = true;
+  if (batchTestRun.value?.status === "running") scheduleBatchTestPoll(0);
+}
+
+async function startBatchTest() {
+  batchTestStarting.value = true;
+  try {
+    const ids = [...selectedAccountIDs.value];
+    batchTestRun.value = await api.startAccountTestRun({
+      scope: ids.length ? "selected" : "all",
+      account_ids: ids.length ? ids : undefined,
+      model: testModel.value,
+    });
+    batchTestFilter.value = "all";
+    scheduleBatchTestPoll(0);
+  } catch (error) {
+    app.toast((error as Error).message, "error");
+  } finally {
+    batchTestStarting.value = false;
+  }
+}
+
+async function cancelBatchTest() {
+  if (!batchTestRun.value || batchTestRun.value.status !== "running") return;
+  try {
+    batchTestRun.value = await api.cancelAccountTestRun(batchTestRun.value.run_id);
+    scheduleBatchTestPoll(250);
+  } catch (error) {
+    app.toast((error as Error).message, "error");
+  }
+}
+
+async function copyBatchTestError(value?: string) {
+  if (!value) return;
+  await copyTestDetails(value);
+}
+
 async function reLogin(account: Account) {
   await startLogin(account.proxy_id ?? null);
 }
@@ -616,6 +761,7 @@ onMounted(() => {
   pageMounted = true;
   document.addEventListener("visibilitychange", onVisibilityChange);
   void load().then(() => pollRuntime());
+  void restoreBatchTestRun();
   api
     .listModels()
     .then((r) => {
@@ -630,6 +776,7 @@ onUnmounted(() => {
   pageMounted = false;
   clearInterval(oauthPollTimer);
   clearTimeout(runtimePollTimer);
+  clearTimeout(batchTestPollTimer);
   document.removeEventListener("visibilitychange", onVisibilityChange);
 });
 </script>
@@ -642,9 +789,14 @@ onUnmounted(() => {
         <p class="page-desc">{{ t("accounts.desc") }}</p>
 				<p class="faint text-sm">{{ t(`accounts.strategy.${accountStrategy}`) }}</p>
       </div>
-      <button class="btn btn-primary" data-test="account-import-open" @click="openImportChooser">
-        <Icon name="upload" :size="16" /> {{ t("accounts.importAccountTitle") }}
-      </button>
+      <div class="row-gap account-page-actions">
+        <button v-if="accounts.length" class="btn btn-ghost" data-test="account-batch-test-open" @click="openBatchTest">
+          <Icon name="activity" :size="16" /> {{ batchTestRun?.status === "running" ? t("accounts.batchTestProgress", { done: batchTestRun.completed, total: batchTestRun.total }) : t("accounts.testAll") }}
+        </button>
+        <button class="btn btn-primary" data-test="account-import-open" @click="openImportChooser">
+          <Icon name="upload" :size="16" /> {{ t("accounts.importAccountTitle") }}
+        </button>
+      </div>
     </div>
 
     <SkeletonBlock v-if="loading" :cards="2" :rows="4" />
@@ -655,8 +807,22 @@ onUnmounted(() => {
       </EmptyState>
     </div>
 
-    <div v-else class="account-list" data-test="account-list">
-      <article v-for="a in accounts" :key="a.id" class="account-row" :class="{ 'is-disabled': a.status === 'disabled' }" data-test="account-row">
+    <div v-else class="account-list-shell">
+      <div class="account-batch-bar" :class="{ active: selectedAccountIDs.size > 0 }" data-test="account-batch-bar">
+        <label class="batch-select-all">
+          <input type="checkbox" :checked="allAccountsSelected" :indeterminate="someAccountsSelected" :aria-label="t('accounts.selectAll')" @change="toggleAllAccounts(($event.target as HTMLInputElement).checked)" />
+          <span>{{ selectedAccountIDs.size ? t("accounts.selectedCount", { count: selectedAccountIDs.size }) : t("accounts.selectAll") }}</span>
+        </label>
+        <div v-if="selectedAccountIDs.size" class="batch-actions">
+          <button class="btn btn-ghost btn-sm" :disabled="batchTestRun?.status === 'running'" @click="openBatchTest"><Icon name="activity" :size="14" />{{ t("accounts.testSelected") }}</button>
+          <button class="btn btn-danger btn-sm" :disabled="batchDeleting" @click="batchDeleteOpen = true"><Icon name="trash" :size="14" />{{ t("accounts.deleteSelected") }}</button>
+        </div>
+      </div>
+      <div class="account-list" data-test="account-list">
+      <article v-for="a in pagedAccounts" :key="a.id" class="account-row" :class="{ 'is-disabled': a.status === 'disabled', 'is-selected': selectedAccountIDs.has(a.id) }" data-test="account-row">
+        <label class="account-select" :title="t('accounts.selectAccount')">
+          <input type="checkbox" :checked="selectedAccountIDs.has(a.id)" :aria-label="t('accounts.selectAccount')" @change="toggleAccountSelection(a.id, ($event.target as HTMLInputElement).checked)" />
+        </label>
         <div class="account-identity">
           <div class="brand-logo account-avatar">{{ (a.email || "?").charAt(0).toUpperCase() }}</div>
           <div class="account-name-wrap">
@@ -667,6 +833,11 @@ onUnmounted(() => {
                 {{ a.account_type === "api_key" ? a.base_url : (a.plan_type || "ChatGPT") }}
               </span>
             </div>
+            <div class="account-load-inline">
+              <span>{{ t("accounts.concurrentLoad", { current: a.in_flight ?? 0, max: a.max_concurrency ?? 3 }) }}</span>
+              <i></i>
+              <span>{{ t("accounts.queueLoad", { current: a.waiting ?? 0, max: a.queue_capacity ?? 20 }) }}</span>
+            </div>
           </div>
         </div>
         <div class="account-health">
@@ -674,17 +845,19 @@ onUnmounted(() => {
           <small v-if="accountStatusReason(a)" :title="accountStatusReason(a)">{{ accountStatusReason(a) }}</small>
           <small v-else>{{ t("accounts.lastSuccess") }} · {{ fmtDate(a.last_success_at) }}</small>
         </div>
-        <div class="account-metric">
-          <span>{{ t("accounts.tokensUsed") }}</span>
-          <strong class="mono" :title="`${exactTokens(usage[a.id]?.total_tokens)} tokens`">{{ formatTokens(usage[a.id]?.total_tokens) }}</strong>
+        <div class="account-quota">
+          <template v-if="a.account_type === 'oauth' && a.codex_usage && usageWindows(a.codex_usage).length">
+            <div v-for="(window, index) in usageWindows(a.codex_usage).slice(0, 2)" :key="index" class="account-quota-window">
+              <div><span>{{ window.label }}</span><strong class="mono">{{ pctLabel(window.used) }}</strong></div>
+              <div class="usage-bar"><div class="usage-fill" :class="usageBarClass(window.used)" :style="{ width: pct(window.used) + '%' }"></div></div>
+              <small v-if="fmtReset(window.reset)">{{ t("accounts.resetIn", { time: fmtReset(window.reset) }) }}</small>
+            </div>
+          </template>
+          <span v-else class="quota-unavailable">{{ t("accounts.quotaUnavailable") }}</span>
         </div>
-        <div class="account-metric">
-          <span>{{ t("accounts.estCost") }}</span>
-          <strong class="mono">{{ fmtCost(usage[a.id]?.cost_usd) }}</strong>
-        </div>
-        <div class="account-load">
-          <span>{{ t("accounts.concurrentLoad", { current: a.in_flight ?? 0, max: a.max_concurrency ?? 3 }) }}</span>
-          <span>{{ t("accounts.queueLoad", { current: a.waiting ?? 0, max: a.queue_capacity ?? 20 }) }}</span>
+        <div class="account-usage-summary">
+          <div><span>{{ t("accounts.tokensUsed") }}</span><strong class="mono" :title="`${exactTokens(usage[a.id]?.total_tokens)} tokens`">{{ formatTokens(usage[a.id]?.total_tokens) }}</strong></div>
+          <div><span>{{ t("accounts.estCost") }}</span><strong class="mono">{{ fmtCost(usage[a.id]?.cost_usd) }}</strong></div>
         </div>
         <div class="account-row-actions">
           <label class="switch account-switch" :title="t(a.status === 'disabled' ? 'accounts.enableAccount' : 'accounts.disableAccount')">
@@ -697,14 +870,28 @@ onUnmounted(() => {
             />
             <span class="slider"></span>
           </label>
-          <button class="btn btn-ghost btn-sm" data-test="account-test" @click="openTest(a)">
-            <Icon name="bolt" :size="14" /> {{ t("accounts.test") }}
+          <button class="btn btn-ghost btn-sm" data-test="account-test" :title="t('accounts.test')" :aria-label="t('accounts.test')" @click="openTest(a)">
+            <Icon name="bolt" :size="14" /><span class="action-label">{{ t("accounts.test") }}</span>
           </button>
-          <button class="btn btn-ghost btn-sm" data-test="account-details" @click="openDetails(a)">
-            <Icon name="info" :size="14" /> {{ t("accounts.viewDetails") }}
+          <button class="btn btn-ghost btn-sm" data-test="account-details" :title="t('accounts.viewDetails')" :aria-label="t('accounts.viewDetails')" @click="openDetails(a)">
+            <Icon name="info" :size="14" /><span class="action-label">{{ t("accounts.viewDetails") }}</span>
           </button>
+          <button class="btn btn-danger btn-sm account-delete" data-test="account-delete" :title="t('common.delete')" :aria-label="t('common.delete')" @click="deleteTarget = a"><Icon name="trash" :size="14" /></button>
         </div>
       </article>
+      </div>
+      <nav v-if="totalPages > 1" class="account-pagination" data-test="account-pagination" :aria-label="t('accounts.pagination')">
+        <span>{{ t("accounts.pageSummary", { start: pageStart, end: pageEnd, total: accounts.length }) }}</span>
+        <div class="account-page-controls">
+          <button class="icon-button" type="button" :disabled="currentPage === 1" :title="t('accounts.previousPage')" :aria-label="t('accounts.previousPage')" @click="goToPage(currentPage - 1)">
+            <Icon name="chevron-left" :size="16" />
+          </button>
+          <button v-for="page in pageNumbers" :key="page" class="account-page-button" type="button" :class="{ active: page === currentPage }" :aria-current="page === currentPage ? 'page' : undefined" :aria-label="t('accounts.pageNumber', { page })" @click="goToPage(page)">{{ page }}</button>
+          <button class="icon-button" type="button" :disabled="currentPage === totalPages" :title="t('accounts.nextPage')" :aria-label="t('accounts.nextPage')" @click="goToPage(currentPage + 1)">
+            <Icon name="chevron-right" :size="16" />
+          </button>
+        </div>
+      </nav>
     </div>
 
     <!-- Import method chooser -->
@@ -795,7 +982,6 @@ onUnmounted(() => {
               <button v-if="detailTarget.status !== 'active'" class="btn btn-ghost btn-sm" :disabled="resetting[detailTarget.id]" @click="forceReset(detailTarget)"><Icon name="check" :size="14" />{{ t("accounts.forceReset") }}</button>
               <button v-if="detailTarget.account_type === 'oauth' && detailTarget.status === 'refresh_failed'" class="btn btn-primary btn-sm" @click="reLogin(detailTarget)"><Icon name="refresh" :size="14" />{{ t("accounts.relogin") }}</button>
               <button v-else-if="detailTarget.account_type === 'oauth'" class="btn btn-ghost btn-sm" @click="refreshToken(detailTarget)"><Icon name="refresh" :size="14" />{{ t("common.refresh") }}</button>
-              <button class="btn btn-danger btn-sm detail-delete" :title="t('common.delete')" @click="deleteTarget = detailTarget"><Icon name="trash" :size="14" /></button>
             </div>
           </div>
         </div>
@@ -1093,28 +1279,106 @@ onUnmounted(() => {
       @confirm="confirmDelete"
       @cancel="deleteTarget = null"
     />
+    <ConfirmModal
+      :open="batchDeleteOpen"
+      :title="t('accounts.batchDeleteTitle', { count: selectedAccountIDs.size })"
+      :desc="t('accounts.batchDeleteDesc')"
+      danger
+      :confirm-text="t('accounts.deleteSelected')"
+      @confirm="confirmBatchDelete"
+      @cancel="batchDeleteOpen = false"
+    />
+
+    <Teleport to="body">
+      <div v-if="batchTestOpen" class="modal-backdrop" @click.self="batchTestOpen = false">
+        <div class="modal account-batch-test-modal" data-test="account-batch-test-modal" role="dialog" aria-modal="true" @keydown.esc="batchTestOpen = false">
+          <div class="batch-test-head">
+            <div><h3 class="modal-title">{{ t("accounts.batchTestTitle") }}</h3><p class="modal-desc">{{ t("accounts.batchTestDesc") }}</p></div>
+            <button class="btn btn-ghost btn-sm" @click="batchTestOpen = false">{{ t("common.close") }}</button>
+          </div>
+          <template v-if="!batchTestRun || batchTestRun.status !== 'running' && batchTestRun.completed === batchTestRun.total">
+            <div class="batch-test-config">
+              <div class="batch-test-notice"><Icon name="info" :size="18" /><span>{{ t("accounts.batchTestNotice", { count: batchTestTargetCount }) }}</span></div>
+              <label class="field"><span class="field-label">{{ t("accounts.testModel") }}</span><select v-model="testModel" class="select"><option v-for="model in modelOptions" :key="model" :value="model">{{ model }}</option></select></label>
+              <div v-if="batchTestRun" class="batch-test-previous"><strong>{{ t("accounts.batchTestPrevious") }}</strong><span>{{ t("accounts.batchTestSummary", { success: batchTestRun.succeeded, failed: batchTestRun.failed, total: batchTestRun.total }) }}</span></div>
+              <div class="modal-actions"><button class="btn btn-primary" data-test="account-batch-test-start" :disabled="batchTestStarting" @click="startBatchTest"><Icon name="activity" :size="14" />{{ batchTestStarting ? t("accounts.batchTestStarting") : t("accounts.batchTestStart") }}</button></div>
+            </div>
+          </template>
+          <div v-if="batchTestRun" class="batch-test-run">
+            <div class="batch-test-progress-head"><strong>{{ t("accounts.batchTestProgress", { done: batchTestRun.completed, total: batchTestRun.total }) }}</strong><span>{{ Math.round((batchTestRun.completed / Math.max(1, batchTestRun.total)) * 100) }}%</span></div>
+            <div class="batch-progress"><span :style="{ width: `${(batchTestRun.completed / Math.max(1, batchTestRun.total)) * 100}%` }"></span></div>
+            <div class="batch-test-metrics">
+              <span class="text-success">{{ t("accounts.batchTestSucceeded", { count: batchTestRun.succeeded }) }}</span>
+              <span class="text-danger">{{ t("accounts.batchTestFailed", { count: batchTestRun.failed }) }}</span>
+              <span>{{ t("accounts.batchTestRunning", { count: batchTestRun.running }) }}</span>
+              <span>{{ t("accounts.batchTestCancelled", { count: batchTestRun.cancelled + batchTestRun.skipped }) }}</span>
+            </div>
+            <div class="batch-test-toolbar">
+              <div class="batch-test-filters">
+                <button v-for="filter in (['all', 'succeeded', 'failed'] as const)" :key="filter" type="button" :class="{ active: batchTestFilter === filter }" @click="batchTestFilter = filter">{{ t(`accounts.batchTestFilter.${filter}`) }}</button>
+              </div>
+              <button v-if="batchTestRun.status === 'running'" class="btn btn-danger btn-sm" data-test="account-batch-test-cancel" @click="cancelBatchTest"><Icon name="power" :size="13" />{{ t("common.cancel") }}</button>
+            </div>
+            <div class="batch-test-results">
+              <div v-for="row in filteredBatchResults" :key="row.account_id" class="batch-test-row" :class="`result-${row.status}`">
+                <Icon :name="row.status === 'succeeded' ? 'check' : row.status === 'running' ? 'refresh' : row.status === 'pending' ? 'info' : 'warn'" :size="14" :class="{ spin: row.status === 'running' }" />
+                <strong>{{ row.account_label }}</strong>
+                <span>{{ t(`accounts.batchTestStatus.${row.status}`) }}</span>
+                <small>{{ row.http_status || '' }}<template v-if="row.latency_ms"> · {{ row.latency_ms }} ms</template></small>
+                <button v-if="row.error" class="copy-btn" type="button" :title="row.error" @click="copyBatchTestError(row.error)"><Icon name="copy" :size="12" /></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <style scoped>
 .accounts-page { min-width: 0; container: accounts-page / inline-size; }
+.account-page-actions { flex-wrap: wrap; justify-content: flex-end; }
+.account-pagination { min-height: 50px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 4px 0; color: var(--text-faint); font-size: 11.5px; }
+.account-page-controls { display: flex; align-items: center; gap: 5px; }
+.account-page-controls .icon-button, .account-page-button { width: 32px; height: 32px; display: inline-grid; place-items: center; flex: 0 0 auto; border: 1px solid var(--border-soft); border-radius: 6px; background: var(--bg-card); color: var(--text-dim); cursor: pointer; }
+.account-page-controls .icon-button:disabled { opacity: .42; cursor: default; }
+.account-page-controls .icon-button:not(:disabled):hover, .account-page-button:hover { border-color: var(--border); background: var(--bg-hover); color: var(--text); }
+.account-page-button.active { border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); background: var(--primary-soft); color: var(--primary); font-weight: 650; }
+.account-list-shell { min-width: 0; }
+.account-batch-bar { min-height: 44px; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; padding: 8px 12px; border: 1px solid var(--border-soft); border-radius: 7px; background: var(--bg-card); transition: border-color var(--motion-fast) var(--motion-ease), background var(--motion-fast) var(--motion-ease); }
+.account-batch-bar.active { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); background: var(--accent-soft); }
+.batch-select-all { display: flex; align-items: center; gap: 9px; color: var(--text-dim); cursor: pointer; }
+.batch-select-all input, .account-select input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+.batch-actions { display: flex; align-items: center; gap: 8px; }
 .account-list { display: grid; gap: 10px; }
-.account-row { min-width: 0; min-height: 92px; display: grid; grid-template-columns: minmax(220px, 2fr) minmax(150px, 1.25fr) minmax(92px, .65fr) minmax(92px, .65fr) minmax(132px, .85fr) auto; align-items: center; gap: 14px; padding: 14px 16px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--bg-card); box-shadow: var(--shadow-xs); transform-origin: center; transition: transform var(--motion-normal) var(--motion-ease), box-shadow var(--motion-normal) var(--motion-ease), border-color var(--motion-fast) var(--motion-ease), opacity var(--motion-fast) var(--motion-ease); }
+.account-row { min-width: 0; min-height: 108px; display: grid; grid-template-columns: auto minmax(250px, 1.75fr) minmax(145px, 1fr) minmax(205px, 1.25fr) minmax(122px, .7fr) auto; align-items: center; gap: 14px; padding: 14px 16px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--bg-card); box-shadow: var(--shadow-xs); transform-origin: center; transition: transform var(--motion-normal) var(--motion-ease), box-shadow var(--motion-normal) var(--motion-ease), border-color var(--motion-fast) var(--motion-ease), opacity var(--motion-fast) var(--motion-ease); }
 .account-row:hover, .account-row:focus-within { transform: translateY(-1px) scale(1.002); box-shadow: var(--shadow-hover); border-color: var(--border); }
+.account-row.is-selected { border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); }
 .account-row.is-disabled { opacity: .72; }
+.account-select { align-self: stretch; display: grid; place-items: center; padding-right: 2px; }
 .account-identity { min-width: 0; display: flex; align-items: center; gap: 11px; }
 .account-avatar { flex: 0 0 auto; background: linear-gradient(135deg, #d97757, #b8532f); }
 .account-name-wrap { min-width: 0; }
 .account-name-wrap > strong, .account-name-wrap .modal-title { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .account-subline { min-width: 0; display: flex; align-items: center; gap: 7px; margin-top: 4px; }
 .account-subtitle { min-width: 0; overflow: hidden; color: var(--text-faint); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.account-load-inline { display: flex; align-items: center; gap: 7px; margin-top: 7px; color: var(--text-faint); font-size: 11px; }
+.account-load-inline i { width: 3px; height: 3px; border-radius: 50%; background: var(--text-faint); }
 .account-health { min-width: 0; display: grid; justify-items: start; gap: 6px; }
 .account-health small { max-width: 100%; overflow: hidden; color: var(--text-faint); text-overflow: ellipsis; white-space: nowrap; }
-.account-metric { display: grid; gap: 4px; }
-.account-metric span, .account-load span { color: var(--text-faint); font-size: 11px; }
-.account-metric strong { font-size: 13px; }
-.account-load { display: grid; gap: 5px; }
+.account-quota { min-width: 0; display: grid; gap: 7px; }
+.account-quota-window { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 3px; }
+.account-quota-window > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-faint); font-size: 10.5px; }
+.account-quota-window > div:first-child strong { color: var(--text-dim); font-size: 10.5px; }
+.account-quota-window .usage-bar { height: 5px; }
+.account-quota-window small { color: var(--text-faint); font-size: 9.5px; white-space: nowrap; }
+.quota-unavailable { color: var(--text-faint); font-size: 11px; }
+.account-usage-summary { display: grid; gap: 8px; }
+.account-usage-summary > div { display: grid; gap: 3px; }
+.account-usage-summary span { color: var(--text-faint); font-size: 10.5px; }
+.account-usage-summary strong { font-size: 12.5px; }
 .account-row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+.account-delete { width: 34px; justify-content: center; padding-inline: 0; }
 .account-switch { flex: 0 0 auto; }
 .import-chooser { max-width: 680px; }
 .import-methods { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 18px; }
@@ -1168,24 +1432,52 @@ onUnmounted(() => {
 .limit-grid .field, .detail-proxy { margin: 0; }
 .detail-proxy { margin-top: 12px; }
 .detail-actions { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 16px; }
-.detail-delete { margin-left: auto; }
+.account-batch-test-modal { width: min(760px, calc(100vw - 32px)); max-width: 760px; max-height: min(88vh, 820px); display: flex; flex-direction: column; overflow: hidden; padding: 0; }
+.batch-test-head { flex: 0 0 auto; display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 20px 22px 14px; border-bottom: 1px solid var(--border-soft); }
+.batch-test-config { padding: 16px 22px; }
+.batch-test-notice { display: flex; align-items: flex-start; gap: 10px; padding: 11px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--text-dim); font-size: 12px; line-height: 1.5; }
+.batch-test-config .field { margin-top: 14px; }
+.batch-test-previous { display: flex; justify-content: space-between; gap: 12px; margin-top: 12px; color: var(--text-faint); font-size: 12px; }
+.batch-test-run { min-height: 0; display: flex; flex-direction: column; padding: 16px 22px 20px; overflow: hidden; }
+.batch-test-progress-head { display: flex; justify-content: space-between; gap: 12px; }
+.batch-progress { height: 7px; margin-top: 8px; overflow: hidden; border-radius: 4px; background: var(--bg-hover); }
+.batch-progress > span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width var(--motion-normal) var(--motion-ease); }
+.batch-test-metrics { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 10px; color: var(--text-faint); font-size: 11px; }
+.batch-test-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; }
+.batch-test-filters { display: flex; gap: 4px; padding: 3px; border-radius: 6px; background: var(--bg-elev); }
+.batch-test-filters button { min-height: 28px; padding: 3px 10px; border: 0; border-radius: 4px; background: transparent; color: var(--text-faint); cursor: pointer; }
+.batch-test-filters button.active { background: var(--bg-card); color: var(--text); box-shadow: var(--shadow-xs); }
+.batch-test-results { min-height: 120px; margin-top: 10px; overflow-y: auto; border-top: 1px solid var(--border-soft); }
+.batch-test-row { min-width: 0; display: grid; grid-template-columns: auto minmax(130px, 1fr) 90px 100px auto; align-items: center; gap: 9px; min-height: 40px; border-bottom: 1px solid var(--border-soft); font-size: 11px; }
+.batch-test-row strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.batch-test-row > span, .batch-test-row > small { color: var(--text-faint); }
+.batch-test-row.result-succeeded > .icon { color: var(--success); }.batch-test-row.result-failed > .icon { color: var(--danger); }
+.batch-test-row .copy-btn { position: static; }
 @container accounts-page (max-width: 1180px) {
-	.account-row { grid-template-columns: minmax(180px, 2fr) minmax(125px, 1.25fr) minmax(76px, .65fr) minmax(82px, .65fr) minmax(105px, .85fr) minmax(160px, auto); gap: 10px; }
-	.account-row-actions { flex-direction: column; align-items: stretch; }
-	.account-row-actions .btn { justify-content: center; }
+	.account-row { grid-template-columns: auto minmax(210px, 1.5fr) minmax(125px, .9fr) minmax(170px, 1.1fr) minmax(105px, .7fr) minmax(150px, auto); gap: 10px; }
+	.account-row-actions { gap: 6px; }
+	.account-row-actions .btn { width: 32px; justify-content: center; padding-inline: 0; }
+	.account-row-actions .action-label { display: none; }
+	.account-quota-window small { display: none; }
 }
 @container accounts-page (max-width: 900px) {
-	.account-row { grid-template-columns: minmax(0, 1fr) minmax(150px, auto) minmax(160px, auto); grid-template-rows: auto auto; gap: 8px 14px; }
-	.account-identity { grid-column: 1; grid-row: 1 / span 2; }
-	.account-health { grid-column: 2; grid-row: 1; }
-	.account-load { grid-column: 2; grid-row: 2; }
-	.account-metric { display: none; }
-	.account-row-actions { grid-column: 3; grid-row: 1 / span 2; }
+	.account-row { grid-template-columns: auto minmax(0, 1fr) minmax(145px, auto) minmax(150px, auto); grid-template-rows: auto auto; gap: 10px 14px; }
+	.account-select { grid-column: 1; grid-row: 1 / span 2; }
+	.account-identity { grid-column: 2; grid-row: 1; }
+	.account-health { grid-column: 3; grid-row: 1; }
+	.account-quota { grid-column: 2 / span 2; grid-row: 2; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+	.account-usage-summary { display: none; }
+	.account-row-actions { grid-column: 4; grid-row: 1 / span 2; }
 }
 @container accounts-page (max-width: 720px) {
-	.account-row { grid-template-columns: minmax(0, 1fr) auto; gap: 10px 12px; }
-	.account-identity, .account-health, .account-load { grid-column: 1; grid-row: auto; }
-	.account-row-actions { grid-column: 2; grid-row: 1 / span 3; align-items: flex-end; }
+	.account-pagination { align-items: flex-start; flex-direction: column; }
+	.account-row { grid-template-columns: auto minmax(0, 1fr); gap: 10px 12px; }
+	.account-select { grid-column: 1; grid-row: 1 / span 3; }
+	.account-identity, .account-health, .account-quota { grid-column: 2; grid-row: auto; }
+	.account-quota { grid-template-columns: minmax(0, 1fr); }
+	.account-row-actions { grid-column: 2; grid-row: auto; flex-direction: row; flex-wrap: wrap; justify-content: flex-start; }
+	.account-batch-bar { align-items: stretch; flex-direction: column; }
+	.batch-actions { width: 100%; }
 }
 @media (max-width: 1100px) {
 	.import-methods { grid-template-columns: minmax(0, 1fr); }
@@ -1195,5 +1487,7 @@ onUnmounted(() => {
 	.detail-grid, .limit-grid, .import-proxy-config { grid-template-columns: minmax(0, 1fr); }
 	.usage-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 	.detail-wide { grid-column: auto; }
+	.batch-test-row { grid-template-columns: auto minmax(0, 1fr) auto; }
+	.batch-test-row > span { grid-column: 2; }.batch-test-row > small { grid-column: 3; grid-row: 1; }.batch-test-row .copy-btn { grid-column: 3; }
 }
 </style>

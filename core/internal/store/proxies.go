@@ -137,9 +137,23 @@ func (s *Store) UpdateProxyPatch(id int64, patch ProxyPatch) (*Proxy, error) {
 
 // DeleteProxy removes a proxy and clears it from any accounts referencing it.
 func (s *Store) DeleteProxy(id int64) error {
-	if _, err := s.db.Exec(`UPDATE accounts SET proxy_id=NULL WHERE proxy_id=?`, id); err != nil {
+	tx, err := s.db.Begin()
+	if err != nil {
 		return err
 	}
-	_, err := s.db.Exec(`DELETE FROM proxies WHERE id=?`, id)
-	return err
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`UPDATE accounts SET proxy_id=NULL WHERE proxy_id=?`, id); err != nil {
+		return err
+	}
+	result, err := tx.Exec(`DELETE FROM proxies WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil || affected == 0 {
+		if err != nil {
+			return err
+		}
+		return ErrNotFound
+	}
+	return tx.Commit()
 }

@@ -7,7 +7,7 @@ preview_urls = false
 [vars]
 ENVIRONMENT = "production"
 MAILER_MODE = "resend"
-RESEND_FROM = "Amber <noreply@mail.amberapp.asia>"
+RESEND_FROM = "Amber Verification <verify@mail.amberapp.asia>"
 
 [[d1_databases]]
 binding = "DB"

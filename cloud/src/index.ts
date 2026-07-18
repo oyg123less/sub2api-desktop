@@ -13,6 +13,7 @@ import shareRoutes from "./share-routes";
 import receivedShareRoutes from "./received-share-routes";
 import type { AppEnv } from "./types";
 import vaultRoutes from "./vault-routes";
+import webhookRoutes from "./webhook-routes";
 
 const app = new Hono<AppEnv>();
 
@@ -26,7 +27,7 @@ app.use("*", async (c, next) => {
   await next();
 });
 
-app.get("/health", (c) => c.json({ ok: true, service: "amber-cloud", version: "0.4.0" }));
+app.get("/health", (c) => c.json({ ok: true, service: "amber-cloud", version: "0.4.1" }));
 app.route("/v1/auth", authRoutes);
 app.route("/v1/vault", vaultRoutes);
 app.route("/v1/admin", adminRoutes);
@@ -35,6 +36,7 @@ app.route("/v1", friendRoutes);
 app.route("/v1", shareGroupRoutes);
 app.route("/v1", receivedShareRoutes);
 app.route("/v1", deviceRoutes);
+app.route("/v1/webhooks", webhookRoutes);
 app.route("/v1", shareGateway);
 
 app.notFound((c) => errorResponse(c, 404, "not_found", "The requested endpoint does not exist."));

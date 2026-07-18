@@ -3,6 +3,7 @@ package cloudsync
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
@@ -26,6 +27,8 @@ type SettingsAccess interface {
 const (
 	cloudPullPageSize = 1000
 	cloudPullMaxPages = 20
+	cloudPushMaxItems = 200
+	cloudPushMaxBytes = 1024 * 1024
 )
 
 type syncOutboxPayload struct {
@@ -81,11 +84,12 @@ type pendingRegistrationPayload struct {
 }
 
 type Manager struct {
-	store    *store.Store
-	settings SettingsAccess
-	client   *cloudClient
-	siteKey  string
-	logger   *slog.Logger
+	store        *store.Store
+	settings     SettingsAccess
+	client       *cloudClient
+	siteKey      string
+	logger       *slog.Logger
+	httpOverride *http.Client
 
 	opMu         sync.Mutex
 	mu           sync.RWMutex
@@ -106,6 +110,7 @@ type Manager struct {
 	nextRetryAt         time.Time
 	consecutiveFailures int
 	appliedHook         func(context.Context) error
+	networkInfo         NetworkInfo
 }
 
 func (m *Manager) SetAppliedHook(hook func(context.Context) error) {
@@ -116,7 +121,7 @@ func (m *Manager) SetAppliedHook(hook func(context.Context) error) {
 
 func NewManager(st *store.Store, settings SettingsAccess, baseURL, siteKey string, httpClient *http.Client, logger *slog.Logger) *Manager {
 	client, err := newCloudClient(baseURL, httpClient)
-	manager := &Manager{store: st, settings: settings, client: client, siteKey: strings.TrimSpace(siteKey), logger: logger}
+	manager := &Manager{store: st, settings: settings, client: client, siteKey: strings.TrimSpace(siteKey), logger: logger, httpOverride: httpClient}
 	if manager.logger == nil {
 		manager.logger = slog.Default()
 	}
@@ -125,6 +130,11 @@ func NewManager(st *store.Store, settings SettingsAccess, baseURL, siteKey strin
 		manager.lastError = err.Error()
 		manager.client, _ = newCloudClient("", httpClient)
 		return manager
+	}
+	if networkErr := manager.restoreNetworkClient(); networkErr != nil {
+		manager.lastError = networkErr.Error()
+		manager.lastErrorCode = "cloud_proxy_missing"
+		manager.lastErrorStage = "local"
 	}
 	session, err := st.LoadCloudSession()
 	if errors.Is(err, store.ErrNotFound) {
@@ -821,13 +831,16 @@ func (m *Manager) Sync(ctx context.Context) (syncErr error) {
 		if err != nil {
 			return err
 		}
-		for start := 0; start < len(items); start += 200 {
-			end := min(start+200, len(items))
+		itemBatches, err := splitSyncItems(items, cloudPushMaxItems, cloudPushMaxBytes)
+		if err != nil {
+			return err
+		}
+		for _, itemBatch := range itemBatches {
 			key, err := newSyncIdempotencyKey()
 			if err != nil {
 				return err
 			}
-			payload, err := json.Marshal(syncOutboxPayload{Items: items[start:end]})
+			payload, err := json.Marshal(syncOutboxPayload{Items: itemBatch})
 			if err != nil {
 				return err
 			}
@@ -884,6 +897,49 @@ func newSyncIdempotencyKey() (string, error) {
 	return "amber-sync-" + hex.EncodeToString(value[:]), nil
 }
 
+func splitSyncItems(items []remoteVaultItem, maxItems, maxBytes int) ([][]remoteVaultItem, error) {
+	if maxItems <= 0 || maxBytes <= 0 {
+		return nil, errors.New("invalid cloud sync batch limits")
+	}
+	var batches [][]remoteVaultItem
+	current := make([]remoteVaultItem, 0, min(maxItems, len(items)))
+	for _, item := range items {
+		candidate := append(append([]remoteVaultItem(nil), current...), item)
+		encoded, err := json.Marshal(syncOutboxPayload{Items: candidate})
+		if err != nil {
+			return nil, err
+		}
+		if len(candidate) <= maxItems && len(encoded) <= maxBytes {
+			current = candidate
+			continue
+		}
+		if len(current) == 0 {
+			return nil, fmt.Errorf("cloud sync item %s:%s exceeds the upload limit", item.Kind, item.ClientUID)
+		}
+		batches = append(batches, current)
+		current = []remoteVaultItem{item}
+		encoded, err = json.Marshal(syncOutboxPayload{Items: current})
+		if err != nil {
+			return nil, err
+		}
+		if len(encoded) > maxBytes {
+			return nil, fmt.Errorf("cloud sync item %s:%s exceeds the upload limit", item.Kind, item.ClientUID)
+		}
+	}
+	if len(current) > 0 {
+		batches = append(batches, current)
+	}
+	return batches, nil
+}
+
+func splitSyncIdempotencyKey(base string, index, total int) string {
+	if total <= 1 {
+		return base
+	}
+	digest := sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%d", base, index, total)))
+	return "amber-sync-split-" + hex.EncodeToString(digest[:16])
+}
+
 func (m *Manager) checkpointCursor(cursor string) error {
 	if cursor == "" {
 		return nil
@@ -901,33 +957,44 @@ func (m *Manager) checkpointCursor(cursor string) error {
 
 func (m *Manager) pushOutboxBatch(ctx context.Context, accessToken string, vaultKey []byte, batch store.CloudOutboxBatch) (bool, string, error) {
 	var payload syncOutboxPayload
-	if err := json.Unmarshal(batch.PayloadJSON, &payload); err != nil || len(payload.Items) == 0 || len(payload.Items) > 200 {
+	if err := json.Unmarshal(batch.PayloadJSON, &payload); err != nil || len(payload.Items) == 0 || len(payload.Items) > cloudPushMaxItems {
 		return false, "", errors.New("saved cloud sync batch is invalid")
 	}
-	response, pushErr := m.client.push(ctx, accessToken, batch.IdempotencyKey, payload.Items)
-	if pushErr != nil {
-		var cloudErr *CloudError
-		if errors.As(pushErr, &cloudErr) && cloudErr.Status == http.StatusConflict && cloudErr.Code == "vault_conflict" && len(response.Conflicts) > 0 {
-			if err := m.applyRemoteItems(response.Conflicts, vaultKey); err != nil {
-				return false, "", err
-			}
-			if err := m.store.DeleteCloudOutboxBatch(batch.IdempotencyKey); err != nil {
-				return false, "", err
-			}
-			return true, response.Cursor, nil
-		}
-		return false, "", pushErr
-	}
-	if len(response.Items) != len(payload.Items) {
-		return false, "", errors.New("Amber Cloud returned an incomplete batch acknowledgement")
-	}
-	if err := m.acknowledge(response.Items, vaultKey); err != nil {
+	itemBatches, err := splitSyncItems(payload.Items, cloudPushMaxItems, cloudPushMaxBytes)
+	if err != nil {
 		return false, "", err
+	}
+	lastCursor := ""
+	for index, itemBatch := range itemBatches {
+		key := splitSyncIdempotencyKey(batch.IdempotencyKey, index, len(itemBatches))
+		response, pushErr := m.client.push(ctx, accessToken, key, itemBatch)
+		if pushErr != nil {
+			var cloudErr *CloudError
+			if errors.As(pushErr, &cloudErr) && cloudErr.Status == http.StatusConflict && cloudErr.Code == "vault_conflict" && len(response.Conflicts) > 0 {
+				if err := m.applyRemoteItems(response.Conflicts, vaultKey); err != nil {
+					return false, "", err
+				}
+				if err := m.store.DeleteCloudOutboxBatch(batch.IdempotencyKey); err != nil {
+					return false, "", err
+				}
+				return true, response.Cursor, nil
+			}
+			return false, "", pushErr
+		}
+		if len(response.Items) != len(itemBatch) {
+			return false, "", errors.New("Amber Cloud returned an incomplete batch acknowledgement")
+		}
+		if err := m.acknowledge(response.Items, vaultKey); err != nil {
+			return false, "", err
+		}
+		if response.Cursor != "" {
+			lastCursor = response.Cursor
+		}
 	}
 	if err := m.store.DeleteCloudOutboxBatch(batch.IdempotencyKey); err != nil {
 		return false, "", err
 	}
-	return false, response.Cursor, nil
+	return false, lastCursor, nil
 }
 
 func (m *Manager) ensureAccess(ctx context.Context) error {

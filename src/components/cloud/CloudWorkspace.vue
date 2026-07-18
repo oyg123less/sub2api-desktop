@@ -28,7 +28,7 @@ import {
 } from "./workspaceCache";
 
 const props = defineProps<{ status: CloudStatus; busy: string; adminOpen: boolean }>();
-const emit = defineEmits<{ sync: []; logout: []; admin: []; password: [] }>();
+const emit = defineEmits<{ sync: []; network: []; logout: []; admin: []; password: [] }>();
 const { t } = useI18n();
 const app = useAppStore();
 
@@ -615,7 +615,10 @@ watch(detailTab, (current) => {
     <section v-if="status.last_error" class="sync-error-band" role="alert">
       <Icon name="warn" :size="18" />
       <div><strong>{{ t("cloud.syncFailed") }}</strong><p>{{ syncErrorMessage }}</p><span v-if="status.last_attempt_at">{{ t("cloud.syncAttempt", { time: fmt(status.last_attempt_at) }) }}</span><span v-if="status.consecutive_failures">{{ t("cloud.syncFailures", { count: status.consecutive_failures }) }}</span><span v-if="retrySeconds">{{ t("cloud.syncRetryIn", { seconds: retrySeconds }) }}</span></div>
-      <button class="btn btn-ghost btn-sm" data-test="cloud-sync-retry" type="button" :disabled="busy !== ''" @click="emit('sync')"><Icon name="refresh" :size="14" />{{ t("cloud.syncRetry") }}</button>
+      <div class="sync-error-actions">
+        <button class="btn btn-ghost btn-sm" data-test="cloud-network-open" type="button" :disabled="busy !== ''" @click="emit('network')"><Icon name="proxies" :size="14" />{{ t("cloud.networkSettings") }}</button>
+        <button class="btn btn-ghost btn-sm" data-test="cloud-sync-retry" type="button" :disabled="busy !== ''" @click="emit('sync')"><Icon name="refresh" :size="14" />{{ t("cloud.syncRetry") }}</button>
+      </div>
     </section>
 
     <div v-if="loading" class="workspace-loading"><span></span><span></span><span></span></div>
@@ -791,6 +794,7 @@ watch(detailTab, (current) => {
 .workspace-loading span { height: 76px; border-radius: 6px; background: var(--bg-elev); }
 .workspace-error { min-height: 140px; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--danger); }
 .sync-error-band { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 12px 4px; border-bottom: 1px solid var(--danger); color: var(--danger); }.sync-error-band p { margin: 3px 0 5px; color: var(--text-dim); }.sync-error-band span { display: inline-block; margin-right: 14px; color: var(--text-faint); font-size: 11px; }
+.sync-error-actions { display: flex; align-items: center; gap: 8px; }
 .metric-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-block: 1px solid var(--border-soft); }
 .metric-strip div { min-width: 0; display: grid; gap: 5px; padding: 16px 18px; border-right: 1px solid var(--border-soft); }
 .metric-strip div:last-child { border-right: 0; }
@@ -849,5 +853,5 @@ watch(detailTab, (current) => {
 .danger-text { color: var(--danger); }.faint { color: var(--text-faint); }.mono { font-family: var(--font-mono); }
 @media (prefers-reduced-motion: reduce) { .share-group-row, .switch, .switch span { transition: none; } }
 @media (max-width: 980px) { .share-group-row { grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) auto; }.group-usage { display: none; }.metric-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }.metric-strip div:nth-child(2) { border-right: 0; }.metric-strip div:nth-child(-n+2) { border-bottom: 1px solid var(--border-soft); } }
-@media (max-width: 720px) { .workspace-header { align-items: flex-start; flex-direction: column; }.workspace-actions { width: 100%; justify-content: flex-start; }.relay-state { width: 100%; }.sync-error-band { grid-template-columns: auto minmax(0, 1fr); }.sync-error-band .btn { grid-column: 2; justify-self: start; }.overview-columns, .rules-grid { grid-template-columns: minmax(0, 1fr); }.share-group-row { grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }.group-facts { grid-column: 1 / -1; }.credential-area { margin-left: 0; }.credential-area > div { grid-template-columns: minmax(0, 1fr) auto auto; }.credential-area label { grid-column: 1 / -1; }.received-policy { margin-left: 0; }.wizard-steps small { display: none; }.share-wizard { width: 100%; height: 100%; max-height: none; border-radius: 0; }.selection-list article { align-items: stretch; flex-direction: column; }.selection-list label { width: 100%; }.compact-select { width: 100%; }.wizard-review section { grid-template-columns: minmax(0, 1fr); }.wizard-review section > span { grid-row: auto; }.detail-drawer { width: 100%; }.drawer-list article { align-items: flex-start; flex-wrap: wrap; }.usage-summary { grid-template-columns: minmax(0, 1fr); }.usage-summary div { border-right: 0; border-bottom: 1px solid var(--border-soft); } }
+@media (max-width: 720px) { .workspace-header { align-items: flex-start; flex-direction: column; }.workspace-actions { width: 100%; justify-content: flex-start; }.relay-state { width: 100%; }.sync-error-band { grid-template-columns: auto minmax(0, 1fr); }.sync-error-actions { grid-column: 2; flex-wrap: wrap; justify-self: start; }.overview-columns, .rules-grid { grid-template-columns: minmax(0, 1fr); }.share-group-row { grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }.group-facts { grid-column: 1 / -1; }.credential-area { margin-left: 0; }.credential-area > div { grid-template-columns: minmax(0, 1fr) auto auto; }.credential-area label { grid-column: 1 / -1; }.received-policy { margin-left: 0; }.wizard-steps small { display: none; }.share-wizard { width: 100%; height: 100%; max-height: none; border-radius: 0; }.selection-list article { align-items: stretch; flex-direction: column; }.selection-list label { width: 100%; }.compact-select { width: 100%; }.wizard-review section { grid-template-columns: minmax(0, 1fr); }.wizard-review section > span { grid-row: auto; }.detail-drawer { width: 100%; }.drawer-list article { align-items: flex-start; flex-wrap: wrap; }.usage-summary { grid-template-columns: minmax(0, 1fr); }.usage-summary div { border-right: 0; border-bottom: 1px solid var(--border-soft); } }
 </style>

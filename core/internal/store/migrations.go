@@ -16,7 +16,7 @@ import (
 	appcrypto "sub2api-desktop/core/internal/crypto"
 )
 
-const CurrentSchemaVersion = 12
+const CurrentSchemaVersion = 13
 
 type migration struct {
 	version int
@@ -37,6 +37,22 @@ var migrations = []migration{
 	{version: 10, name: "v0.3.2 account concurrency queue", apply: migrateV032AccountConcurrencyQueue},
 	{version: 11, name: "v0.3.3 cloud sync outbox", apply: migrateV033CloudSyncOutbox},
 	{version: 12, name: "v0.4.0 cloud identity and received shares", apply: migrateV040CloudSharing},
+	{version: 13, name: "v0.4.1 device cloud connection settings", apply: migrateV041CloudConnection},
+}
+
+func migrateV041CloudConnection(tx *sql.Tx, _ *appcrypto.Cipher) error {
+	_, err := tx.Exec(`CREATE TABLE IF NOT EXISTS cloud_connection_settings (
+		id INTEGER PRIMARY KEY CHECK (id=1),
+		mode TEXT NOT NULL DEFAULT 'system' CHECK (mode IN ('system','proxy','direct')),
+		proxy_id INTEGER REFERENCES proxies(id) ON DELETE SET NULL,
+		updated_at INTEGER NOT NULL
+	)`)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(`INSERT INTO cloud_connection_settings(id,mode,proxy_id,updated_at)
+		VALUES(1,'system',NULL,unixepoch()) ON CONFLICT(id) DO NOTHING`)
+	return err
 }
 
 func migrateV040CloudSharing(tx *sql.Tx, _ *appcrypto.Cipher) error {

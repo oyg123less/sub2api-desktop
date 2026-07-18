@@ -22,11 +22,16 @@ export function requireJSONSize(c: Context, maxBytes = 128 * 1024): void {
   }
 }
 
-export async function readJSON<T>(c: Context): Promise<T> {
-  requireJSONSize(c);
+export async function readJSON<T>(c: Context, maxBytes = 128 * 1024): Promise<T> {
+  requireJSONSize(c, maxBytes);
   try {
-    return await c.req.json<T>();
-  } catch {
+    const text = await c.req.text();
+    if (new TextEncoder().encode(text).byteLength > maxBytes) {
+      throw new AppError(413, "request_too_large", "The request body is too large.");
+    }
+    return JSON.parse(text) as T;
+  } catch (error) {
+    if (error instanceof AppError) throw error;
     throw new AppError(400, "invalid_json", "The request body must be valid JSON.");
   }
 }

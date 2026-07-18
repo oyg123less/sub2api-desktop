@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { api, type CloudAdminOverview, type CloudAdminUser, type CloudStatus } from "../api/control";
+import { api, type CloudAdminOverview, type CloudAdminUser, type CloudNetworkProbe, type CloudNetworkSettings, type CloudStatus, type Proxy } from "../api/control";
 import ConfirmModal from "../components/ConfirmModal.vue";
 import CloudWorkspace from "../components/cloud/CloudWorkspace.vue";
 import Icon from "../components/Icon.vue";
@@ -42,6 +42,13 @@ const deleteTarget = ref<CloudAdminUser | null>(null);
 const deleteFirstOpen = ref(false);
 const deleteFinalOpen = ref(false);
 const deleteConfirmText = ref("");
+const networkOpen = ref(false);
+const networkBusy = ref("");
+const networkSettings = ref<CloudNetworkSettings | null>(null);
+const networkMode = ref<CloudNetworkSettings["mode"]>("system");
+const networkProxyID = ref<number | null>(null);
+const networkProxies = ref<Proxy[]>([]);
+const networkProbe = ref<CloudNetworkProbe | null>(null);
 
 const pendingVerification = computed(() => Boolean(status.value?.pending_verification));
 const authenticated = computed(() => Boolean(status.value?.authenticated));
@@ -202,6 +209,62 @@ async function syncNow(silent = false) {
     await refreshStatus();
   } finally {
     busy.value = "";
+  }
+}
+
+async function openNetworkSettings() {
+  networkOpen.value = true;
+  networkBusy.value = "load";
+  networkProbe.value = null;
+  try {
+    const [settings, proxyResult] = await Promise.all([api.cloudNetwork(), api.listProxies()]);
+    networkSettings.value = settings;
+    networkMode.value = settings.mode;
+    networkProxyID.value = settings.proxy_id ?? null;
+    networkProxies.value = proxyResult.proxies || [];
+  } catch (error) {
+    app.toast((error as Error).message, "error");
+  } finally {
+    networkBusy.value = "";
+  }
+}
+
+async function runNetworkProbe() {
+  networkBusy.value = "probe";
+  try {
+    networkProbe.value = await api.probeCloudNetwork();
+    if (networkProbe.value.ok) app.toast(t("cloud.networkProbePassed"), "success");
+  } catch (error) {
+    app.toast((error as Error).message, "error");
+  } finally {
+    networkBusy.value = "";
+  }
+}
+
+async function applyNetworkAndRetry() {
+  if (networkMode.value === "proxy" && !networkProxyID.value) {
+    app.toast(t("cloud.networkProxyRequired"), "error");
+    return;
+  }
+  networkBusy.value = "apply";
+  try {
+    networkSettings.value = await api.saveCloudNetwork({
+      mode: networkMode.value,
+      proxy_id: networkMode.value === "proxy" ? networkProxyID.value : null,
+    });
+    networkProbe.value = await api.probeCloudNetwork();
+    if (!networkProbe.value.ok) {
+      app.toast(networkProbe.value.error || t("cloud.networkProbeFailed"), "error");
+      return;
+    }
+    status.value = normalizeStatus(await api.cloudSync());
+    networkOpen.value = false;
+    app.toast(t("cloud.networkRecovered"), "success");
+  } catch (error) {
+    app.toast((error as Error).message, "error");
+    await refreshStatus();
+  } finally {
+    networkBusy.value = "";
   }
 }
 
@@ -475,10 +538,49 @@ onUnmounted(() => {
         :busy="busy"
         :admin-open="adminOpen"
         @sync="syncNow(false)"
+        @network="openNetworkSettings"
         @logout="logout"
         @admin="adminOpen ? closeAdmin() : adminOpen = true"
         @password="passwordOpen = true"
       />
+
+      <div v-if="networkOpen" class="modal-backdrop" @click.self="networkBusy ? undefined : networkOpen = false">
+        <div class="modal cloud-network-modal" data-test="cloud-network-modal" role="dialog" aria-modal="true" @keydown.esc="networkBusy ? undefined : networkOpen = false">
+          <div class="network-heading">
+            <div><h3 class="modal-title">{{ t("cloud.networkTitle") }}</h3><p class="modal-desc">{{ t("cloud.networkDesc") }}</p></div>
+            <button class="btn btn-ghost btn-sm" type="button" :disabled="networkBusy !== ''" @click="networkOpen = false">{{ t("common.close") }}</button>
+          </div>
+          <div class="network-modes" role="group" :aria-label="t('cloud.networkMode')">
+            <button v-for="modeOption in (['system', 'proxy', 'direct'] as const)" :key="modeOption" type="button" :class="{ active: networkMode === modeOption }" :disabled="networkBusy !== ''" @click="networkMode = modeOption">{{ t(`cloud.networkModeOption.${modeOption}`) }}</button>
+          </div>
+          <label v-if="networkMode === 'proxy'" class="field">
+            <span class="field-label">{{ t("cloud.networkProxy") }}</span>
+            <select v-model.number="networkProxyID" data-test="cloud-network-proxy" class="select" :disabled="networkBusy !== ''">
+              <option :value="null">{{ t("cloud.networkProxyPlaceholder") }}</option>
+              <option v-for="proxy in networkProxies" :key="proxy.id" :value="proxy.id">{{ proxy.name }} ({{ proxy.type.toUpperCase() }})</option>
+            </select>
+          </label>
+          <div v-if="networkSettings" class="network-current">
+            <span>{{ t("cloud.networkCurrent") }}</span>
+            <strong>{{ networkSettings.proxy_name || t(`cloud.networkSource.${networkSettings.effective_source}`) }}</strong>
+          </div>
+          <div v-if="networkProbe" class="network-probe" :class="{ failed: !networkProbe.ok }" data-test="cloud-network-probe">
+            <div class="network-probe-head"><strong>{{ networkProbe.ok ? t("cloud.networkProbePassed") : t("cloud.networkProbeFailed") }}</strong><span class="mono">{{ networkProbe.target }}</span></div>
+            <div class="network-stages">
+              <div v-for="stage in networkProbe.stages" :key="stage.id" :class="`stage-${stage.status}`">
+                <Icon :name="stage.status === 'ok' ? 'check' : stage.status === 'failed' ? 'warn' : 'info'" :size="14" />
+                <span>{{ t(`cloud.networkStage.${stage.id}`) }}</span>
+                <small>{{ stage.http_status || (stage.latency_ms != null ? `${stage.latency_ms} ms` : t(`cloud.networkStageStatus.${stage.status}`)) }}</small>
+              </div>
+            </div>
+            <p v-if="networkProbe.error">{{ networkProbe.error }}</p>
+          </div>
+          <div class="modal-actions">
+            <button class="btn btn-ghost" type="button" :disabled="networkBusy !== ''" @click="runNetworkProbe"><Icon name="activity" :size="14" />{{ networkBusy === "probe" ? t("cloud.networkProbing") : t("cloud.networkProbe") }}</button>
+            <button class="btn btn-primary" data-test="cloud-network-apply" type="button" :disabled="networkBusy !== '' || (networkMode === 'proxy' && !networkProxyID)" @click="applyNetworkAndRetry"><Icon name="refresh" :size="14" :class="{ spin: networkBusy === 'apply' }" />{{ networkBusy === "apply" ? t("cloud.networkApplying") : t("cloud.networkApplyRetry") }}</button>
+          </div>
+        </div>
+      </div>
 
       <section v-if="status.role === 'admin' && adminOpen" class="cloud-admin-shell" data-test="cloud-admin-panel">
         <div class="section-toolbar admin-heading">
@@ -608,6 +710,23 @@ onUnmounted(() => {
 
 <style scoped>
 .cloud-page { width: 100%; max-width: 1240px; margin: 0 auto; }
+.cloud-network-modal { width: min(680px, calc(100vw - 32px)); max-width: 680px; }
+.network-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.network-modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; margin: 18px 0; padding: 4px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-elev); }
+.network-modes button { min-height: 36px; border: 0; border-radius: 5px; background: transparent; color: var(--text-dim); cursor: pointer; }
+.network-modes button.active { background: var(--bg-card); color: var(--text); box-shadow: var(--shadow-xs); }
+.network-current { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: 6px; color: var(--text-faint); }
+.network-current strong { color: var(--text); }
+.network-probe { margin-top: 14px; padding: 14px; border: 1px solid color-mix(in srgb, var(--success) 35%, var(--border)); border-radius: 7px; background: var(--success-soft); }
+.network-probe.failed { border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); background: var(--danger-soft); }
+.network-probe-head { display: flex; justify-content: space-between; gap: 12px; }
+.network-probe-head span { min-width: 0; overflow: hidden; color: var(--text-faint); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.network-stages { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.network-stages > div { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 3px 6px; padding: 8px; border: 1px solid var(--border-soft); border-radius: 6px; background: var(--bg-card); }
+.network-stages small { grid-column: 2; color: var(--text-faint); }
+.network-stages .stage-ok { color: var(--success); }.network-stages .stage-failed { color: var(--danger); }.network-stages .stage-skipped, .network-stages .stage-not_run { color: var(--text-faint); }
+.network-probe > p { margin: 10px 0 0; color: var(--danger); overflow-wrap: anywhere; }
+@media (max-width: 620px) { .network-stages { grid-template-columns: repeat(2, minmax(0, 1fr)); }.network-modes { grid-template-columns: minmax(0, 1fr); } }
 .cloud-auth-shell { width: min(460px, 100%); margin: 28px auto 0; }
 .cloud-panel { min-width: 0; padding: 20px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--bg-card); }
 .cloud-skeleton { display: grid; gap: 12px; }

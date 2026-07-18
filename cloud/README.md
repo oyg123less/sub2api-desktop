@@ -1,6 +1,6 @@
 # Amber Cloud
 
-Cloudflare Worker for Amber v0.3.3. It provides account verification, short-lived access sessions, revocable refresh sessions, idempotent encrypted vault synchronization, and administrator governance. Vault payloads are opaque AES-256-GCM ciphertext; this service does not receive a vault key or plaintext upstream credential.
+Cloudflare Worker for Amber v0.4.0. It provides account verification, short-lived access sessions, revocable refresh sessions, idempotent encrypted vault synchronization, Cloud 2.0 sharing, and administrator governance. Vault payloads are opaque AES-256-GCM ciphertext; this service does not receive a vault key or plaintext upstream credential.
 
 ## Resources
 
@@ -21,13 +21,14 @@ Never put production values in `.dev.vars`, source files, CI logs, or `wrangler.
 npx wrangler secret put JWT_SECRET
 npx wrangler secret put TURNSTILE_SECRET
 npx wrangler secret put RESEND_API_KEY
+npx wrangler secret put RESEND_WEBHOOK_SECRET
 npx wrangler secret put ADMIN_API_KEY
 npx wrangler secret put SHARE_KMS_KEY
 ```
 
 `JWT_SECRET`, `ADMIN_API_KEY`, and `SHARE_KMS_KEY` must be independent random values of at least 32 bytes. Set `RESEND_FROM` to a verified Resend sender and `TURNSTILE_HOSTNAME` to the production desktop registration host when deploying.
 
-The production `RESEND_FROM` uses the verified `mail.amberapp.asia` sender domain. Keep alternative development senders outside production configuration.
+The production `RESEND_FROM` uses `Amber Verification <verify@mail.amberapp.asia>` on the verified sender domain. Keep alternative development senders outside production configuration. Configure the Resend webhook endpoint as `https://<worker-host>/v1/webhooks/resend`, subscribe to sent, delivered, delayed, bounced, complained, failed, and suppressed events, then store its `whsec_...` signing secret with `wrangler secret put RESEND_WEBHOOK_SECRET`.
 
 ## Local development
 
@@ -50,7 +51,8 @@ All API errors use stable codes and a request ID. Request bodies, vault cipherte
 
 ## API outline
 
-- `POST /v1/auth/register`, `POST /v1/auth/resend-verification`, and `POST /v1/auth/verify-email` implement email verification.
+- `POST /v1/auth/register`, `POST /v1/auth/resend-verification`, and `POST /v1/auth/verify-email` implement 15-minute email verification. A resend keeps only the immediately previous code valid for a three-minute delivery grace period.
+- `POST /v1/webhooks/resend` verifies Svix signatures and stores only delivery event metadata; recipient addresses, message bodies, and verification codes are never persisted.
 - `POST /v1/auth/parameters` returns only the KDF and authentication salts; the wrapped vault key is returned only by a successful `POST /v1/auth/login`.
 - `POST /v1/auth/refresh` rotates refresh tokens, while `POST /v1/auth/logout` revokes one session.
 - `PUT /v1/auth/master-password` rewraps the vault key and invalidates every existing session.

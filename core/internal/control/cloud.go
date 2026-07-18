@@ -24,6 +24,55 @@ func (c *Control) cloudStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, c.cloud.Status())
 }
 
+func (c *Control) cloudNetworkSettings(w http.ResponseWriter, _ *http.Request) {
+	if c.cloud == nil {
+		writeControlError(w, http.StatusServiceUnavailable, "cloud_unavailable", "Amber Cloud is unavailable", true, nil)
+		return
+	}
+	settings, err := c.cloud.NetworkSettings()
+	if err != nil {
+		writeControlError(w, http.StatusInternalServerError, "cloud_network_settings_failed", err.Error(), true, nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (c *Control) cloudNetworkUpdate(w http.ResponseWriter, r *http.Request) {
+	if c.cloud == nil {
+		writeControlError(w, http.StatusServiceUnavailable, "cloud_unavailable", "Amber Cloud is unavailable", true, nil)
+		return
+	}
+	var request struct {
+		Mode    store.CloudConnectionMode `json:"mode"`
+		ProxyID *int64                    `json:"proxy_id"`
+	}
+	if !decodeCloudRequest(w, r, &request) {
+		return
+	}
+	settings, err := c.cloud.UpdateNetworkSettings(store.CloudConnectionSettings{Mode: request.Mode, ProxyID: request.ProxyID})
+	if err != nil {
+		status := http.StatusBadRequest
+		code := "invalid_cloud_network_settings"
+		if errors.Is(err, store.ErrNotFound) || strings.Contains(strings.ToLower(err.Error()), "unavailable") {
+			status = http.StatusNotFound
+			code = "cloud_proxy_missing"
+		}
+		writeControlError(w, status, code, err.Error(), false, nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (c *Control) cloudNetworkProbe(w http.ResponseWriter, r *http.Request) {
+	if c.cloud == nil {
+		writeControlError(w, http.StatusServiceUnavailable, "cloud_unavailable", "Amber Cloud is unavailable", true, nil)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
+	writeJSON(w, http.StatusOK, c.cloud.ProbeNetwork(ctx))
+}
+
 func (c *Control) cloudRegister(w http.ResponseWriter, r *http.Request) {
 	if c.cloud == nil {
 		writeControlError(w, http.StatusServiceUnavailable, "cloud_unavailable", "Amber Cloud is unavailable", true, nil)

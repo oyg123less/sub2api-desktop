@@ -53,6 +53,8 @@ type mockCloud struct {
 	receipts     map[string][]byte
 	pushCalls    int
 	dropPush     bool
+	maxPushBody  int
+	rejectAbove  int
 }
 
 func newMockCloud() *mockCloud {
@@ -148,6 +150,12 @@ func (m *mockCloud) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		raw.Write(payload)
 		m.lastUpload = raw.String()
+		m.maxPushBody = max(m.maxPushBody, len(payload))
+		if m.rejectAbove > 0 && len(payload) > m.rejectAbove {
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			_, _ = w.Write([]byte(`{"error":{"code":"request_too_large","message":"The request body is too large."}}`))
+			return
+		}
 		if err := json.Unmarshal(payload, &body); err != nil {
 			http.Error(w, "bad", http.StatusBadRequest)
 			return
@@ -435,6 +443,71 @@ func TestSyncResumesPersistedOutboxAfterResponseLoss(t *testing.T) {
 	cloud.mu.Unlock()
 	if remoteVersion != 1 {
 		t.Fatalf("remote version=%d after replay, want 1", remoteVersion)
+	}
+}
+
+func TestSyncSplitsOversizedPersistedOutbox(t *testing.T) {
+	cloud := newMockCloud()
+	server := httptest.NewServer(cloud)
+	defer server.Close()
+	st := openTestStore(t, "oversized-outbox")
+	manager := NewManager(st, &testSettings{value: store.DefaultSettings()}, server.URL, "site-key", server.Client(), nil)
+	t.Cleanup(manager.Close)
+	ctx := context.Background()
+	if err := manager.Register(ctx, RegisterInput{Email: "large@example.test", Password: "correct horse battery staple", TurnstileToken: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.VerifyEmail(ctx, "large@example.test", "123456"); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 8; index++ {
+		if _, err := st.CreateAccount(&store.Account{
+			AccountType: store.AccountTypeAPIKey,
+			BaseURL:     "https://api.openai.com/v1",
+			APIKey:      "sk-" + strings.Repeat(string(rune('a'+index)), 160*1024),
+			Email:       fmt.Sprintf("large-%d@example.test", index),
+			Status:      store.AccountActive,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manager.mu.RLock()
+	vaultKey := append([]byte(nil), manager.vaultKey...)
+	manager.mu.RUnlock()
+	defer wipe(vaultKey)
+	items, err := manager.collectDirty(vaultKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(syncOutboxPayload{Items: items})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) <= cloudPushMaxBytes {
+		t.Fatalf("legacy payload=%d, want more than %d", len(payload), cloudPushMaxBytes)
+	}
+	if err := st.SaveCloudOutboxBatch("amber-sync-legacy-oversized-0001", payload); err != nil {
+		t.Fatal(err)
+	}
+	cloud.mu.Lock()
+	cloud.rejectAbove = cloudPushMaxBytes
+	cloud.mu.Unlock()
+	if err := manager.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	outbox, err := st.ListCloudOutboxBatches()
+	if err != nil || len(outbox) != 0 {
+		t.Fatalf("outbox=%d err=%v after split recovery", len(outbox), err)
+	}
+	pending, err := st.PendingCloudCount()
+	if err != nil || pending != 0 {
+		t.Fatalf("pending=%d err=%v after split recovery", pending, err)
+	}
+	cloud.mu.Lock()
+	pushCalls, maxPushBody := cloud.pushCalls, cloud.maxPushBody
+	cloud.mu.Unlock()
+	if pushCalls < 2 || maxPushBody > cloudPushMaxBytes {
+		t.Fatalf("pushCalls=%d maxPushBody=%d, limit=%d", pushCalls, maxPushBody, cloudPushMaxBytes)
 	}
 }
 

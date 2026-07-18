@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -38,7 +39,9 @@ func (e *CloudError) Error() string {
 
 type cloudClient struct {
 	baseURL     string
+	mu          sync.RWMutex
 	http        *http.Client
+	configErr   error
 	retryDelays []time.Duration
 }
 
@@ -65,6 +68,33 @@ func newCloudClient(baseURL string, httpClient *http.Client) (*cloudClient, erro
 }
 
 func (c *cloudClient) configured() bool { return c != nil && c.baseURL != "" }
+
+func (c *cloudClient) setHTTPClient(httpClient *http.Client, configErr error) {
+	c.mu.Lock()
+	c.http = httpClient
+	c.configErr = configErr
+	c.mu.Unlock()
+}
+
+func (c *cloudClient) httpClient() (*http.Client, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.configErr != nil {
+		return nil, c.configErr
+	}
+	if c.http == nil {
+		return nil, errors.New("Amber Cloud HTTP client is unavailable")
+	}
+	return c.http, nil
+}
+
+func (c *cloudClient) do(request *http.Request) (*http.Response, error) {
+	httpClient, err := c.httpClient()
+	if err != nil {
+		return nil, err
+	}
+	return httpClient.Do(request)
+}
 
 type registerRequest struct {
 	Email           string `json:"email"`
@@ -338,6 +368,9 @@ func (c *cloudClient) doJSONWithHeaders(ctx context.Context, method, path, acces
 	if !c.configured() {
 		return &CloudError{Status: http.StatusServiceUnavailable, Code: "cloud_not_configured", Message: "Amber Cloud is not configured", Stage: "local"}
 	}
+	if _, err := c.httpClient(); err != nil {
+		return &CloudError{Status: http.StatusServiceUnavailable, Code: "cloud_proxy_missing", Message: err.Error(), Stage: "local", Retryable: false}
+	}
 	var encoded []byte
 	if body != nil {
 		var err error
@@ -360,7 +393,7 @@ func (c *cloudClient) doJSONWithHeaders(ctx context.Context, method, path, acces
 			return err
 		}
 		request.Header.Set("Accept", "application/json")
-		request.Header.Set("User-Agent", "Amber/0.4.0")
+		request.Header.Set("User-Agent", "Amber/0.4.1")
 		if body != nil {
 			request.Header.Set("Content-Type", "application/json")
 		}
@@ -370,7 +403,7 @@ func (c *cloudClient) doJSONWithHeaders(ctx context.Context, method, path, acces
 		for key, value := range extraHeaders {
 			request.Header.Set(key, value)
 		}
-		response, err := c.http.Do(request)
+		response, err := c.do(request)
 		if err != nil {
 			cloudErr := cloudTransportError(err, attempt)
 			if attempt < attempts && sleepContext(ctx, c.retryDelay(attempt, 0)) == nil {

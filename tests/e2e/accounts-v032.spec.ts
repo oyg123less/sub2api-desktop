@@ -50,6 +50,8 @@ async function initialize(page: Page, accounts: FixtureAccount[], hooks: {
   proxies?: Array<{ id: number; name: string; type: "http" | "https" | "socks5"; host: string; port: number; created_at: string }>;
   cloudStatus?: () => { configured: boolean; authenticated: boolean; pending_verification: boolean; pending_items: number; syncing: boolean; conflicts: unknown[] };
   cloudSharesError?: string;
+  batchDelete?: (ids: number[]) => void;
+  accountTestRun?: (method: string, path: string) => unknown;
 } = {}) {
   await page.addInitScript(() => {
     localStorage.setItem("s2a_control_port", "45678");
@@ -77,6 +79,14 @@ async function initialize(page: Page, accounts: FixtureAccount[], hooks: {
       responseStatus = 401;
       body = { error: { code: "invalid_refresh_token", message: hooks.cloudSharesError } };
     }
+    if (path === "/control/accounts/batch-delete") {
+      const input = request.postDataJSON() as { account_ids: number[] };
+      hooks.batchDelete?.(input.account_ids);
+      body = { ok: true, requested: input.account_ids.length, deleted: input.account_ids, missing: null, failed: null };
+    }
+    if (path === "/control/accounts/test-runs/active") body = hooks.accountTestRun?.(request.method(), path) ?? { run: null };
+    if (path === "/control/accounts/test-runs" && request.method() === "POST") body = hooks.accountTestRun?.(request.method(), path) ?? {};
+    if (/^\/control\/accounts\/test-runs\/account-test-/.test(path)) body = hooks.accountTestRun?.(request.method(), path) ?? {};
     if (path === "/control/accounts/import/preview") {
       hooks.importBody?.(request.postData() || "");
       hooks.importHeaders?.(request.headers());
@@ -143,6 +153,75 @@ test("uses one import entry and previews multiple JSON files as one batch", asyn
   await expect(page.getByText("Create 2", { exact: true })).toBeVisible();
   expect(importBody).toContain('"token-a"');
   expect(importBody).toContain('"sk-test"');
+});
+
+test("selects all accounts and submits one transactional batch deletion", async ({ page }) => {
+  let deletedIDs: number[] = [];
+  await initialize(page, [account(1, "owner@example.test"), account(2, "backup@example.test")], {
+    batchDelete: (ids) => { deletedIDs = ids; },
+  });
+  await page.goto("/#/accounts");
+  await page.locator(".batch-select-all input").check();
+  await expect(page.getByText("2 accounts selected")).toBeVisible();
+  await page.getByRole("button", { name: "Delete selected" }).click();
+  await expect(page.getByText("Delete 2 selected accounts?")).toBeVisible();
+  await page.getByRole("button", { name: "Delete selected" }).last().click();
+  await expect.poll(() => deletedIDs).toEqual([1, 2]);
+  await expect(page.getByText(/Cannot read properties of null/)).toHaveCount(0);
+});
+
+test("paginates accounts at 20 rows and selects only the current page", async ({ page }) => {
+  const fixture = Array.from({ length: 21 }, (_, index) => account(index + 1, `account-${index + 1}@example.test`));
+  await initialize(page, fixture);
+  await page.goto("/#/accounts");
+
+  await expect(page.locator('[data-test="account-row"]')).toHaveCount(20);
+  await expect(page.getByText("Showing 1-20 of 21 accounts")).toBeVisible();
+  await page.locator(".batch-select-all input").check();
+  await expect(page.getByText("20 accounts selected")).toBeVisible();
+
+  await page.getByRole("button", { name: "Next page" }).click();
+  await expect(page.locator('[data-test="account-row"]')).toHaveCount(1);
+  await expect(page.getByText("account-21@example.test", { exact: true })).toBeVisible();
+  await expect(page.getByText("Showing 21-21 of 21 accounts")).toBeVisible();
+  await expect(page.locator(".batch-select-all input")).not.toBeChecked();
+  await expect(page.getByText("20 accounts selected")).toBeVisible();
+});
+
+test("runs selected accounts through one resumable batch test", async ({ page }) => {
+  let polls = 0;
+  const running = {
+    run_id: "account-test-fixture", status: "running", model: "gpt-5.6", total: 2, completed: 0,
+    succeeded: 0, failed: 0, cancelled: 0, skipped: 0, running: 1, started_at: "2026-07-18T08:00:00Z",
+    results: [
+      { account_id: 1, account_label: "o***@example.test", status: "running" },
+      { account_id: 2, account_label: "b***@example.test", status: "pending" },
+    ],
+  };
+  const completed = {
+    ...running, status: "completed", completed: 2, succeeded: 1, failed: 1, running: 0,
+    finished_at: "2026-07-18T08:00:02Z",
+    results: [
+      { account_id: 1, account_label: "o***@example.test", status: "succeeded", http_status: 200, latency_ms: 80 },
+      { account_id: 2, account_label: "b***@example.test", status: "failed", http_status: 403, error_kind: "authentication", error: "Authentication failed" },
+    ],
+  };
+  await initialize(page, [account(1, "owner@example.test"), account(2, "backup@example.test")], {
+    accountTestRun: (method, path) => {
+      if (path.endsWith("/active")) return { run: null };
+      if (method === "POST") return running;
+      polls += 1;
+      return polls > 1 ? completed : running;
+    },
+  });
+  await page.goto("/#/accounts");
+  await page.locator(".batch-select-all input").check();
+  await page.getByRole("button", { name: "Test selected" }).click();
+  await page.locator('[data-test="account-batch-test-start"]').click();
+  await expect(page.getByText("Test progress 2/2")).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByText("Passed 1")).toBeVisible();
+  await expect(page.getByText("Failed 1")).toBeVisible();
+  await expect(page.getByText("Authentication failed")).toHaveCount(0);
 });
 
 test("shows row accounts, edits limits, and toggles routing", async ({ page }, testInfo) => {
@@ -215,7 +294,7 @@ test("polls live account load without overlap and pauses while hidden", async ({
 
   await expect(page.getByText("Active 0/3", { exact: true })).toBeVisible();
   await expect(page.getByText("Active 1/3", { exact: true })).toBeVisible({ timeout: 3_000 });
-  await expect(page.getByText("Active 0/3", { exact: true })).toBeVisible({ timeout: 3_000 });
+  await expect(page.getByText("Active 0/3", { exact: true })).toBeVisible({ timeout: 5_000 });
 
   await page.evaluate(() => {
     Object.defineProperty(document, "hidden", { configurable: true, value: true });

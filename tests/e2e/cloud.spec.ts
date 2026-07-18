@@ -130,7 +130,7 @@ test("logs in, synchronizes, and logs out without exposing session credentials",
   await page.locator('[data-test="cloud-email"]').fill("owner@example.test");
   await page.locator('[data-test="cloud-password"]').fill("fixture-master-password");
   await page.locator('[data-test="cloud-login"]').click();
-  await expect(page.getByRole("heading", { name: "owner@example.test" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "owner" })).toBeVisible();
   await expect(page.locator('[data-test="cloud-sync"]')).toBeVisible();
   await expect(page.locator('[data-test="cloud-admin-open"]')).toHaveCount(0);
   expect(syncCalls).toBe(1);
@@ -232,6 +232,52 @@ test("shows staged sync failures and clears them after a retry", async ({ page }
   await page.locator('[data-test="cloud-sync-retry"]').click();
   expect(syncCalls).toBe(1);
   await expect(page.getByText("The latest sync failed")).toHaveCount(0);
+});
+
+test("switches Amber Cloud to a saved proxy, probes health, and retries without logging out", async ({ page }) => {
+  await initialize(page);
+  let recovered = false;
+  let savedNetwork: unknown;
+  const cloudStatus = () => ({
+    configured: true, authenticated: true, pending_verification: false, email: "owner@example.test", role: "user",
+    pending_items: recovered ? 0 : 1, syncing: false, consecutive_failures: recovered ? 0 : 3, conflicts: [],
+    last_error: recovered ? undefined : "Amber Cloud DNS lookup failed",
+    last_error_code: recovered ? undefined : "cloud_dns_failed",
+    last_error_stage: recovered ? undefined : "dns",
+  });
+  await page.route("http://127.0.0.1:45678/control/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    let body: unknown = localStatus;
+    if (path === "/control/cloud/status") body = cloudStatus();
+    if (path === "/control/cloud/workspace") body = emptyWorkspace("owner@example.test");
+    if (path === "/control/accounts") body = { accounts: [], usage: {} };
+    if (path === "/control/proxies") body = { proxies: [{ id: 7, name: "Tokyo relay", type: "socks5", host: "127.0.0.1", port: 1080, created_at: "" }] };
+    if (path === "/control/cloud/network" && request.method() === "GET") body = { mode: "system", effective_source: "direct" };
+    if (path === "/control/cloud/network" && request.method() === "PUT") {
+      savedNetwork = request.postDataJSON();
+      body = { mode: "proxy", proxy_id: 7, proxy_name: "Tokyo relay", proxy_type: "socks5", effective_source: "amber_proxy" };
+    }
+    if (path === "/control/cloud/network/probe") body = {
+      ok: true, target: "amber-cloud-api.example.test", effective_source: "amber_proxy", proxy_name: "Tokyo relay", proxy_type: "socks5",
+      stages: [
+        { id: "dns", status: "ok", latency_ms: 5 }, { id: "connect", status: "ok", latency_ms: 20 },
+        { id: "tls", status: "ok", latency_ms: 30 }, { id: "http", status: "ok", latency_ms: 45, http_status: 200 },
+      ],
+    };
+    if (path === "/control/cloud/sync") { recovered = true; body = cloudStatus(); }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+
+  await page.goto("/#/cloud");
+  await page.locator('[data-test="cloud-network-open"]').click();
+  await page.getByRole("button", { name: "Use Amber proxy" }).click();
+  await page.locator('[data-test="cloud-network-proxy"]').selectOption("7");
+  await page.locator('[data-test="cloud-network-apply"]').click();
+  await expect.poll(() => savedNetwork).toEqual({ mode: "proxy", proxy_id: 7 });
+  await expect(page.locator('[data-test="cloud-network-modal"]')).toHaveCount(0);
+  await expect(page.getByText("The latest sync failed")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "owner" })).toBeVisible();
 });
 
 test("keeps administrator governance behind a transient second factor", async ({ page }) => {

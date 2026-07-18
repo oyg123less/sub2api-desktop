@@ -107,6 +107,23 @@ describe("authentication", () => {
   });
 
   it("resends verification without enumeration and limits each email to three attempts per hour", async () => {
+    const graceEmail = "pending-grace@example.test";
+    const graceRegistration = await jsonRequest("/v1/auth/register", {
+      email: graceEmail,
+      turnstile_token: "test-pass",
+      auth_hash: authHash,
+      salt_kdf: saltKDF,
+      salt_auth: saltAuth,
+      wrapped_vault_key: wrappedVaultKey,
+    });
+    expect(graceRegistration.status).toBe(202);
+    const previousCode = await env.SESSIONS.get(`test-mail:${await sha256(graceEmail)}`);
+    const graceResend = await jsonRequest("/v1/auth/resend-verification", { email: graceEmail });
+    expect(graceResend.status).toBe(202);
+    const currentCode = await env.SESSIONS.get(`test-mail:${await sha256(graceEmail)}`);
+    expect(currentCode).not.toBe(previousCode);
+    expect((await jsonRequest("/v1/auth/verify-email", { email: graceEmail, code: previousCode })).status).toBe(200);
+
     const pendingEmail = "pending-resend@example.test";
     const registration = await jsonRequest("/v1/auth/register", {
       email: pendingEmail,
@@ -157,6 +174,30 @@ describe("authentication", () => {
 });
 
 describe("encrypted vault", () => {
+  it("accepts vault batches above the generic JSON limit and below the route limit", async () => {
+    await registerAndVerify();
+    const session = await (await login()).json<{ access_token: string }>();
+    const ciphertext = `v1.${"A".repeat(160 * 1024)}`;
+    const body = JSON.stringify({ items: [{
+      kind: "account",
+      client_uid: "018f1f46-7a19-7cc2-88cb-f577e51d3777",
+      ciphertext,
+      version: 0,
+      deleted: false,
+    }] });
+    expect(new TextEncoder().encode(body).byteLength).toBeGreaterThan(128 * 1024);
+    const response = await SELF.fetch("https://amber.test/v1/vault/batch", {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": "amber-sync-large-route-test-0001",
+      },
+      body,
+    });
+    expect(response.status).toBe(200);
+  });
+
   it("replays an idempotent batch without incrementing the vault version twice", async () => {
     await registerAndVerify();
     const session = await (await login()).json<{ access_token: string }>();

@@ -44,8 +44,10 @@ async function initialize(page: Page) {
       body = { logs: [] };
     } else if (path === "/control/stats") {
       body = {
-        summary: { total_requests: 0, eligible_requests: 0, success_requests: 0, failed_requests: 0, client_cancelled: 0, total_tokens: 0, prompt_tokens: 0, cached_tokens: 0, completion_tokens: 0, reasoning_tokens: 0, estimated_requests: 0, avg_latency_ms: 0 },
-        daily: [], by_model: [], failure_breakdown: [], retention: { days: 30, max_rows: 100000, retained_rows: 0 },
+        summary: { total_requests: 4, eligible_requests: 4, success_requests: 4, failed_requests: 0, client_cancelled: 0, total_tokens: 1000, prompt_tokens: 700, cached_tokens: 200, completion_tokens: 300, reasoning_tokens: 0, estimated_requests: 0, avg_latency_ms: 120, cost_usd: 3015.4344, pricing_fallback_requests: 0 },
+        daily: [{ date: new Date().toISOString().slice(0, 10), requests: 4, total_tokens: 1000, cost_usd: 1842.6159 }],
+        by_model: [{ model: "gpt-5.6-sol", requests: 4, total_tokens: 1000, cost_usd: 3015.4344 }], failure_breakdown: [], retention: { days: 30, max_rows: 100000, retained_rows: 4 },
+        pricing: { version: "2026-07-16", source_url: "https://developers.openai.com/api/docs/pricing", tier: "standard", currency: "USD" },
       };
     } else if (path === "/control/models") {
       body = { models: ["gpt-5.6-sol"], default_model: "gpt-5.6-sol", default_test_model: "gpt-5.6-sol", codex_default_model: "gpt-5.6-sol" };
@@ -82,6 +84,39 @@ test("embeds diagnostics in the settings page", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Run diagnostics" })).toBeVisible();
 });
 
+test("keeps Settings in the sidebar footer and LAN access only on the dashboard", async ({ page }) => {
+  await initialize(page);
+  await page.goto("/#/dashboard");
+  await expect(page.locator('.nav a[href="#/settings"]')).toHaveCount(0);
+  await expect(page.locator('.sidebar-footer a[href="#/settings"]')).toBeVisible();
+  await expect(page.locator(".lan-control")).toHaveCount(1);
+  await page.locator('.sidebar-footer a[href="#/settings"]').click();
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  await expect(page.getByText("Allow LAN access", { exact: true })).toHaveCount(0);
+});
+
+test("shows estimated cost on the dashboard and statistics page", async ({ page }) => {
+  await initialize(page);
+  await page.goto("/#/dashboard");
+  await expect(page.getByText("Estimated cost today")).toBeVisible();
+  await expect(page.getByText("$1.8426K")).toBeVisible();
+  await expect(page.locator('[data-test="dashboard-estimated-cost"]')).toHaveAttribute("title", /\$1,842\.6159/);
+  const dashboardCostFont = await page.locator('[data-test="dashboard-estimated-cost"]').evaluate((element) => getComputedStyle(element).fontFamily);
+  const dashboardMetricFont = await page.locator(".dashboard-stats .stat-value").first().evaluate((element) => getComputedStyle(element).fontFamily);
+  expect(dashboardCostFont).toBe(dashboardMetricFont);
+  await page.locator(".dashboard-stats .stat").first().hover();
+  await expect.poll(() => page.locator(".dashboard-stats .stat").first().evaluate((element) => getComputedStyle(element).transform)).not.toBe("none");
+  await page.goto("/#/statistics");
+  await expect(page.getByText("$3.0154K").first()).toBeVisible();
+  await expect(page.locator('[data-test="statistics-estimated-cost"]')).toHaveAttribute("title", /\$3,015\.4344/);
+  const statisticsCostFont = await page.locator('[data-test="statistics-estimated-cost"]').evaluate((element) => getComputedStyle(element).fontFamily);
+  const statisticsMetricFont = await page.locator(".statistics-metrics .stat-value").first().evaluate((element) => getComputedStyle(element).fontFamily);
+  expect(statisticsCostFont).toBe(statisticsMetricFont);
+  await page.locator(".statistics-metrics .stat").first().hover();
+  await expect.poll(() => page.locator(".statistics-metrics .stat").first().evaluate((element) => getComputedStyle(element).transform)).not.toBe("none");
+  await expect(page.getByText("price version 2026-07-16", { exact: false })).toBeVisible();
+});
+
 test("renders the model plaza from the pricing control API", async ({ page }) => {
   await initialize(page);
   await page.goto("/#/models");
@@ -89,4 +124,51 @@ test("renders the model plaza from the pricing control API", async ({ page }) =>
   await expect(page.getByText("gpt-5.6-sol")).toBeVisible();
   await expect(page.getByText("$30.00")).toBeVisible();
   await expect(page.getByText("2026-07-16", { exact: false })).toBeVisible();
+});
+
+test("organizes the user guide as expandable illustrated chapters", async ({ page }) => {
+  await initialize(page);
+  await page.goto("/#/docs");
+
+  const chapters = page.locator("details.doc-section");
+  await expect(chapters).toHaveCount(10);
+  await expect(chapters.first()).toHaveAttribute("open", "");
+  await expect(chapters.nth(1)).not.toHaveAttribute("open", "");
+
+  const bodyFontSize = await chapters.first().locator(".section-copy > p").first().evaluate((element) => parseFloat(getComputedStyle(element).fontSize));
+  expect(bodyFontSize).toBeGreaterThanOrEqual(15);
+  const imageRatio = await chapters.first().evaluate((chapter) => {
+    const content = chapter.querySelector(".section-content")?.getBoundingClientRect();
+    const image = chapter.querySelector(".doc-image-button")?.getBoundingClientRect();
+    return content && image ? image.width / content.width : 0;
+  });
+  expect(imageRatio).toBeGreaterThan(0.9);
+
+  await chapters.first().locator(".doc-image-button").click();
+  await expect(page.getByRole("dialog", { name: "Dashboard: service state, daily metrics, Base URL, and local API key" })).toBeVisible();
+  await expect(page.locator(".doc-lightbox-content > img")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".doc-lightbox")).toHaveCount(0);
+
+  await chapters.nth(1).locator("summary").click();
+  await expect(chapters.nth(1)).toHaveAttribute("open", "");
+  await expect(chapters.nth(1).locator('img[src*="accounts"]')).toBeVisible();
+  await expect(chapters.nth(1).locator('img[src*="import"]')).toBeVisible();
+
+  await chapters.nth(7).locator("summary").click();
+  await expect(chapters.nth(7).getByText("Click Test connection", { exact: true })).toBeVisible();
+  await expect(chapters.nth(7).getByText("Click Trust and continue in local Amber", { exact: true })).toBeVisible();
+  await expect(chapters.nth(7).locator(".doc-procedure li")).toHaveCount(6);
+  await expect(chapters.nth(7).locator(".doc-image-button")).toHaveCount(3);
+
+  await page.getByRole("button", { name: "Expand all" }).click();
+  await expect(page.locator("details.doc-section[open]")).toHaveCount(10);
+  await page.getByRole("button", { name: "Collapse all" }).click();
+  await expect(page.locator("details.doc-section[open]")).toHaveCount(0);
+
+  const dimensions = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth,
+  }));
+  expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
 });

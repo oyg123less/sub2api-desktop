@@ -8,7 +8,7 @@ import AnimatedNumber from "../components/AnimatedNumber.vue";
 import SkeletonBlock from "../components/SkeletonBlock.vue";
 import { api, type RequestLog, type StatsResponse } from "../api/control";
 import { localDateString } from "../date";
-import { exactTokens, formatTokens } from "../format";
+import { exactTokens, exactUSD, formatTokens, formatUSD } from "../format";
 import { useAppStore } from "../store";
 
 const { t } = useI18n();
@@ -124,8 +124,8 @@ onMounted(load);
 		</div>
     </div>
 
-    <SkeletonBlock v-if="loading" :cards="4" :rows="5" />
-    <div v-show="!loading" class="grid grid-4">
+    <SkeletonBlock v-if="loading" :cards="5" :rows="5" />
+    <div v-show="!loading" class="grid statistics-metrics">
       <div class="stat">
         <div class="stat-label">{{ t("statistics.totalRequests") }}</div>
         <div class="stat-value"><AnimatedNumber :value="stats?.summary.total_requests || 0" /></div>
@@ -137,6 +137,10 @@ onMounted(load);
       <div class="stat">
         <div class="stat-label">{{ t("statistics.totalTokens") }}</div>
         <div class="stat-value" :title="`${exactTokens(stats?.summary.total_tokens)} tokens`"><AnimatedNumber :value="stats?.summary.total_tokens || 0" :formatter="formatTokens" /></div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">{{ t("statistics.estimatedCost") }}</div>
+        <div class="stat-value" data-test="statistics-estimated-cost" :title="`${t('statistics.pricingEstimate')} · ${exactUSD(stats?.summary.cost_usd)}`">{{ formatUSD(stats?.summary.cost_usd) }}</div>
       </div>
       <div class="stat">
         <div class="stat-label">{{ t("statistics.avgLatency") }}</div>
@@ -169,6 +173,7 @@ onMounted(load);
             <span class="mono" style="flex: 1">{{ m.model }}</span>
             <span class="faint text-sm">{{ fmtNum(m.requests) }} {{ t("statistics.requests") }}</span>
             <span class="faint text-sm" style="width: 90px; text-align: right" :title="`${exactTokens(m.total_tokens)} tokens`">{{ formatTokens(m.total_tokens) }} tok</span>
+            <strong class="mono model-cost" :title="exactUSD(m.cost_usd)">{{ formatUSD(m.cost_usd) }}</strong>
           </div>
         </div>
       </div>
@@ -206,6 +211,12 @@ onMounted(load);
         </div>
       </div>
     </div>
+		<div v-show="!loading && stats?.pricing" class="pricing-footnote">
+			<Icon name="info" :size="14" />
+			<span>{{ t("statistics.pricingFootnote", { tier: stats?.pricing.tier, version: stats?.pricing.version }) }}</span>
+			<a :href="stats?.pricing.source_url" target="_blank" rel="noreferrer">{{ t("statistics.pricingSource") }}</a>
+			<span v-if="stats?.summary.pricing_fallback_requests" class="text-warn">{{ t("statistics.pricingFallback", { count: stats?.summary.pricing_fallback_requests }) }}</span>
+		</div>
 
 		<ConfirmModal
 			:open="clearOpen"
@@ -220,6 +231,12 @@ onMounted(load);
 </template>
 
 <style scoped>
+.statistics-metrics { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.statistics-metrics .stat { transform-origin: center; transition: transform var(--motion-normal) var(--motion-ease), box-shadow var(--motion-normal) var(--motion-ease), border-color var(--motion-fast) var(--motion-ease); }
+.statistics-metrics .stat:hover { transform: translateY(-2px) scale(1.01); border-color: var(--border); box-shadow: var(--shadow-hover); }
+.model-cost { width: 92px; text-align: right; font-size: 12px; }
+.pricing-footnote { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin-top: 12px; color: var(--text-faint); font-size: 11px; }
+.pricing-footnote a { color: var(--accent); }
 .statistics-log-entry { border-bottom: 1px solid var(--border-soft); }
 .quality-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 16px; border-block: 1px solid var(--border-soft); }
 .quality-strip div { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; padding: 12px 14px; border-right: 1px solid var(--border-soft); }
@@ -235,5 +252,8 @@ onMounted(load);
 .log-chevron { transition: transform var(--motion-fast) var(--motion-ease); }
 .log-chevron.open { transform: rotate(180deg); }
 .log-error-detail { padding: 0 10px 12px 60px; color: var(--danger); font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
-@media (max-width: 760px) { .quality-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } .quality-strip div:nth-child(2) { border-right: 0; } }
+@media (max-width: 1200px) { .statistics-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .statistics-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }.quality-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } .quality-strip div:nth-child(2) { border-right: 0; } }
+@media (max-width: 520px) { .statistics-metrics { grid-template-columns: minmax(0, 1fr); }.model-cost { width: auto; } }
+@media (prefers-reduced-motion: reduce) { .statistics-metrics .stat:hover { transform: none; } }
 </style>

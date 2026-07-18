@@ -29,7 +29,6 @@ const nav = [
   { name: "proxies", to: "/proxies", icon: "proxies" },
   { name: "statistics", to: "/statistics", icon: "statistics" },
   { name: "models", to: "/models", icon: "database" },
-  { name: "settings", to: "/settings", icon: "settings" },
   { name: "cloud", to: "/cloud", icon: "cloud" },
   { name: "codex", to: "/codex", icon: "terminal" },
   { name: "shop", to: "/shop", icon: "cart" },
@@ -74,7 +73,7 @@ const backendColor = computed(() => {
   return "var(--text-faint)";
 });
 const backendLabel = computed(() => t(`backend.${backendPhase.value}`));
-const currentVersion = computed(() => app.status?.version || "0.3.3");
+const currentVersion = computed(() => app.status?.version || "0.4.1");
 const darkThemeActive = computed(() => themeMode.value === "dark" || (themeMode.value === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches));
 
 function applyTheme(mode: string) {
@@ -164,6 +163,10 @@ onUnmounted(() => {
       </nav>
 
       <div class="sidebar-footer">
+        <RouterLink to="/settings" class="footer-settings" :class="{ active: route.path === '/settings' }">
+          <Icon name="settings" :size="15" />
+          <span>{{ t("nav.settings") }}</span>
+        </RouterLink>
         <div class="flex items-center gap-8 backend-indicator">
           <span
             class="badge-dot"
@@ -215,6 +218,8 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.footer-settings { min-height: 36px; display: flex; align-items: center; gap: 10px; margin-bottom: 10px; padding: 7px 9px; border-radius: 6px; color: var(--text-dim); text-decoration: none; transition: background var(--motion-fast) var(--motion-ease), color var(--motion-fast) var(--motion-ease); }
+.footer-settings:hover { background: var(--bg-hover); color: var(--text); }.footer-settings.active { background: var(--accent-soft); color: var(--accent); }
 .version-row {
   display: flex;
   align-items: center;

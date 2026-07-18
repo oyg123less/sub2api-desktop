@@ -26,10 +26,13 @@ Confirm these secret names exist. The commands must never print or persist their
 - `JWT_SECRET`
 - `TURNSTILE_SECRET`
 - `RESEND_API_KEY`
+- `RESEND_WEBHOOK_SECRET`
 - `ADMIN_API_KEY`
 - `SHARE_KMS_KEY` (32 random bytes encoded as Base64URL)
 
 Confirm `RESEND_FROM` is the verified sender configured in `wrangler.toml`.
+
+In Resend, configure `https://amber-cloud-api.484486528.workers.dev/v1/webhooks/resend` and subscribe to sent, delivered, delivery delayed, bounced, complained, failed, and suppressed events. Store the generated `whsec_...` value only through `npx wrangler secret put RESEND_WEBHOOK_SECRET`.
 
 ## 3. Backup And Migration
 

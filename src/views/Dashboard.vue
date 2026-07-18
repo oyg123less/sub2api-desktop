@@ -9,7 +9,7 @@ import AnimatedNumber from "../components/AnimatedNumber.vue";
 import SkeletonBlock from "../components/SkeletonBlock.vue";
 import { api, type RequestLog, type Settings, type StatsResponse } from "../api/control";
 import { localDateString } from "../date";
-import { exactTokens, formatTokens } from "../format";
+import { exactTokens, exactUSD, formatTokens, formatUSD } from "../format";
 import { useAppStore } from "../store";
 
 const { t } = useI18n();
@@ -46,6 +46,10 @@ const todayTokens = computed(() => {
   const today = localDateString();
   const d = stats.value?.daily?.find((x) => x.date === today);
   return d?.total_tokens ?? 0;
+});
+const todayCost = computed(() => {
+  const today = localDateString();
+  return stats.value?.daily?.find((x) => x.date === today)?.cost_usd ?? 0;
 });
 
 async function toggleServer() {
@@ -234,8 +238,8 @@ onUnmounted(() => clearInterval(timer));
     </div>
 
     <!-- Stat tiles -->
-    <SkeletonBlock v-if="initialLoading" :cards="3" :rows="2" style="margin-top: 16px" />
-    <div v-else class="grid grid-3" style="margin-top: 16px">
+    <SkeletonBlock v-if="initialLoading" :cards="4" :rows="2" style="margin-top: 16px" />
+    <div v-else class="grid dashboard-stats" style="margin-top: 16px">
       <div class="stat">
         <div class="stat-label">{{ t("dashboard.accounts") }}</div>
         <div class="stat-value"><AnimatedNumber :value="app.accountCount" /></div>
@@ -247,6 +251,10 @@ onUnmounted(() => clearInterval(timer));
       <div class="stat">
         <div class="stat-label">{{ t("dashboard.todayTokens") }}</div>
         <div class="stat-value" :title="`${exactTokens(todayTokens)} tokens`"><AnimatedNumber :value="todayTokens" :formatter="formatTokens" /></div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">{{ t("dashboard.todayCost") }}</div>
+        <div class="stat-value" data-test="dashboard-estimated-cost" :title="`${t('statistics.pricingEstimate')} · ${exactUSD(todayCost)}`">{{ formatUSD(todayCost) }}</div>
       </div>
     </div>
 
@@ -347,6 +355,15 @@ onUnmounted(() => clearInterval(timer));
     </div>
   </div>
 </template>
+
+<style scoped>
+.dashboard-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.dashboard-stats .stat { transform-origin: center; transition: transform var(--motion-normal) var(--motion-ease), box-shadow var(--motion-normal) var(--motion-ease), border-color var(--motion-fast) var(--motion-ease); }
+.dashboard-stats .stat:hover { transform: translateY(-2px) scale(1.01); border-color: var(--border); box-shadow: var(--shadow-hover); }
+@media (max-width: 1100px) { .dashboard-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 620px) { .dashboard-stats { grid-template-columns: minmax(0, 1fr); } }
+@media (prefers-reduced-motion: reduce) { .dashboard-stats .stat:hover { transform: none; } }
+</style>
 
 <style scoped>
 .dashboard-log-entry { border-bottom: 1px solid var(--border-soft); }

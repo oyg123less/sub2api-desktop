@@ -18,6 +18,7 @@ type TestResult struct {
 	OK               bool   `json:"ok"`
 	Status           int    `json:"status"`
 	Error            string `json:"error,omitempty"`
+	ErrorKind        string `json:"error_kind,omitempty"`
 	Model            string `json:"model"`
 	PromptTokens     int    `json:"prompt_tokens"`
 	CompletionTokens int    `json:"completion_tokens"`
@@ -54,6 +55,7 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 	if err != nil {
 		res.Status = http.StatusBadGateway
 		res.Error = errBoundProxyUnavailable.Error()
+		res.ErrorKind = "proxy_unavailable"
 		e.logRequestWithDetails(acc, requestLogDetails{
 			ResolvedModel: testModel, Status: res.Status, Latency: time.Since(start), Stream: true,
 			Error: res.Error, ErrorKind: "proxy_unavailable", TerminalEvent: "proxy_resolution_failed",
@@ -63,6 +65,7 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 	client, err := newHTTPClient(proxy, cfg.CompatProfile, 90*time.Second)
 	if err != nil {
 		res.Error = err.Error()
+		res.ErrorKind = "transport"
 		return res
 	}
 	authClient, _ := newHTTPClient(proxy, "standard", 60*time.Second)
@@ -73,6 +76,11 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 			e.recordAccountAuthFailure(acc.ID, err.Error())
 		}
 		res.Error = "令牌刷新失败: " + err.Error()
+		if isNetworkOrProxyError(err) {
+			res.ErrorKind = "network"
+		} else {
+			res.ErrorKind = "authentication"
+		}
 		if updated, getErr := e.store.GetAccount(acc.ID); getErr == nil {
 			res.AccountStatus = string(updated.Status)
 		}
@@ -89,6 +97,7 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 	respReq, err := apicompat.ChatCompletionsToResponses(chatReq)
 	if err != nil {
 		res.Error = "构造请求失败: " + err.Error()
+		res.ErrorKind = "local"
 		return res
 	}
 	upstreamModel, effort := openai.MapCodexModel(testModel)
@@ -100,12 +109,14 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 	upstreamBody, err := json.Marshal(respReq)
 	if err != nil {
 		res.Error = err.Error()
+		res.ErrorKind = "local"
 		return res
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURLForAccount(acc), bytes.NewReader(upstreamBody))
 	if err != nil {
 		res.Error = err.Error()
+		res.ErrorKind = "local"
 		return res
 	}
 	setCodexHeaders(req, token, acc, cfg)
@@ -114,6 +125,7 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 	if err != nil {
 		res.Status = http.StatusBadGateway
 		res.Error = "上游请求失败: " + err.Error()
+		res.ErrorKind = "network"
 		e.logRequest(acc, testModel, res.Status, 0, 0, time.Since(start), true, res.Error)
 		return res
 	}
@@ -135,6 +147,7 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 			res.AccountStatus = string(updated.Status)
 		}
 		res.Error = result.errMsg
+		res.ErrorKind = result.errorKind
 		res.LatencyMS = time.Since(start).Milliseconds()
 		e.logRequestWithDetails(acc, requestLogDetails{ResolvedModel: testModel, Status: resp.StatusCode, Latency: time.Since(start), Stream: true, Error: msg, ErrorKind: result.errorKind, TerminalEvent: result.terminalEvent})
 		return res
@@ -168,6 +181,7 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 	if err := terminal.finish(sc.Err()); err != nil {
 		res.Status = terminal.status
 		res.Error = terminal.message
+		res.ErrorKind = terminal.errorKind
 		res.LatencyMS = time.Since(start).Milliseconds()
 		e.logRequestWithDetails(acc, requestLogDetails{ResolvedModel: testModel, Status: terminal.status, Latency: time.Since(start), Stream: true, Error: terminal.message, ErrorKind: terminal.errorKind, TerminalEvent: terminal.event})
 		return res

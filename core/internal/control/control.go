@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"sub2api-desktop/core/internal/account"
@@ -57,6 +58,10 @@ type CodexRemoteController interface {
 
 type CloudController interface {
 	Status() cloudsync.Status
+	NetworkSettings() (cloudsync.NetworkSettings, error)
+	UpdateNetworkSettings(store.CloudConnectionSettings) (cloudsync.NetworkSettings, error)
+	ProbeNetwork(context.Context) cloudsync.NetworkProbe
+	ReloadNetworkSettings() error
 	Register(context.Context, cloudsync.RegisterInput) error
 	VerifyEmail(context.Context, string, string) error
 	ResendVerification(context.Context, string) error
@@ -98,18 +103,20 @@ type CloudController interface {
 
 // Control holds control API dependencies.
 type Control struct {
-	store       *store.Store
-	mgr         *account.Manager
-	oauth       *oauthCoordinator
-	settings    SettingsAccess
-	server      ServerController
-	engine      *gateway.Engine
-	diagnostics *diagnostics.Service
-	updates     *updateChecker
-	remoteCodex CodexRemoteController
-	cloud       CloudController
-	token       string
-	version     string
+	store        *store.Store
+	mgr          *account.Manager
+	oauth        *oauthCoordinator
+	settings     SettingsAccess
+	server       ServerController
+	engine       *gateway.Engine
+	diagnostics  *diagnostics.Service
+	updates      *updateChecker
+	remoteCodex  CodexRemoteController
+	cloud        CloudController
+	token        string
+	version      string
+	accountTests *accountTestRuns
+	accountOpsMu sync.Mutex
 }
 
 func (c *Control) SetCloudController(controller CloudController) {
@@ -118,7 +125,7 @@ func (c *Control) SetCloudController(controller CloudController) {
 
 // New builds the control API.
 func New(s *store.Store, mgr *account.Manager, settings SettingsAccess, server ServerController, engine *gateway.Engine, diagnosticService *diagnostics.Service, remoteCodex CodexRemoteController, token, version string) *Control {
-	return &Control{
+	control := &Control{
 		store:       s,
 		mgr:         mgr,
 		oauth:       newOAuthCoordinator(mgr, s, settings.Get),
@@ -131,6 +138,8 @@ func New(s *store.Store, mgr *account.Manager, settings SettingsAccess, server S
 		token:       token,
 		version:     version,
 	}
+	control.accountTests = newAccountTestRuns(s, engine)
+	return control
 }
 
 // Mount registers control routes.
@@ -150,6 +159,13 @@ func (c *Control) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /control/accounts/import", h(c.importAccounts))
 	mux.HandleFunc("POST /control/accounts/import/preview", h(c.previewImportAccounts))
 	mux.HandleFunc("POST /control/accounts/import/commit", h(c.commitImportAccounts))
+	mux.HandleFunc("POST /control/accounts/batch-delete", h(c.batchDeleteAccounts))
+	mux.HandleFunc("GET /control/accounts/proxy-summary", h(c.accountProxySummary))
+	mux.HandleFunc("POST /control/accounts/batch-proxy", h(c.batchBindProxy))
+	mux.HandleFunc("POST /control/accounts/test-runs", h(c.startAccountTestRun))
+	mux.HandleFunc("GET /control/accounts/test-runs/active", h(c.activeAccountTestRun))
+	mux.HandleFunc("GET /control/accounts/test-runs/{id}", h(c.accountTestRun))
+	mux.HandleFunc("DELETE /control/accounts/test-runs/{id}", h(c.cancelAccountTestRun))
 	mux.HandleFunc("DELETE /control/accounts/{id}", h(c.deleteAccount))
 	mux.HandleFunc("POST /control/accounts/{id}/refresh", h(c.refreshAccount))
 	mux.HandleFunc("POST /control/accounts/{id}/proxy", h(c.bindProxy))
@@ -179,6 +195,9 @@ func (c *Control) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /control/codex/remote/{id}", h(c.codexRemoteDelete))
 
 	mux.HandleFunc("GET /control/cloud/status", h(c.cloudStatus))
+	mux.HandleFunc("GET /control/cloud/network", h(c.cloudNetworkSettings))
+	mux.HandleFunc("PUT /control/cloud/network", h(c.cloudNetworkUpdate))
+	mux.HandleFunc("POST /control/cloud/network/probe", h(c.cloudNetworkProbe))
 	mux.HandleFunc("POST /control/cloud/register", h(c.cloudRegister))
 	mux.HandleFunc("POST /control/cloud/verify-email", h(c.cloudVerifyEmail))
 	mux.HandleFunc("POST /control/cloud/resend-verification", h(c.cloudResendVerification))
@@ -538,24 +557,30 @@ type accountUsage struct {
 }
 
 func (c *Control) usageByAccount() map[int64]*accountUsage {
-	rows, err := c.store.UsageByAccountModel()
+	rows, err := c.store.UsageCostRows(time.Time{}, true)
 	if err != nil {
 		return nil
 	}
 	out := make(map[int64]*accountUsage)
+	prices := make(map[string]openai.ModelPrice)
 	for _, r := range rows {
 		u := out[r.AccountID]
 		if u == nil {
 			u = &accountUsage{AccountID: r.AccountID}
 			out[r.AccountID] = u
 		}
-		u.Requests += r.Requests
+		u.Requests++
 		u.PromptTokens += r.PromptTokens
 		u.CachedTokens += r.CachedTokens
 		u.CompletionTokens += r.CompletionTokens
 		u.ReasoningTokens += r.ReasoningTokens
 		u.TotalTokens += r.TotalTokens
-		u.CostUSD += openai.CostUSD(r.Model, r.PromptTokens, r.CachedTokens, r.CompletionTokens)
+		price, ok := prices[r.Model]
+		if !ok {
+			price = openai.PriceForModel(r.Model)
+			prices[r.Model] = price
+		}
+		u.CostUSD += openai.CostUSDForPrice(price, r.PromptTokens, r.CachedTokens, r.CompletionTokens)
 	}
 	return out
 }
@@ -805,6 +830,70 @@ func (c *Control) deleteAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+func (c *Control) batchDeleteAccounts(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		AccountIDs []int64 `json:"account_ids"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&request); err != nil {
+		writeControlError(w, http.StatusBadRequest, "invalid_account_batch", "invalid account batch", false, nil)
+		return
+	}
+	if len(request.AccountIDs) == 0 || len(request.AccountIDs) > store.MaxAccountBatchSize {
+		writeControlError(w, http.StatusBadRequest, "invalid_account_batch", fmt.Sprintf("account_ids must contain between 1 and %d entries", store.MaxAccountBatchSize), false, nil)
+		return
+	}
+	for _, id := range request.AccountIDs {
+		if id <= 0 {
+			writeControlError(w, http.StatusBadRequest, "invalid_account_batch", "account_ids must contain positive integers", false, nil)
+			return
+		}
+	}
+	result, err := c.store.DeleteAccounts(request.AccountIDs)
+	if err != nil {
+		writeControlError(w, http.StatusInternalServerError, "batch_delete_failed", err.Error(), true, map[string]any{
+			"requested": result.Requested, "deleted": []int64{}, "failed": result.Failed,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "requested": result.Requested, "deleted": result.Deleted, "missing": result.Missing, "failed": result.Failed})
+}
+
+func (c *Control) accountProxySummary(w http.ResponseWriter, _ *http.Request) {
+	result, err := c.store.AccountProxySummary()
+	if err != nil {
+		writeControlError(w, http.StatusInternalServerError, "account_proxy_summary_failed", err.Error(), true, nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (c *Control) batchBindProxy(w http.ResponseWriter, r *http.Request) {
+	c.accountOpsMu.Lock()
+	defer c.accountOpsMu.Unlock()
+	if c.accountTests != nil && c.accountTests.IsRunning() {
+		writeControlError(w, http.StatusConflict, "account_test_run_active", "finish or cancel the active account test before changing every account proxy", true, nil)
+		return
+	}
+	var request struct {
+		Scope   string `json:"scope"`
+		ProxyID *int64 `json:"proxy_id"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&request); err != nil || request.Scope != "all" {
+		writeControlError(w, http.StatusBadRequest, "invalid_account_proxy_batch", "scope must be all", false, nil)
+		return
+	}
+	result, err := c.store.SetAllAccountsProxy(request.ProxyID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeControlError(w, http.StatusNotFound, "proxy_not_found", "proxy not found", false, nil)
+		return
+	}
+	if err != nil {
+		writeControlError(w, http.StatusInternalServerError, "account_proxy_batch_failed", err.Error(), true, nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "matched": result.Matched, "updated": result.Updated, "unchanged": result.Unchanged, "proxy_id": result.ProxyID})
+}
+
 func (c *Control) refreshAccount(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
 	if !ok {
@@ -947,6 +1036,9 @@ func (c *Control) deleteProxy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	if c.cloud != nil {
+		_ = c.cloud.ReloadNetworkSettings()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -1011,11 +1103,49 @@ func (c *Control) stats(w http.ResponseWriter, r *http.Request) {
 	}
 	daily, _ := c.store.Daily(days)
 	byModel, _ := c.store.ByModel(since)
+	costRows, _ := c.store.UsageCostRows(since, false)
+	dailyIndexes := make(map[string]int, len(daily))
+	for index := range daily {
+		dailyIndexes[daily[index].Date] = index
+	}
+	modelIndexes := make(map[string]int, len(byModel))
+	for index := range byModel {
+		modelIndexes[byModel[index].Model] = index
+	}
+	prices := make(map[string]openai.ModelPrice)
+	knownPrices := make(map[string]bool)
+	for _, row := range costRows {
+		price, cached := prices[row.Model]
+		known := knownPrices[row.Model]
+		if !cached {
+			var found bool
+			price, found = openai.LookupModelPrice(row.Model)
+			known = found
+			if !found {
+				price = openai.PriceForModel(row.Model)
+			}
+			prices[row.Model] = price
+			knownPrices[row.Model] = known
+		}
+		cost := openai.CostUSDForPrice(price, row.PromptTokens, row.CachedTokens, row.CompletionTokens)
+		summary.CostUSD += cost
+		if !known {
+			summary.PricingFallbackRequests++
+		}
+		date := row.CreatedAt.In(time.Local).Format("2006-01-02")
+		if index, ok := dailyIndexes[date]; ok {
+			daily[index].CostUSD += cost
+		}
+		if index, ok := modelIndexes[row.Model]; ok {
+			byModel[index].CostUSD += cost
+		}
+	}
 	failures, _ := c.store.FailureBreakdown(since)
 	health, _ := c.store.LogHealth()
 	cfg := c.settings.Get()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"summary": summary, "daily": daily, "by_model": byModel, "failure_breakdown": failures,
+		"pricing": map[string]any{"version": openai.PriceVersion, "source_url": openai.PriceSourceURL, "tier": "standard", "currency": "USD"},
 		"retention": map[string]any{
 			"days": cfg.LogRetentionDays, "max_rows": cfg.MaxLogRows,
 			"retained_rows": health.Rows, "oldest_at": health.OldestAt, "newest_at": health.NewestAt,

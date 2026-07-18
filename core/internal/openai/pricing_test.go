@@ -57,3 +57,20 @@ func TestUnknownModelFallsBackToSol(t *testing.T) {
 		t.Fatalf("fallback cost = %f, want 3.5", unknown)
 	}
 }
+
+func TestRequestLevelPricingDoesNotPromoteAggregatedShortRequests(t *testing.T) {
+	price, ok := LookupModelPrice("gpt-5.4")
+	if !ok {
+		t.Fatal("gpt-5.4 price missing")
+	}
+	requestCost := CostUSDForPrice(price, 200_000, 0, 1_000)
+	summed := requestCost + requestCost
+	aggregatedWrong := CostUSDForPrice(price, 400_000, 0, 2_000)
+	if summed >= aggregatedWrong {
+		t.Fatalf("test fixture did not exercise long-context overcharge: per-request=%f aggregated=%f", summed, aggregatedWrong)
+	}
+	want := 400_000.0/1e6*2.5 + 2_000.0/1e6*15
+	if math.Abs(summed-want) > 1e-9 {
+		t.Fatalf("request-level sum=%f, want=%f", summed, want)
+	}
+}

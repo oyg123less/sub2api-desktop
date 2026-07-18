@@ -6,6 +6,7 @@ export interface Bindings {
   JWT_SECRET: string;
   TURNSTILE_SECRET: string;
   RESEND_API_KEY?: string;
+  RESEND_WEBHOOK_SECRET?: string;
   ADMIN_API_KEY?: string;
   SHARE_KMS_KEY?: string;
   ENVIRONMENT?: "development" | "test" | "production";
