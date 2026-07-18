@@ -104,7 +104,7 @@ received.post("/received-shares/:id/accept", async (c) => {
   await requireFeature(c, "share_groups_enabled");
   const share = await loadReceived(c, c.req.param("id"));
   if (share.status === "active") {
-    const key = await c.env.DB.prepare(`SELECT public_id,key_prefix,key_version,key_envelope,envelope_context,status FROM share_access_keys
+    const key = await c.env.DB.prepare(`SELECT public_id,key_prefix,key_version,key_envelope,envelope_context,recipient_key_version,status FROM share_access_keys
       WHERE recipient_grant_id=? AND status='active'`).bind(share.id).first<Record<string, unknown>>();
     return c.json({ share: publicReceived(share, publicOrigin(c), key) });
   }
@@ -140,6 +140,7 @@ received.post("/received-shares/:id/accept", async (c) => {
     key_version: prepared.key_version,
     key_envelope: prepared.key_envelope,
     envelope_context: prepared.envelope_context,
+    recipient_key_version: prepared.recipient_key_version,
     status: "active",
   }) });
 });

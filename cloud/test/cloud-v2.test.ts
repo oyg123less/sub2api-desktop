@@ -151,7 +151,15 @@ describe("Amber Cloud 2.0", () => {
       method: "POST", headers: recipient.headers,
     });
     expect(accepted.status).toBe(200);
-    expect((await accepted.json<{ share: { key: { key_envelope: string } } }>()).share.key.key_envelope).toBe(envelope(51));
+    const acceptedBody = await accepted.json<{ share: { key: { key_envelope: string; recipient_key_version: number } } }>();
+    expect(acceptedBody.share.key).toMatchObject({ key_envelope: envelope(51), recipient_key_version: 1 });
+    const acceptedReplay = await SELF.fetch(`https://amber.test/v1/received-shares/${receivedID}/accept`, {
+      method: "POST", headers: recipient.headers,
+    });
+    expect(acceptedReplay.status).toBe(200);
+    await expect(acceptedReplay.json()).resolves.toMatchObject({
+      share: { key: { key_envelope: envelope(51), recipient_key_version: 1, status: "active" } },
+    });
 
     const upstream = vi.fn(async () => new Response(JSON.stringify({ id: "response-v4" }), {
       status: 200, headers: { "Content-Type": "application/json" },
