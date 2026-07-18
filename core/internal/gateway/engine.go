@@ -337,6 +337,7 @@ func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq
 	}
 	setCodexHeaders(req, token, acc, cfg)
 
+	markRelayUpstreamStarted(ctx)
 	resp, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -449,8 +450,12 @@ func (e *Engine) selectAccounts(ctx context.Context) ([]*store.Account, func(), 
 		return nil, func() {}, err
 	}
 	now := time.Now()
+	relayUID := relayAccountUID(ctx)
 	var out []*store.Account
 	for _, a := range all {
+		if relayUID != "" && a.ClientUID != relayUID {
+			continue
+		}
 		if a.Status == store.AccountDisabled {
 			continue
 		}

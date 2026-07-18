@@ -34,7 +34,7 @@ import (
 )
 
 // version is overridable at build time via -ldflags.
-var version = "0.3.3-dev"
+var version = "0.4.0-dev"
 
 func main() {
 	var (
@@ -103,6 +103,9 @@ func run(dataDir string, controlPort int, controlToken, cloudURL, turnstileSiteK
 	defer remoteCodex.Close()
 	cloudManager := cloudsync.NewManager(st, holder, cloudURL, turnstileSiteKey, nil, logger)
 	cloudManager.SetAppliedHook(remoteCodex.ReloadSaved)
+	cloudManager.SetRelayHandler(func(ctx context.Context, writer http.ResponseWriter, request *http.Request, accountUID string, upstreamStarted func()) {
+		engine.RelayAccount(writer, request.WithContext(ctx), accountUID, upstreamStarted)
+	})
 	defer cloudManager.Close()
 	diagnosticService := diagnostics.New(st, holder.Get, apiManager, dataDir, version)
 	cleanupCtx, stopCleanup := context.WithCancel(context.Background())

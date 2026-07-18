@@ -1,10 +1,16 @@
 import { Hono } from "hono";
 import adminRoutes from "./admin-routes";
 import authRoutes from "./auth-routes";
+import deviceRoutes from "./device-routes";
 import { AppError, errorResponse } from "./errors";
+import friendRoutes from "./friend-routes";
+import { OwnerRelay } from "./owner-relay";
 import { randomToken } from "./security";
+import { ShareAccessCoordinator } from "./share-access";
 import shareGateway from "./share-gateway";
+import shareGroupRoutes from "./share-group-routes";
 import shareRoutes from "./share-routes";
+import receivedShareRoutes from "./received-share-routes";
 import type { AppEnv } from "./types";
 import vaultRoutes from "./vault-routes";
 
@@ -20,11 +26,15 @@ app.use("*", async (c, next) => {
   await next();
 });
 
-app.get("/health", (c) => c.json({ ok: true, service: "amber-cloud", version: "0.3.3" }));
+app.get("/health", (c) => c.json({ ok: true, service: "amber-cloud", version: "0.4.0" }));
 app.route("/v1/auth", authRoutes);
 app.route("/v1/vault", vaultRoutes);
 app.route("/v1/admin", adminRoutes);
 app.route("/v1/shares", shareRoutes);
+app.route("/v1", friendRoutes);
+app.route("/v1", shareGroupRoutes);
+app.route("/v1", receivedShareRoutes);
+app.route("/v1", deviceRoutes);
 app.route("/v1", shareGateway);
 
 app.notFound((c) => errorResponse(c, 404, "not_found", "The requested endpoint does not exist."));
@@ -39,3 +49,4 @@ app.onError((error, c) => {
 });
 
 export default app;
+export { OwnerRelay, ShareAccessCoordinator };

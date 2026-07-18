@@ -2,6 +2,7 @@ import { Hono, type Context } from "hono";
 import { AppError, errorResponse } from "./errors";
 import { decryptShareCredential } from "./share-crypto";
 import { randomToken, sha256 } from "./security";
+import { forwardGroupShare } from "./share-group-gateway";
 import type { AppEnv } from "./types";
 
 const gateway = new Hono<AppEnv>();
@@ -104,6 +105,8 @@ function upstreamURL(configured: string, path: string, accountType: "oauth" | "a
 }
 
 async function forward(c: Context<AppEnv>) {
+  const bearer = bearerToken(c.req.header("authorization") || "");
+  if (bearer.startsWith("sk-amber-")) return forwardGroupShare(c, bearer);
   const contentLength = Number(c.req.header("content-length") || 0);
   if (!Number.isFinite(contentLength) || contentLength > maxGatewayBody) {
     throw new AppError(413, "request_too_large", "The gateway request is too large.");
@@ -123,7 +126,7 @@ async function forward(c: Context<AppEnv>) {
       Authorization: `Bearer ${credential.token}`,
       "Content-Type": "application/json",
       Accept: c.req.header("accept") || "text/event-stream, application/json",
-      "User-Agent": "codex_cli_rs/0.3.3 (Amber Cloud Share)",
+      "User-Agent": "codex_cli_rs/0.4.0 (Amber Cloud Share)",
       originator: "codex_cli_rs",
       "OpenAI-Beta": "responses=experimental",
       session_id: crypto.randomUUID(),

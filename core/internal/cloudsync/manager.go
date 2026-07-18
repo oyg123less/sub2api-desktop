@@ -87,8 +87,11 @@ type Manager struct {
 	siteKey  string
 	logger   *slog.Logger
 
-	opMu sync.Mutex
-	mu   sync.RWMutex
+	opMu         sync.Mutex
+	mu           sync.RWMutex
+	relayMu      sync.Mutex
+	relayCloser  interface{ Close() error }
+	relayHandler RelayHandler
 
 	session             *store.CloudSession
 	vaultKey            []byte
@@ -409,6 +412,7 @@ func (m *Manager) Logout(ctx context.Context) error {
 	m.accessExpires = time.Time{}
 	m.lastError = ""
 	m.mu.Unlock()
+	m.closeRelaySession()
 	return nil
 }
 
@@ -689,6 +693,7 @@ func (m *Manager) adminAccess(ctx context.Context, adminKey string) (string, err
 }
 
 func (m *Manager) Run(ctx context.Context) {
+	go m.runRelay(ctx)
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	nextPeriodic := time.Now().Add(10 * time.Second)
@@ -1367,6 +1372,7 @@ func (m *Manager) clearError() {
 }
 
 func (m *Manager) Close() {
+	m.closeRelaySession()
 	m.mu.Lock()
 	wipe(m.vaultKey)
 	if m.pending != nil {

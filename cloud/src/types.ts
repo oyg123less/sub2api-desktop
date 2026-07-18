@@ -12,6 +12,8 @@ export interface Bindings {
   MAILER_MODE?: "console" | "resend";
   RESEND_FROM?: string;
   TURNSTILE_HOSTNAME?: string;
+  OWNER_RELAY: DurableObjectNamespace;
+  SHARE_ACCESS: DurableObjectNamespace;
 }
 
 export interface AuthUser {

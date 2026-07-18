@@ -19,3 +19,15 @@ migrations_dir = "migrations"
 binding = "SESSIONS"
 id = "c258f96bc12a4b5682f8451be452b4ed"
 preview_id = "1f85dbcea8884104a31544088df407b5"
+
+[[durable_objects.bindings]]
+name = "OWNER_RELAY"
+class_name = "OwnerRelay"
+
+[[durable_objects.bindings]]
+name = "SHARE_ACCESS"
+class_name = "ShareAccessCoordinator"
+
+[[migrations]]
+tag = "v0.4.0-relay"
+new_sqlite_classes = ["OwnerRelay", "ShareAccessCoordinator"]

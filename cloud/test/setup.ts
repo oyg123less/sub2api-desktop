@@ -11,4 +11,6 @@ declare module "vitest" {
 beforeEach(async () => {
   await reset();
   await applyD1Migrations(env.DB, inject("migrations"));
+  await env.DB.prepare(`UPDATE platform_settings SET value='true'
+    WHERE key IN ('friends_enabled','share_groups_enabled','owner_relay_enabled')`).run();
 });

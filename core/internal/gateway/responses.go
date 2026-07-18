@@ -194,6 +194,7 @@ func (e *Engine) forwardResponsesOnce(ctx context.Context, w http.ResponseWriter
 	}
 	setCodexHeaders(req, token, acc, cfg)
 
+	markRelayUpstreamStarted(ctx)
 	resp, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {

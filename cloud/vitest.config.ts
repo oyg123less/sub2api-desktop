@@ -11,6 +11,10 @@ export default defineConfig({
         compatibilityDate: "2026-07-15",
         d1Databases: ["DB"],
         kvNamespaces: ["SESSIONS"],
+        durableObjects: {
+          OWNER_RELAY: "OwnerRelay",
+          SHARE_ACCESS: "ShareAccessCoordinator",
+        },
         bindings: {
           ENVIRONMENT: "test",
           MAILER_MODE: "console",

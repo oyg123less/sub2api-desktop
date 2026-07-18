@@ -295,6 +295,181 @@ export interface CloudShareUsage {
   latency_ms: number;
 }
 
+export interface CloudProfile {
+  display_name: string;
+  friend_code: string;
+  encryption_public_key: string;
+  encryption_key_version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CloudFriend {
+  public_id: string;
+  display_name: string;
+  friend_code: string;
+  encryption_public_key: string;
+  encryption_key_version: number;
+  alias?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CloudFriendRequest {
+  public_id: string;
+  status: "pending" | "accepted" | "declined" | "cancelled" | "expired";
+  direction: "incoming" | "outgoing";
+  display_name: string;
+  friend_code: string;
+  created_at: string;
+  responded_at?: string;
+  expires_at: string;
+}
+
+export interface CloudShareGroup {
+  public_id: string;
+  name: string;
+  description: string;
+  status: "active" | "paused" | "deleted";
+  route_policy: "balanced" | "failover";
+  default_rpm: number;
+  default_concurrency: number;
+  default_quota_requests: number;
+  default_expires_at?: string;
+  account_count: number;
+  enabled_account_count?: number;
+  recipient_count: number;
+  used_requests?: number;
+  base_url: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CloudShareGroupAccount {
+  public_id: string;
+  account_uid: string;
+  account_type: "oauth" | "api_key";
+  relay_mode: "owner_device" | "worker_direct";
+  priority: number;
+  weight: number;
+  enabled: boolean | number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CloudShareGroupRecipient {
+  public_id: string;
+  display_name: string;
+  friendship_id?: string;
+  status: "pending" | "active" | "paused" | "declined" | "expired" | "revoked" | "left";
+  rpm_limit: number;
+  concurrency_limit: number;
+  quota_requests: number;
+  used_requests: number;
+  reserved_requests: number;
+  expires_at?: string;
+  key_id?: string;
+  key_prefix?: string;
+  key_version?: number;
+  key_status?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CloudShareGroupDetails {
+  group: CloudShareGroup;
+  accounts: CloudShareGroupAccount[];
+  recipients: CloudShareGroupRecipient[];
+}
+
+export interface CloudShareGroupUsage {
+  request_id: string;
+  route_mode: "owner_device" | "worker_direct";
+  model: string;
+  status: number;
+  error_code?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  latency_ms: number;
+  created_at: string;
+  recipient_id: string;
+  display_name: string;
+  account_id?: string;
+}
+
+export interface CloudShareAuditEntry {
+  action: string;
+  target_type: string;
+  target_public_id?: string;
+  details: string;
+  created_at: string;
+}
+
+export interface CloudReceivedShare {
+  public_id: string;
+  status: "pending" | "active" | "paused" | "declined" | "expired" | "revoked" | "left";
+  group: {
+    public_id: string;
+    name: string;
+    description: string;
+    status: string;
+    route_policy: string;
+    account_count: number;
+    owner_device_required: boolean;
+  };
+  owner: { display_name: string };
+  rpm_limit: number;
+  concurrency_limit: number;
+  quota_requests: number;
+  used_requests: number;
+  expires_at?: string;
+  created_at: string;
+  accepted_at?: string;
+  base_url: string;
+  key?: { public_id: string; key_prefix: string; key_version: number; status: string };
+  api_key?: string;
+}
+
+export interface CloudDevice {
+  public_id: string;
+  name: string;
+  capabilities: string[];
+  is_primary: boolean;
+  revoked: boolean;
+  online: boolean;
+  last_seen_at?: string;
+  relay?: { active_requests?: number; last_heartbeat_at?: string };
+}
+
+export interface CloudShareConnectionTest {
+  ok: boolean;
+  status: number;
+  code?: string;
+  message: string;
+}
+
+export interface CloudWorkspaceResponse {
+  profile: CloudProfile;
+  friends: { friends: CloudFriend[] };
+  friend_requests: { requests: CloudFriendRequest[] };
+  share_groups: { groups: CloudShareGroup[] };
+  received_shares: { shares: CloudReceivedShare[] };
+  devices: { devices: CloudDevice[]; relay_enabled: boolean };
+}
+
+export interface CreateShareGroupInput {
+  idempotency_key: string;
+  name: string;
+  description: string;
+  route_policy: "balanced" | "failover";
+  default_rpm: number;
+  default_concurrency: number;
+  default_quota_requests: number;
+  default_expires_at: string;
+  accounts: Array<{ account_id: number; relay_mode: "owner_device" | "worker_direct"; priority?: number; weight?: number }>;
+  recipients: Array<{ friendship_id: string; rpm_limit?: number; concurrency_limit?: number; quota_requests?: number; expires_at?: string }>;
+}
+
 export interface ReleaseInfo {
   tag_name: string;
   name: string;
@@ -546,6 +721,47 @@ export const api = {
     req<CloudShare>("PATCH", `/control/cloud/shares/${shareId}`, updates),
   cloudShareUsage: (shareId: number) =>
     req<{ usage: CloudShareUsage[] }>("GET", `/control/cloud/shares/${shareId}/usage`),
+  cloudProfile: () => req<CloudProfile>("GET", "/control/cloud/profile"),
+  cloudWorkspace: () => req<CloudWorkspaceResponse>("GET", "/control/cloud/workspace"),
+  cloudUpdateProfile: (displayName: string) => req<CloudProfile>("PUT", "/control/cloud/profile", { display_name: displayName }),
+  cloudFriends: () => req<{ friends: CloudFriend[] }>("GET", "/control/cloud/friends"),
+  cloudFriendRequests: () => req<{ requests: CloudFriendRequest[] }>("GET", "/control/cloud/friend-requests"),
+  cloudAddFriend: (friendCode: string) => req<{ request: CloudFriendRequest }>("POST", "/control/cloud/friend-requests", { friend_code: friendCode }),
+  cloudFriendRequestAction: (requestId: string, action: "accept" | "decline" | "cancel") =>
+    req<Record<string, unknown>>("POST", `/control/cloud/friend-requests/${requestId}/${action}`),
+  cloudUpdateFriend: (friendId: string, alias: string) => req<{ ok: boolean }>("PATCH", `/control/cloud/friends/${friendId}`, { alias }),
+  cloudDeleteFriend: (friendId: string, revoke = false) => req<{ ok: boolean }>("DELETE", `/control/cloud/friends/${friendId}?mode=${revoke ? "revoke" : "pause"}`),
+  cloudBlockFriend: (friendId: string) => req<{ ok: boolean }>("POST", `/control/cloud/friends/${friendId}/block`),
+  cloudShareGroups: () => req<{ groups: CloudShareGroup[] }>("GET", "/control/cloud/share-groups"),
+  cloudCreateShareGroup: (input: CreateShareGroupInput) => req<CloudShareGroupDetails>("POST", "/control/cloud/share-groups", input),
+  cloudShareGroup: (groupId: string) => req<CloudShareGroupDetails>("GET", `/control/cloud/share-groups/${groupId}`),
+  cloudUpdateShareGroup: (groupId: string, updates: Record<string, unknown>) => req<CloudShareGroupDetails>("PATCH", `/control/cloud/share-groups/${groupId}`, updates),
+  cloudDeleteShareGroup: (groupId: string) => req<{ ok: boolean }>("DELETE", `/control/cloud/share-groups/${groupId}`),
+  cloudAddShareGroupAccount: (groupId: string, input: { account_id: number; relay_mode: "owner_device" | "worker_direct"; priority?: number; weight?: number }) =>
+    req<{ account: CloudShareGroupAccount }>("POST", `/control/cloud/share-groups/${groupId}/accounts`, input),
+  cloudUpdateShareGroupAccount: (groupId: string, accountId: string, updates: Record<string, unknown>) =>
+    req<{ ok: boolean }>("PATCH", `/control/cloud/share-groups/${groupId}/accounts/${accountId}`, updates),
+  cloudDeleteShareGroupAccount: (groupId: string, accountId: string) =>
+    req<{ ok: boolean }>("DELETE", `/control/cloud/share-groups/${groupId}/accounts/${accountId}`),
+  cloudInviteShareGroupRecipients: (groupId: string, input: { idempotency_key: string; recipients: CreateShareGroupInput["recipients"] }) =>
+    req<{ recipients: CloudShareGroupRecipient[] }>("POST", `/control/cloud/share-groups/${groupId}/recipients`, input),
+  cloudUpdateShareGroupRecipient: (groupId: string, recipientId: string, updates: Record<string, unknown>) =>
+    req<{ recipient: CloudShareGroupRecipient }>("PATCH", `/control/cloud/share-groups/${groupId}/recipients/${recipientId}`, updates),
+  cloudDeleteShareGroupRecipient: (groupId: string, recipientId: string) =>
+    req<{ ok: boolean }>("DELETE", `/control/cloud/share-groups/${groupId}/recipients/${recipientId}`),
+  cloudRotateShareGroupKey: (groupId: string, recipientId: string, friendshipId: string, idempotencyKey: string) =>
+    req<Record<string, unknown>>("POST", `/control/cloud/share-groups/${groupId}/recipients/${recipientId}/keys/rotate`, { friendship_id: friendshipId, idempotency_key: idempotencyKey }),
+  cloudShareGroupUsage: (groupId: string) => req<{ usage: CloudShareGroupUsage[] }>("GET", `/control/cloud/share-groups/${groupId}/usage`),
+  cloudShareGroupAudit: (groupId: string) => req<{ audit: CloudShareAuditEntry[] }>("GET", `/control/cloud/share-groups/${groupId}/audit`),
+  cloudReceivedShares: () => req<{ shares: CloudReceivedShare[] }>("GET", "/control/cloud/received-shares"),
+  cloudReceivedShareAction: (shareId: string, action: "accept" | "decline" | "leave") =>
+    req<CloudReceivedShare | { ok: boolean }>("POST", `/control/cloud/received-shares/${shareId}/${action}`),
+  cloudTestReceivedShare: (shareId: string) =>
+    req<CloudShareConnectionTest>("POST", `/control/cloud/received-shares/${shareId}/test`),
+  cloudDevices: () => req<{ devices: CloudDevice[]; relay_enabled: boolean }>("GET", "/control/cloud/devices"),
+  cloudEnsureDevice: () => req<CloudDevice>("POST", "/control/cloud/devices/ensure"),
+  cloudDeleteDevice: (deviceId: string) => req<{ ok: boolean }>("DELETE", `/control/cloud/devices/${deviceId}`),
+  cloudSetRelay: (enabled: boolean) => req<{ enabled: boolean }>("PUT", "/control/cloud/relay", { enabled }),
 
   listAccounts: () => req<{ accounts: Account[]; usage: Record<string, AccountUsage> }>("GET", "/control/accounts"),
   accountRuntime: () => req<{ accounts: AccountRuntimeState[] }>("GET", "/control/accounts/runtime"),

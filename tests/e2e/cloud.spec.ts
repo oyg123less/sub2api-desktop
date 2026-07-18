@@ -12,6 +12,17 @@ const localStatus = {
   schema_version: 11,
 };
 
+function emptyWorkspace(email: string) {
+  return {
+    profile: { display_name: email.split("@")[0], friend_code: "AMB-TEST-0001", encryption_public_key: "fixture", encryption_key_version: 1, created_at: "", updated_at: "" },
+    friends: { friends: [] },
+    friend_requests: { requests: [] },
+    share_groups: { groups: [] },
+    received_shares: { shares: [] },
+    devices: { devices: [], relay_enabled: false },
+  };
+}
+
 async function initialize(page: import("@playwright/test").Page) {
   await page.addInitScript(() => {
     localStorage.setItem("s2a_control_port", "45678");
@@ -54,6 +65,7 @@ test("resends verification with a countdown and returns to registration", async 
     const path = new URL(request.url()).pathname;
     let body: unknown = localStatus;
     if (path === "/control/cloud/status") body = cloudStatus();
+    if (path === "/control/cloud/workspace") body = emptyWorkspace("owner@example.test");
     if (path === "/control/cloud/resend-verification") {
       expect(request.postDataJSON()).toEqual({ email: "pending@example.test" });
       resendCalls += 1;
@@ -98,6 +110,7 @@ test("logs in, synchronizes, and logs out without exposing session credentials",
     const path = new URL(request.url()).pathname;
     let body: unknown = localStatus;
     if (path === "/control/cloud/status") body = cloudStatus();
+    if (path === "/control/cloud/workspace") body = emptyWorkspace("owner@example.test");
     if (path === "/control/cloud/login") {
       authenticated = true;
       body = cloudStatus();
@@ -117,7 +130,7 @@ test("logs in, synchronizes, and logs out without exposing session credentials",
   await page.locator('[data-test="cloud-email"]').fill("owner@example.test");
   await page.locator('[data-test="cloud-password"]').fill("fixture-master-password");
   await page.locator('[data-test="cloud-login"]').click();
-  await expect(page.getByText("owner@example.test")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "owner@example.test" })).toBeVisible();
   await expect(page.locator('[data-test="cloud-sync"]')).toBeVisible();
   await expect(page.locator('[data-test="cloud-admin-open"]')).toHaveCount(0);
   expect(syncCalls).toBe(1);
@@ -130,6 +143,53 @@ test("logs in, synchronizes, and logs out without exposing session credentials",
     clientWidth: document.documentElement.clientWidth,
   }));
   expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
+});
+
+test("shows an in-memory workspace snapshot immediately while refreshing in the background", async ({ page }) => {
+  await initialize(page);
+  let workspaceCalls = 0;
+  let releaseRefresh: (() => void) | undefined;
+  let markRefreshStarted: (() => void) | undefined;
+  const refreshStarted = new Promise<void>((resolve) => { markRefreshStarted = resolve; });
+  const refreshBlocked = new Promise<void>((resolve) => { releaseRefresh = resolve; });
+  await page.route("http://127.0.0.1:45678/control/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/control/status") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(localStatus) });
+      return;
+    }
+    if (path === "/control/cloud/status") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        configured: true, authenticated: true, pending_verification: false, email: "cached@example.test", role: "user",
+        pending_items: 0, syncing: false, conflicts: [],
+      }) });
+      return;
+    }
+    if (path === "/control/cloud/workspace") {
+      workspaceCalls += 1;
+      if (workspaceCalls > 1) {
+        markRefreshStarted?.();
+        await refreshBlocked;
+      }
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(emptyWorkspace("cached@example.test")) });
+      return;
+    }
+    if (path === "/control/accounts") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ accounts: [], usage: {} }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+  });
+
+  await page.goto("/#/cloud");
+  await expect(page.locator(".metric-strip")).toBeVisible();
+  await page.locator('a[href="#/accounts"]').click();
+  await expect(page).toHaveURL(/#\/accounts/);
+  await page.locator('a[href="#/cloud"]').click();
+  await refreshStarted;
+  await expect(page.locator(".metric-strip")).toBeVisible();
+  await expect(page.locator(".workspace-loading")).toHaveCount(0);
+  releaseRefresh?.();
 });
 
 test("shows staged sync failures and clears them after a retry", async ({ page }) => {
@@ -207,6 +267,7 @@ test("keeps administrator governance behind a transient second factor", async ({
     const path = new URL(request.url()).pathname;
     let body: unknown = localStatus;
     if (path === "/control/cloud/status") body = cloudStatus;
+    if (path === "/control/cloud/workspace") body = emptyWorkspace("admin@example.test");
     if (path.startsWith("/control/cloud/admin/")) {
       const payload = request.postDataJSON() as { admin_key?: string; registration_enabled?: boolean };
       capturedAdminKey = payload.admin_key || "";

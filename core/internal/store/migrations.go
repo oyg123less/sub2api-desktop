@@ -16,7 +16,7 @@ import (
 	appcrypto "sub2api-desktop/core/internal/crypto"
 )
 
-const CurrentSchemaVersion = 11
+const CurrentSchemaVersion = 12
 
 type migration struct {
 	version int
@@ -36,6 +36,42 @@ var migrations = []migration{
 	{version: 9, name: "v0.3.1 pending cloud registration", apply: migrateV031PendingCloudRegistration},
 	{version: 10, name: "v0.3.2 account concurrency queue", apply: migrateV032AccountConcurrencyQueue},
 	{version: 11, name: "v0.3.3 cloud sync outbox", apply: migrateV033CloudSyncOutbox},
+	{version: 12, name: "v0.4.0 cloud identity and received shares", apply: migrateV040CloudSharing},
+}
+
+func migrateV040CloudSharing(tx *sql.Tx, _ *appcrypto.Cipher) error {
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS cloud_identities (
+			user_id INTEGER PRIMARY KEY,
+			x25519_public_key TEXT NOT NULL,
+			x25519_private_cipher TEXT NOT NULL,
+			device_public_key TEXT NOT NULL,
+			device_private_cipher TEXT NOT NULL,
+			device_public_id TEXT NOT NULL DEFAULT '',
+			device_name TEXT NOT NULL,
+			relay_enabled INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS cloud_received_keys (
+			user_id INTEGER NOT NULL,
+			grant_public_id TEXT NOT NULL,
+			key_version INTEGER NOT NULL,
+			key_prefix TEXT NOT NULL,
+			base_url TEXT NOT NULL,
+			guest_key_cipher TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			PRIMARY KEY(user_id,grant_public_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cloud_received_keys_user ON cloud_received_keys(user_id,updated_at DESC)`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func databaseExists(path string) bool {

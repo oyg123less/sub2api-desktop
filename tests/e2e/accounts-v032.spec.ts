@@ -207,7 +207,7 @@ test("polls live account load without overlap and pauses while hidden", async ({
   await initialize(page, fixture, {
     runtime: () => {
       runtimeCalls += 1;
-      const inFlight = runtimeCalls === 2 ? 1 : 0;
+      const inFlight = runtimeCalls === 2 || runtimeCalls === 3 ? 1 : 0;
       return { accounts: [{ id: 1, status: "active", in_flight: inFlight, waiting: 0 }] };
     },
   });

@@ -360,7 +360,7 @@ func (c *cloudClient) doJSONWithHeaders(ctx context.Context, method, path, acces
 			return err
 		}
 		request.Header.Set("Accept", "application/json")
-		request.Header.Set("User-Agent", "Amber/0.3.3")
+		request.Header.Set("User-Agent", "Amber/0.4.0")
 		if body != nil {
 			request.Header.Set("Content-Type", "application/json")
 		}

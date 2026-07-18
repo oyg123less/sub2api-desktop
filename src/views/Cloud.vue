@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { api, type CloudAdminOverview, type CloudAdminUser, type CloudStatus } from "../api/control";
 import ConfirmModal from "../components/ConfirmModal.vue";
+import CloudWorkspace from "../components/cloud/CloudWorkspace.vue";
 import Icon from "../components/Icon.vue";
 import TurnstileWidget from "../components/TurnstileWidget.vue";
 import { useAppStore } from "../store";
@@ -399,7 +400,7 @@ onUnmounted(() => {
 
 <template>
   <div class="cloud-page">
-    <div class="page-header">
+    <div v-if="!authenticated" class="page-header">
       <h1 class="page-title">{{ t("cloud.title") }}</h1>
       <p class="page-desc">{{ t("cloud.desc") }}</p>
     </div>
@@ -420,6 +421,7 @@ onUnmounted(() => {
     </section>
 
     <template v-else-if="status && !authenticated">
+      <div class="cloud-auth-shell">
       <div v-if="!pendingVerification" class="cloud-auth-tabs" role="tablist" :aria-label="t('cloud.title')">
         <button type="button" role="tab" :aria-selected="mode === 'login'" :class="{ active: mode === 'login' }" @click="mode = 'login'">
           <Icon name="key" :size="15" />{{ t("cloud.loginTab") }}
@@ -464,20 +466,19 @@ onUnmounted(() => {
           <button class="btn btn-primary form-submit" type="button" :disabled="busy !== '' || !status.turnstile_site_key" @click="register"><Icon name="plus" :size="15" />{{ busy === "register" ? t("cloud.registering") : t("cloud.register") }}</button>
         </div>
       </section>
+      </div>
     </template>
 
     <template v-else-if="status && authenticated">
-      <section class="cloud-panel account-summary">
-        <div class="account-identity">
-          <span class="cloud-avatar"><Icon name="cloud" :size="22" /></span>
-          <div><h2>{{ status.email }}</h2><p>{{ t(status.role === "admin" ? "cloud.roleAdmin" : "cloud.roleUser") }}</p></div>
-        </div>
-        <div class="cloud-actions">
-          <button v-if="status.role === 'admin'" class="btn btn-ghost" data-test="cloud-admin-open" type="button" @click="adminOpen ? closeAdmin() : adminOpen = true"><Icon name="settings" :size="15" />{{ t(adminOpen ? "cloud.adminClose" : "cloud.adminOpen") }}</button>
-          <button class="btn btn-primary" data-test="cloud-sync" type="button" :disabled="busy !== ''" @click="syncNow(false)"><Icon name="refresh" :size="15" />{{ busy === "sync" ? t("cloud.syncing") : t("cloud.syncNow") }}</button>
-          <button class="btn btn-ghost" data-test="cloud-logout" type="button" :disabled="busy !== ''" @click="logout"><Icon name="power" :size="15" />{{ t("cloud.logout") }}</button>
-        </div>
-      </section>
+      <CloudWorkspace
+        :status="status"
+        :busy="busy"
+        :admin-open="adminOpen"
+        @sync="syncNow(false)"
+        @logout="logout"
+        @admin="adminOpen ? closeAdmin() : adminOpen = true"
+        @password="passwordOpen = true"
+      />
 
       <section v-if="status.role === 'admin' && adminOpen" class="cloud-admin-shell" data-test="cloud-admin-panel">
         <div class="section-toolbar admin-heading">
@@ -571,50 +572,18 @@ onUnmounted(() => {
         </template>
       </section>
 
-      <section class="sync-strip" aria-label="sync status">
-        <div><span>{{ t("cloud.lastSync") }}</span><strong>{{ formatTime(status.last_sync_at) }}</strong></div>
-        <div><span>{{ t("cloud.pendingItems") }}</span><strong>{{ status.pending_items }}</strong></div>
-        <div><span>{{ t("cloud.conflictCount") }}</span><strong>{{ status.conflicts.length }}</strong></div>
-      </section>
-
-      <section v-if="status.last_error" class="cloud-panel cloud-notice danger" role="alert">
-        <Icon name="warn" :size="20" />
-        <div class="sync-error-content">
-          <strong>{{ t("cloud.syncFailed") }}</strong>
-          <p>{{ syncErrorMessage }}</p>
-          <div class="sync-error-meta">
-            <span v-if="status.last_attempt_at">{{ t("cloud.syncAttempt", { time: formatTime(status.last_attempt_at) }) }}</span>
-            <span v-if="status.consecutive_failures">{{ t("cloud.syncFailures", { count: status.consecutive_failures }) }}</span>
-            <span v-if="retrySeconds > 0">{{ t("cloud.syncRetryIn", { seconds: retrySeconds }) }}</span>
-          </div>
-          <button class="btn btn-ghost btn-sm sync-retry" data-test="cloud-sync-retry" type="button" :disabled="busy !== ''" @click="syncNow()">
-            <Icon name="refresh" :size="14" />{{ t("cloud.syncRetry") }}
-          </button>
-        </div>
-      </section>
-
-      <section class="cloud-section">
-        <div class="section-toolbar"><div><h2>{{ t("cloud.securityTitle") }}</h2><p>{{ t("cloud.securityDesc") }}</p></div><button class="btn btn-ghost btn-sm" type="button" @click="passwordOpen = !passwordOpen"><Icon name="key" :size="14" />{{ t("cloud.changePassword") }}</button></div>
-        <div v-if="passwordOpen" class="cloud-panel password-panel">
-          <div class="cloud-form password-form">
+      <div v-if="passwordOpen" class="modal-backdrop" @click.self="passwordOpen = false">
+        <div class="modal password-modal" role="dialog" aria-modal="true" @keydown.esc="passwordOpen = false">
+          <h3 class="modal-title">{{ t("cloud.changePassword") }}</h3>
+          <p class="modal-desc">{{ t("cloud.securityDesc") }}</p>
+          <div class="password-modal-form">
             <label class="field"><span class="field-label">{{ t("cloud.currentPassword") }}</span><input v-model="currentPassword" class="input" type="password" autocomplete="current-password" /></label>
             <label class="field"><span class="field-label">{{ t("cloud.newPassword") }}</span><input v-model="newPassword" class="input" type="password" autocomplete="new-password" /></label>
             <label class="field"><span class="field-label">{{ t("cloud.confirmPassword") }}</span><input v-model="newPasswordConfirm" class="input" type="password" autocomplete="new-password" /></label>
-            <button class="btn btn-primary" type="button" :disabled="busy !== ''" @click="changePassword"><Icon name="check" :size="14" />{{ busy === "password" ? t("cloud.changingPassword") : t("common.save") }}</button>
           </div>
+          <div class="modal-actions"><button class="btn btn-ghost" @click="passwordOpen = false">{{ t("common.cancel") }}</button><button class="btn btn-primary" :disabled="busy !== ''" @click="changePassword"><Icon name="check" :size="14" />{{ busy === "password" ? t("cloud.changingPassword") : t("common.save") }}</button></div>
         </div>
-      </section>
-
-      <section class="cloud-section">
-        <div class="section-toolbar"><div><h2>{{ t("cloud.conflictsTitle") }}</h2><p>{{ t("cloud.conflictsDesc") }}</p></div></div>
-        <div v-if="status.conflicts.length === 0" class="cloud-empty"><Icon name="check" :size="24" /><strong>{{ t("cloud.noConflicts") }}</strong></div>
-        <div v-else class="conflict-list">
-          <article v-for="conflict in status.conflicts" :key="conflict.id" class="conflict-row">
-            <span class="badge badge-neutral">{{ t(`cloud.kind.${conflict.kind}`) }}</span>
-            <div><strong>{{ conflict.display_name || t(`cloud.kind.${conflict.kind}`) }}</strong><span>{{ t(conflict.resolution === "local_won" ? "cloud.localWon" : "cloud.remoteWon") }}</span><small>{{ formatTime(conflict.created_at) }}</small></div>
-          </article>
-        </div>
-      </section>
+      </div>
     </template>
 
     <ConfirmModal
@@ -638,7 +607,8 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.cloud-page { width: 100%; max-width: 980px; margin: 0 auto; }
+.cloud-page { width: 100%; max-width: 1240px; margin: 0 auto; }
+.cloud-auth-shell { width: min(460px, 100%); margin: 28px auto 0; }
 .cloud-panel { min-width: 0; padding: 20px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--bg-card); }
 .cloud-skeleton { display: grid; gap: 12px; }
 .cloud-skeleton span { display: block; height: 86px; border-radius: 8px; background: linear-gradient(90deg, var(--bg-elev), var(--bg-card), var(--bg-elev)); background-size: 200% 100%; animation: cloud-shimmer 1.4s ease-in-out infinite; }
@@ -648,17 +618,17 @@ onUnmounted(() => {
 .sync-error-content { min-width: 0; }
 .sync-error-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; color: var(--text-faint); font-size: 11px; }
 .sync-retry { margin-top: 12px; color: var(--danger); }
-.cloud-auth-tabs { width: fit-content; display: grid; grid-template-columns: repeat(2, minmax(132px, 1fr)); gap: 3px; padding: 3px; margin-bottom: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elev); }
+.cloud-auth-tabs { width: 100%; display: grid; grid-template-columns: repeat(2, minmax(132px, 1fr)); gap: 3px; padding: 3px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elev); }
 .cloud-auth-tabs button { min-height: 38px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 7px 16px; border: 0; border-radius: 6px; background: transparent; color: var(--text-dim); font-weight: 600; cursor: pointer; }
 .cloud-auth-tabs button.active { background: var(--bg-card); color: var(--text); box-shadow: 0 1px 4px rgba(50, 43, 34, .1); }
-.auth-panel { max-width: 760px; }
+.auth-panel { width: 100%; }
 .section-heading, .account-identity { display: flex; align-items: center; gap: 12px; }
 .section-heading h2, .account-identity h2, .section-toolbar h2 { margin: 0; font-size: 15px; }
-.cloud-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 20px; }
+.cloud-form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; margin-top: 20px; }
 .cloud-form .field { margin: 0; }
 .cloud-form small { color: var(--text-faint); }
 .form-submit { align-self: end; justify-self: start; min-width: 130px; }
-.compact-form { grid-template-columns: minmax(180px, 1fr) auto; align-items: end; }
+.compact-form { grid-template-columns: minmax(0, 1fr); align-items: end; }
 .verification-actions { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .code-input { letter-spacing: 4px; font-size: 17px; }
 .recovery-warning { display: flex; gap: 10px; margin-top: 18px; padding: 13px 14px; border: 1px solid rgba(193, 134, 58, .28); border-radius: 8px; background: var(--warn-soft); color: var(--warn); }
@@ -722,6 +692,8 @@ onUnmounted(() => {
 .admin-audit-list article div { display: grid; gap: 3px; }
 .admin-audit-list small { color: var(--text-faint); }
 .admin-delete-modal { max-width: 500px; }
+.password-modal { max-width: 500px; }
+.password-modal-form { display: grid; gap: 13px; }
 @keyframes cloud-shimmer { to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { .cloud-skeleton span { animation: none; } }
 @media (max-width: 720px) {

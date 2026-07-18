@@ -1,118 +1,268 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
 
-test("creates a one-time cloud share and manages revocation without exposing the upstream token", async ({ page }, testInfo) => {
-  const guestKey = "sk-share-fixture-one-time-guest-key";
-  const accountUID = "018f1f46-7a19-7cc2-88cb-f577e51d3999";
-  let revoked = false;
-  let createCalls = 0;
+const controlOrigin = "http://127.0.0.1:45678";
+const accountUIDs = [
+  "018f1f46-7a19-7cc2-88cb-f577e51d3999",
+  "018f1f46-7a19-7cc2-88cb-f577e51d4000",
+];
+const friendshipIDs = ["frn_018f1f46-7a19-7cc2-88cb-f577e51d4101", "frn_018f1f46-7a19-7cc2-88cb-f577e51d4102"];
+
+const localStatus = {
+  version: "0.4.0",
+  server_running: true,
+  port: 8080,
+  host: "127.0.0.1",
+  endpoint: "http://127.0.0.1:8080/v1",
+  lan_addresses: [],
+  local_api_key: "",
+  account_count: 2,
+  schema_version: 12,
+};
+
+const cloudStatus = {
+  configured: true,
+  authenticated: true,
+  pending_verification: false,
+  email: "owner@example.test",
+  role: "user",
+  pending_items: 0,
+  syncing: false,
+  conflicts: [],
+};
+
+const profile = {
+  display_name: "Owner",
+  friend_code: "AMB-OWNR-0001",
+  encryption_public_key: "fixture-public-key",
+  encryption_key_version: 1,
+  created_at: "2026-07-18T00:00:00Z",
+  updated_at: "2026-07-18T00:00:00Z",
+};
+
+const friends = friendshipIDs.map((public_id, index) => ({
+  public_id,
+  display_name: index ? "Alex" : "Lin",
+  friend_code: index ? "AMB-ALEX-0002" : "AMB-LIN0-0001",
+  encryption_public_key: `fixture-friend-key-${index}`,
+  encryption_key_version: 1,
+  created_at: "2026-07-18T00:00:00Z",
+  updated_at: "2026-07-18T00:00:00Z",
+}));
+
+const accounts = [
+  {
+    id: 1, account_type: "oauth", base_url: "", email: "oauth@example.test", chatgpt_account_id: "acct-oauth",
+    plan_type: "plus", expires_at: "2026-08-01T00:00:00Z", status: "active", consecutive_failures: 0,
+    max_concurrency: 3, queue_capacity: 20, in_flight: 0, waiting: 0, created_at: "2026-07-01T00:00:00Z",
+    client_uid: accountUIDs[0],
+  },
+  {
+    id: 2, account_type: "api_key", base_url: "https://api.openai.com/v1", email: "API account", chatgpt_account_id: "",
+    plan_type: "api", expires_at: "", status: "active", consecutive_failures: 0, max_concurrency: 3,
+    queue_capacity: 20, in_flight: 0, waiting: 0, created_at: "2026-07-01T00:00:00Z", client_uid: accountUIDs[1],
+  },
+];
+
+function groupDetails() {
+  const group = {
+    public_id: "shg_018f1f46-7a19-7cc2-88cb-f577e51d4200",
+    name: "Team Pool",
+    description: "Two-account fixture",
+    status: "active",
+    route_policy: "balanced",
+    default_rpm: 30,
+    default_concurrency: 2,
+    default_quota_requests: 1000,
+    account_count: 2,
+    enabled_account_count: 2,
+    recipient_count: 2,
+    used_requests: 0,
+    base_url: "https://amber-cloud-api.example.test/v1",
+    created_at: "2026-07-18T00:00:00Z",
+    updated_at: "2026-07-18T00:00:00Z",
+  } as const;
+  return {
+    group,
+    accounts: accounts.map((account, index) => ({
+      public_id: `sga_018f1f46-7a19-7cc2-88cb-f577e51d42${index + 1}0`,
+      account_uid: account.client_uid,
+      account_type: account.account_type,
+      relay_mode: index ? "worker_direct" : "owner_device",
+      priority: 100,
+      weight: 100,
+      enabled: true,
+      created_at: "2026-07-18T00:00:00Z",
+      updated_at: "2026-07-18T00:00:00Z",
+    })),
+    recipients: friends.map((friend, index) => ({
+      public_id: `sgr_018f1f46-7a19-7cc2-88cb-f577e51d43${index + 1}0`,
+      display_name: friend.display_name,
+      friendship_id: friend.public_id,
+      status: "pending",
+      rpm_limit: 30,
+      concurrency_limit: 2,
+      quota_requests: 1000,
+      used_requests: 0,
+      reserved_requests: 0,
+      key_prefix: `sk-amber-friend-${index}`,
+      created_at: "2026-07-18T00:00:00Z",
+      updated_at: "2026-07-18T00:00:00Z",
+    })),
+  };
+}
+
+async function initialize(page: Page) {
   await page.addInitScript(() => {
     localStorage.setItem("s2a_control_port", "45678");
     localStorage.setItem("s2a_control_token", "fixture-control-token");
     localStorage.setItem("s2a_lang", "en");
   });
-  const share = () => ({
-    id: 7,
-    account_uid: accountUID,
-    share_code: "AMBER567",
-    quota_requests: 25,
-    used_requests: 2,
-    revoked,
-    created_at: "2026-07-16T01:00:00Z",
-    updated_at: "2026-07-16T01:00:00Z",
-    base_url: "https://amber-cloud-api.example.workers.dev/v1",
-  });
-  await page.route("http://127.0.0.1:45678/control/**", async (route) => {
+}
+
+async function fulfill(route: Route, body: unknown, status = 200) {
+  await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+}
+
+test("creates a multi-account, multi-friend share group without the legacy QR flow", async ({ page }) => {
+  await initialize(page);
+  let created = false;
+  let createPayload: Record<string, unknown> | undefined;
+  await page.route(`${controlOrigin}/control/**`, async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
-    let body: unknown = {};
-    if (path === "/control/status") body = { version: "0.3.3", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "http://127.0.0.1:8080/v1", lan_addresses: [], local_api_key: "", account_count: 1, schema_version: 11 };
-    if (path === "/control/accounts") body = { accounts: [{ id: 1, account_type: "api_key", base_url: "https://api.openai.com/v1", email: "API key account", chatgpt_account_id: "", plan_type: "api", expires_at: "", status: "active", consecutive_failures: 0, max_concurrency: 3, queue_capacity: 20, in_flight: 0, waiting: 0, created_at: "2026-07-01T00:00:00Z", client_uid: accountUID }], usage: {} };
-    if (path === "/control/proxies") body = { proxies: [] };
-    if (path === "/control/settings") body = { account_strategy: "quota_aware", default_model: "gpt-5.6" };
-    if (path === "/control/models") body = { models: ["gpt-5.6"], default_test_model: "gpt-5.6" };
-    if (path === "/control/cloud/status") body = { configured: true, authenticated: true, pending_verification: false, email: "owner@example.test", role: "user", pending_items: 0, syncing: false, conflicts: [] };
-    if (path === "/control/cloud/shares" && request.method() === "GET") body = { shares: createCalls ? [share()] : [] };
-    if (path === "/control/cloud/shares" && request.method() === "POST") {
-      const input = request.postDataJSON() as { consent: boolean; quota_requests: number };
-      expect(input).toMatchObject({ consent: true, quota_requests: 25 });
-      createCalls += 1;
-      body = { share: share(), guest_key: guestKey };
+    if (path === "/control/status") return fulfill(route, localStatus);
+    if (path === "/control/cloud/status") return fulfill(route, cloudStatus);
+    if (path === "/control/cloud/profile") return fulfill(route, profile);
+    if (path === "/control/cloud/workspace") return fulfill(route, {
+      profile,
+      friends: { friends },
+      friend_requests: { requests: [] },
+      share_groups: { groups: created ? [groupDetails().group] : [] },
+      received_shares: { shares: [] },
+      devices: { devices: [], relay_enabled: false },
+    });
+    if (path === "/control/cloud/friends") return fulfill(route, { friends });
+    if (path === "/control/cloud/friend-requests") return fulfill(route, { requests: [] });
+    if (path === "/control/cloud/share-groups" && request.method() === "GET") {
+      return fulfill(route, { groups: created ? [groupDetails().group] : [] });
     }
-    if (path === "/control/cloud/shares/7" && request.method() === "PATCH") {
-      revoked = Boolean((request.postDataJSON() as { revoked?: boolean }).revoked);
-      body = { ...share(), revoked };
+    if (path === "/control/cloud/share-groups" && request.method() === "POST") {
+      createPayload = request.postDataJSON() as Record<string, unknown>;
+      created = true;
+      return fulfill(route, groupDetails(), 201);
     }
-    if (path === "/control/cloud/shares/7/usage") body = { usage: [] };
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+    if (path === "/control/cloud/received-shares") return fulfill(route, { shares: [] });
+    if (path === "/control/cloud/devices") return fulfill(route, { devices: [], relay_enabled: false });
+    if (path === "/control/accounts") return fulfill(route, { accounts, usage: {} });
+    return fulfill(route, {});
   });
 
-  await page.goto("/#/accounts");
-  await page.locator('[data-test="account-details"]').click();
-  await page.locator('[data-test="account-share"]').click();
-  await page.getByLabel("Request quota").fill("25");
-  await page.getByLabel(/I confirm cloud custody/).check();
-  await page.locator('[data-test="share-create"]').click();
-  await expect(page.locator('[data-test="share-guest-key"]')).toHaveText(guestKey);
-  const qr = page.locator('[data-test="share-qr"]');
-  await expect(qr).toBeVisible();
-  await expect.poll(async () => qr.evaluate((element) => {
-    const canvas = element as HTMLCanvasElement;
-    const pixels = canvas.getContext("2d")?.getImageData(0, 0, canvas.width, canvas.height).data;
-    if (!pixels) return { width: canvas.width, height: canvas.height, hasDark: false, hasLight: false };
-    let hasDark = false;
-    let hasLight = false;
-    for (let index = 0; index < pixels.length; index += 4) {
-      const red = pixels[index];
-      const green = pixels[index + 1];
-      const blue = pixels[index + 2];
-      const alpha = pixels[index + 3];
-      if (alpha > 0 && red < 64 && green < 64 && blue < 64) hasDark = true;
-      if (alpha > 0 && red > 240 && green > 240 && blue > 240) hasLight = true;
-      if (hasDark && hasLight) break;
-    }
-    return { width: canvas.width, height: canvas.height, hasDark, hasLight };
-  })).toEqual({ width: 164, height: 164, hasDark: true, hasLight: true });
-  await expect(page.locator("body")).not.toContainText("upstream-owner-token");
-  expect(await page.evaluate(() => Object.values(localStorage))).not.toContain(guestKey);
-  await page.screenshot({ path: `test-results/amber-share-${testInfo.project.name}.png`, fullPage: true });
+  await page.goto("/#/cloud");
+  await page.locator('[data-test="cloud-tab-shares"]').click();
+  await page.locator('[data-test="new-share-group"]').click();
+  await page.locator('[data-test="share-group-name"]').fill("Team Pool");
+  await page.locator('[data-test="wizard-next"]').click();
+  await page.locator('[data-test="wizard-account-1"]').check();
+  await page.locator('[data-test="wizard-account-2"]').check();
+  await page.getByRole("combobox").selectOption("worker_direct");
+  await page.locator('[data-test="wizard-next"]').click();
+  await page.locator(`[data-test="wizard-friend-${friendshipIDs[0]}"]`).check();
+  await page.locator(`[data-test="wizard-friend-${friendshipIDs[1]}"]`).check();
+  await page.locator('[data-test="wizard-next"]').click();
+  await page.getByLabel("Total request quota").fill("1000");
+  await page.locator('[data-test="wizard-next"]').click();
+  await page.locator('[data-test="wizard-create"]').click();
 
-  await page.getByRole("button", { name: "Close" }).click();
-  await page.locator('[data-test="account-details"]').click();
-  await page.locator('[data-test="account-share"]').click();
-  await expect(page.locator('[data-test="share-guest-key"]')).toHaveCount(0);
-  await page.getByRole("button", { name: "Revoke" }).click();
-  expect(revoked).toBe(true);
-  await expect(page.getByText("Revoked", { exact: true })).toBeVisible();
+  await expect(page.locator('[data-test="share-group-detail"]')).toBeVisible();
+  expect(createPayload).toMatchObject({
+    name: "Team Pool",
+    default_quota_requests: 1000,
+    accounts: [
+      { account_id: 1, relay_mode: "owner_device" },
+      { account_id: 2, relay_mode: "worker_direct" },
+    ],
+    recipients: [{ friendship_id: friendshipIDs[0] }, { friendship_id: friendshipIDs[1] }],
+  });
+  expect(typeof createPayload?.idempotency_key).toBe("string");
+  await expect(page.locator('[data-test="share-qr"]')).toHaveCount(0);
+  await expect(page.locator("body")).not.toContainText("Scan");
 });
 
-test("blocks OAuth cloud sharing until owner-device relay is available", async ({ page }) => {
-  const accountUID = "018f1f46-7a19-7cc2-88cb-f577e51d3999";
-  let createCalls = 0;
-  await page.addInitScript(() => {
-    localStorage.setItem("s2a_control_port", "45678");
-    localStorage.setItem("s2a_control_token", "fixture-control-token");
-    localStorage.setItem("s2a_lang", "en");
+test("accepts a received share, keeps its key masked, and tests it through the local control API", async ({ page }) => {
+  await initialize(page);
+  const guestKey = "sk-amber-received-fixture-secret";
+  let accepted = false;
+  let testCalls = 0;
+  const receivedShare = () => ({
+    public_id: "sgr_018f1f46-7a19-7cc2-88cb-f577e51d4400",
+    status: accepted ? "active" : "pending",
+    group: {
+      public_id: "shg_018f1f46-7a19-7cc2-88cb-f577e51d4401",
+      name: "Friend Pool",
+      description: "Shared with you",
+      status: "active",
+      route_policy: "balanced",
+      account_count: 2,
+      owner_device_required: true,
+    },
+    owner: { display_name: "Lin" },
+    rpm_limit: 30,
+    concurrency_limit: 2,
+    quota_requests: 100,
+    used_requests: 1,
+    created_at: "2026-07-18T00:00:00Z",
+    base_url: "https://amber-cloud-api.example.test/v1",
+    ...(accepted ? { key: { public_id: "sak_fixture", key_prefix: "sk-amber-received", key_version: 1, status: "active" }, api_key: guestKey } : {}),
   });
-  await page.route("http://127.0.0.1:45678/control/**", async (route) => {
+  await page.route(`${controlOrigin}/control/**`, async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
-    let body: unknown = {};
-    if (path === "/control/status") body = { version: "0.3.3", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "http://127.0.0.1:8080/v1", lan_addresses: [], local_api_key: "", account_count: 1, schema_version: 11 };
-    if (path === "/control/accounts") body = { accounts: [{ id: 1, account_type: "oauth", base_url: "", email: "owner@example.test", chatgpt_account_id: "acct-owner", plan_type: "plus", expires_at: "2026-08-01T00:00:00Z", status: "active", consecutive_failures: 0, max_concurrency: 3, queue_capacity: 20, in_flight: 0, waiting: 0, created_at: "2026-07-01T00:00:00Z", client_uid: accountUID }], usage: {} };
-    if (path === "/control/proxies") body = { proxies: [] };
-    if (path === "/control/settings") body = { account_strategy: "quota_aware", default_model: "gpt-5.6" };
-    if (path === "/control/models") body = { models: ["gpt-5.6"], default_test_model: "gpt-5.6" };
-    if (path === "/control/cloud/status") body = { configured: true, authenticated: true, pending_verification: false, email: "owner@example.test", role: "user", pending_items: 0, syncing: false, conflicts: [] };
-    if (path === "/control/cloud/shares" && request.method() === "GET") body = { shares: [] };
-    if (path === "/control/cloud/shares" && request.method() === "POST") createCalls += 1;
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+    if (path === "/control/status") return fulfill(route, localStatus);
+    if (path === "/control/cloud/status") return fulfill(route, cloudStatus);
+    if (path === "/control/cloud/profile") return fulfill(route, profile);
+    if (path === "/control/cloud/workspace") return fulfill(route, {
+      profile,
+      friends: { friends: [] },
+      friend_requests: { requests: [] },
+      share_groups: { groups: [] },
+      received_shares: { shares: [receivedShare()] },
+      devices: { devices: [], relay_enabled: false },
+    });
+    if (path === "/control/cloud/friends") return fulfill(route, { friends: [] });
+    if (path === "/control/cloud/friend-requests") return fulfill(route, { requests: [] });
+    if (path === "/control/cloud/share-groups") return fulfill(route, { groups: [] });
+    if (path === "/control/cloud/received-shares") return fulfill(route, { shares: [receivedShare()] });
+    if (path.endsWith("/accept")) { accepted = true; return fulfill(route, receivedShare()); }
+    if (path.endsWith("/test")) { testCalls += 1; return fulfill(route, { ok: true, status: 200, message: "available" }); }
+    if (path === "/control/cloud/devices") return fulfill(route, { devices: [], relay_enabled: false });
+    if (path === "/control/accounts") return fulfill(route, { accounts: [], usage: {} });
+    return fulfill(route, {});
   });
 
+  await page.goto("/#/cloud");
+  await page.locator('[data-test="cloud-tab-received"]').click();
+  await page.locator('[data-test="accept-received-share"]').click();
+  await expect(page.getByText("sk-amber-received••••••••")).toBeVisible();
+  await expect(page.locator("body")).not.toContainText(guestKey);
+  await page.locator('[data-test="test-received-share"]').click();
+  expect(testCalls).toBe(1);
+  await expect(page.getByText("Shared connection test succeeded")).toBeVisible();
+  expect(await page.evaluate(() => Object.values(localStorage))).not.toContain(guestKey);
+});
+
+test("account details no longer expose legacy one-account sharing or QR controls", async ({ page }) => {
+  await initialize(page);
+  await page.route(`${controlOrigin}/control/**`, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/control/status") return fulfill(route, localStatus);
+    if (path === "/control/accounts") return fulfill(route, { accounts: [accounts[0]], usage: {} });
+    if (path === "/control/proxies") return fulfill(route, { proxies: [] });
+    if (path === "/control/settings") return fulfill(route, { account_strategy: "quota_aware", default_model: "gpt-5.6" });
+    if (path === "/control/models") return fulfill(route, { models: ["gpt-5.6"], default_test_model: "gpt-5.6" });
+    return fulfill(route, {});
+  });
   await page.goto("/#/accounts");
   await page.locator('[data-test="account-details"]').click();
-  await page.locator('[data-test="account-share"]').click();
-  await expect(page.getByText("OAuth accounts require owner-device relay; direct cloud sharing is unavailable in this version.")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Share account through Amber Cloud" })).toBeVisible();
-  await expect(page.locator('[data-test="share-create"]')).toHaveCount(0);
-  expect(createCalls).toBe(0);
+  await expect(page.locator('[data-test="account-share"]')).toHaveCount(0);
+  await expect(page.locator('[data-test="share-qr"]')).toHaveCount(0);
 });

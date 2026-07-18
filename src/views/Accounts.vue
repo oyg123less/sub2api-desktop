@@ -5,7 +5,6 @@ import Icon from "../components/Icon.vue";
 import ConfirmModal from "../components/ConfirmModal.vue";
 import EmptyState from "../components/EmptyState.vue";
 import SkeletonBlock from "../components/SkeletonBlock.vue";
-import ShareQRCode from "../components/ShareQRCode.vue";
 import AccountProxySelect from "../components/AccountProxySelect.vue";
 import {
   api,
@@ -13,8 +12,6 @@ import {
   type AccountRuntimeState,
   type AccountUsage,
   type AccountTestResult,
-  type CloudShare,
-  type CloudShareUsage,
   type ImportCommitResult,
   type ImportPreview,
   type ImportProxyOptions,
@@ -33,17 +30,6 @@ const usage = ref<Record<string, AccountUsage>>({});
 const proxies = ref<Proxy[]>([]);
 const loading = ref(true);
 const accountStrategy = ref<Settings["account_strategy"]>("quota_aware");
-const cloudAuthenticated = ref(false);
-const cloudShares = ref<CloudShare[]>([]);
-const shareOpen = ref(false);
-const shareTarget = ref<Account | null>(null);
-const shareQuota = ref(0);
-const shareExpires = ref("");
-const shareConsent = ref(false);
-const shareBusy = ref("");
-const createdShare = ref<{ share: CloudShare; guest_key: string } | null>(null);
-const shareUsage = ref<CloudShareUsage[]>([]);
-const shareUsageTarget = ref<CloudShare | null>(null);
 
 // connectivity test flow
 const testOpen = ref(false);
@@ -348,19 +334,6 @@ async function load() {
     if (testModel.value && !modelOptions.value.includes(testModel.value)) {
       modelOptions.value.unshift(testModel.value);
     }
-    const cloudStatus = await api.cloudStatus().catch(() => null);
-    cloudAuthenticated.value = Boolean(cloudStatus?.authenticated);
-    if (cloudAuthenticated.value) {
-      try {
-        cloudShares.value = (await api.cloudShares()).shares || [];
-      } catch {
-        cloudShares.value = [];
-        const refreshedStatus = await api.cloudStatus().catch(() => null);
-        cloudAuthenticated.value = Boolean(refreshedStatus?.authenticated);
-      }
-    } else {
-      cloudShares.value = [];
-    }
   } catch (e) {
     app.toast((e as Error).message, "error");
   } finally {
@@ -413,101 +386,6 @@ function onVisibilityChange() {
     return;
   }
   void pollRuntime();
-}
-
-function sharesForAccount(account: Account): CloudShare[] {
-  return cloudShares.value.filter((share) => share.account_uid === account.client_uid);
-}
-
-function openShare(account: Account) {
-	detailTarget.value = null;
-  shareTarget.value = account;
-  shareQuota.value = 0;
-  shareExpires.value = "";
-  shareConsent.value = false;
-  createdShare.value = null;
-  shareUsage.value = [];
-  shareUsageTarget.value = null;
-  shareOpen.value = true;
-}
-
-function closeShare() {
-  if (shareBusy.value) return;
-  shareOpen.value = false;
-  shareTarget.value = null;
-  createdShare.value = null;
-  shareUsage.value = [];
-  shareUsageTarget.value = null;
-}
-
-async function createCloudShare() {
-  if (shareTarget.value?.account_type === "oauth") {
-    app.toast(t("accounts.oauthShareRequiresDevice"), "warn");
-    return;
-  }
-  if (!shareTarget.value || !shareConsent.value || shareQuota.value < 0 || shareQuota.value > 1_000_000) {
-    app.toast(t("accounts.shareIncomplete"), "error");
-    return;
-  }
-  let expiresAt = "";
-  if (shareExpires.value) {
-    const expiry = new Date(`${shareExpires.value}T23:59:59`);
-    if (Number.isNaN(expiry.getTime()) || expiry.getTime() <= Date.now()) {
-      app.toast(t("accounts.shareExpiryInvalid"), "error");
-      return;
-    }
-    expiresAt = expiry.toISOString();
-  }
-  shareBusy.value = "create";
-  try {
-    createdShare.value = await api.cloudCreateShare({
-      account_id: shareTarget.value.id,
-      quota_requests: shareQuota.value,
-      expires_at: expiresAt,
-      consent: true,
-    });
-    cloudShares.value = (await api.cloudShares()).shares || [];
-    shareConsent.value = false;
-    app.toast(t("accounts.shareCreated"), "success");
-  } catch (error) {
-    app.toast((error as Error).message, "error");
-  } finally {
-    shareBusy.value = "";
-  }
-}
-
-async function toggleCloudShare(share: CloudShare) {
-  shareBusy.value = `toggle-${share.id}`;
-  try {
-    await api.cloudUpdateShare(share.id, { revoked: !share.revoked });
-    cloudShares.value = (await api.cloudShares()).shares || [];
-    app.toast(t(share.revoked ? "accounts.shareRestored" : "accounts.shareRevoked"), "success");
-  } catch (error) {
-    app.toast((error as Error).message, "error");
-  } finally {
-    shareBusy.value = "";
-  }
-}
-
-async function loadShareUsage(share: CloudShare) {
-  shareBusy.value = `usage-${share.id}`;
-  try {
-    shareUsageTarget.value = share;
-    shareUsage.value = (await api.cloudShareUsage(share.id)).usage || [];
-  } catch (error) {
-    app.toast((error as Error).message, "error");
-  } finally {
-    shareBusy.value = "";
-  }
-}
-
-async function copyShareValue(value: string) {
-  try {
-    await navigator.clipboard.writeText(value);
-    app.toast(t("common.copied"), "success");
-  } catch {
-    app.toast(t("accounts.copyFailed"), "error");
-  }
 }
 
 async function copyTestDetails(value: string) {
@@ -915,67 +793,11 @@ onUnmounted(() => {
 
             <div class="detail-actions">
               <button v-if="detailTarget.status !== 'active'" class="btn btn-ghost btn-sm" :disabled="resetting[detailTarget.id]" @click="forceReset(detailTarget)"><Icon name="check" :size="14" />{{ t("accounts.forceReset") }}</button>
-              <button v-if="cloudAuthenticated" class="btn btn-ghost btn-sm" data-test="account-share" @click="openShare(detailTarget)"><Icon name="link" :size="14" />{{ t("accounts.share") }}</button>
               <button v-if="detailTarget.account_type === 'oauth' && detailTarget.status === 'refresh_failed'" class="btn btn-primary btn-sm" @click="reLogin(detailTarget)"><Icon name="refresh" :size="14" />{{ t("accounts.relogin") }}</button>
               <button v-else-if="detailTarget.account_type === 'oauth'" class="btn btn-ghost btn-sm" @click="refreshToken(detailTarget)"><Icon name="refresh" :size="14" />{{ t("common.refresh") }}</button>
               <button class="btn btn-danger btn-sm detail-delete" :title="t('common.delete')" @click="deleteTarget = detailTarget"><Icon name="trash" :size="14" /></button>
             </div>
           </div>
-        </div>
-      </div>
-    </Teleport>
-
-    <!-- Cloud share modal -->
-    <Teleport to="body">
-      <div v-if="shareOpen && shareTarget" class="modal-backdrop" @click.self="closeShare">
-        <div class="modal share-modal" role="dialog" aria-modal="true" tabindex="-1" @keydown.esc="closeShare">
-          <h3 class="modal-title">{{ t("accounts.shareTitle") }}</h3>
-          <p class="modal-desc">{{ shareTarget.email }}</p>
-
-          <div v-if="shareTarget.account_type === 'oauth'" class="share-custody-warning" role="note">
-            <Icon name="warn" :size="18" />
-            <div><strong>{{ t("accounts.oauthShareUnavailableTitle") }}</strong><p>{{ t("accounts.oauthShareRequiresDevice") }}</p></div>
-          </div>
-          <div v-else class="share-custody-warning" role="note">
-            <Icon name="warn" :size="18" />
-            <div><strong>{{ t("accounts.shareCustodyTitle") }}</strong><p>{{ t("accounts.shareCustodyDesc") }}</p></div>
-          </div>
-
-          <div v-if="createdShare" class="share-created" data-test="share-created">
-            <div><strong>{{ t("accounts.shareKeyOnce") }}</strong><span>{{ t("accounts.shareKeyOnceDesc") }}</span></div>
-            <div class="share-created-content">
-              <div class="share-qr-wrap"><ShareQRCode :base-url="createdShare.share.base_url" :guest-key="createdShare.guest_key" :share-code="createdShare.share.share_code" /><small>{{ t("accounts.shareQR") }}</small></div>
-              <div class="share-created-fields">
-                <label class="field"><span class="field-label">Base URL</span><div class="code-box"><span>{{ createdShare.share.base_url }}</span><button class="copy-btn" type="button" :title="t('common.copy')" @click="copyShareValue(createdShare.share.base_url)"><Icon name="copy" :size="14" /></button></div></label>
-                <label class="field"><span class="field-label">API Key</span><div class="code-box"><span data-test="share-guest-key">{{ createdShare.guest_key }}</span><button class="copy-btn" type="button" :title="t('common.copy')" @click="copyShareValue(createdShare.guest_key)"><Icon name="copy" :size="14" /></button></div></label>
-                <label class="field"><span class="field-label">{{ t("accounts.shareCode") }}</span><div class="code-box"><span>{{ createdShare.share.share_code }}</span><button class="copy-btn" type="button" :title="t('common.copy')" @click="copyShareValue(createdShare.share.share_code)"><Icon name="copy" :size="14" /></button></div></label>
-              </div>
-            </div>
-            <p class="share-access-note">{{ t("accounts.shareAccessHint") }}</p>
-          </div>
-
-          <div v-if="shareTarget.account_type !== 'oauth'" class="share-create-form">
-            <label class="field"><span class="field-label">{{ t("accounts.shareQuota") }}</span><input v-model.number="shareQuota" class="input" type="number" min="0" max="1000000" /><small>{{ t("accounts.shareQuotaHint") }}</small></label>
-            <label class="field"><span class="field-label">{{ t("accounts.shareExpires") }}</span><input v-model="shareExpires" class="input" type="date" /></label>
-            <label class="share-consent"><input v-model="shareConsent" type="checkbox" /><span>{{ t("accounts.shareConsent") }}</span></label>
-            <button class="btn btn-primary" data-test="share-create" type="button" :disabled="shareBusy !== '' || !shareConsent" @click="createCloudShare"><Icon name="link" :size="14" />{{ shareBusy === "create" ? t("accounts.shareCreating") : t("accounts.shareCreate") }}</button>
-          </div>
-
-          <div v-if="sharesForAccount(shareTarget).length" class="share-existing">
-            <h4>{{ t("accounts.shareExisting") }}</h4>
-            <article v-for="share in sharesForAccount(shareTarget)" :key="share.id">
-              <div class="share-row-main"><span class="badge" :class="share.revoked ? 'badge-danger' : 'badge-success'">{{ t(share.revoked ? "accounts.shareStatusRevoked" : "accounts.shareStatusActive") }}</span><strong class="mono">{{ share.share_code }}</strong><span>{{ share.used_requests }} / {{ share.quota_requests || "∞" }}</span><small>{{ fmtDate(share.expires_at) }}</small></div>
-              <div class="share-row-actions"><button class="btn btn-ghost btn-sm" type="button" :disabled="shareBusy !== ''" @click="loadShareUsage(share)"><Icon name="statistics" :size="13" />{{ t("accounts.shareUsage") }}</button><button class="btn btn-sm" :class="share.revoked ? 'btn-ghost' : 'btn-danger'" type="button" :disabled="shareBusy !== ''" @click="toggleCloudShare(share)">{{ t(share.revoked ? "accounts.shareRestore" : "accounts.shareRevoke") }}</button></div>
-            </article>
-          </div>
-
-          <div v-if="shareUsageTarget" class="share-usage">
-            <h4>{{ t("accounts.shareUsageTitle", { code: shareUsageTarget.share_code }) }}</h4>
-            <div v-if="shareUsage.length === 0" class="faint text-sm">{{ t("accounts.shareNoUsage") }}</div>
-            <div v-for="entry in shareUsage" :key="entry.id" class="share-usage-row"><span>{{ fmtDate(entry.ts) }}</span><strong>{{ entry.model || "-" }}</strong><span :class="entry.status >= 400 ? 'text-danger' : 'text-success'">HTTP {{ entry.status }}</span><span>{{ entry.latency_ms }}ms</span></div>
-          </div>
-
-          <div class="modal-actions"><button class="btn btn-ghost" :disabled="shareBusy !== ''" @click="closeShare">{{ t("common.close") }}</button></div>
         </div>
       </div>
     </Teleport>
@@ -1347,28 +1169,6 @@ onUnmounted(() => {
 .detail-proxy { margin-top: 12px; }
 .detail-actions { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 16px; }
 .detail-delete { margin-left: auto; }
-.share-modal { max-width: 720px; max-height: min(88vh, 820px); overflow-y: auto; }
-.share-custody-warning { display: flex; gap: 10px; margin: 14px 0; padding: 12px 14px; border: 1px solid rgba(193, 134, 58, .3); border-radius: 8px; background: var(--warn-soft); color: var(--warn); }
-.share-custody-warning p { margin: 3px 0 0; color: var(--text-dim); line-height: 1.5; }
-.share-created { display: grid; gap: 10px; padding: 14px; border: 1px solid rgba(63, 143, 95, .28); border-radius: 8px; background: var(--success-soft); }
-.share-created > div:first-child { display: grid; gap: 3px; color: var(--success); }
-.share-created .field { margin: 0; }
-.share-created-content { display: grid; grid-template-columns: 176px minmax(0, 1fr); gap: 14px; align-items: start; }
-.share-created-fields { display: grid; gap: 10px; min-width: 0; }
-.share-qr-wrap { display: grid; gap: 5px; justify-items: center; color: var(--text-dim); text-align: center; }
-.share-access-note { margin: 0; color: var(--text-dim); font-size: 12px; }
-.share-create-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: end; margin-top: 16px; }
-.share-create-form .field { margin: 0; }
-.share-create-form small { color: var(--text-faint); }
-.share-consent { grid-column: 1 / -1; display: flex; align-items: flex-start; gap: 9px; color: var(--text-dim); cursor: pointer; }
-.share-create-form > .btn { justify-self: start; }
-.share-existing, .share-usage { margin-top: 18px; border-top: 1px solid var(--border-soft); }
-.share-existing h4, .share-usage h4 { margin: 14px 0 8px; font-size: 13px; }
-.share-existing article { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border-soft); }
-.share-row-main { min-width: 0; display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
-.share-row-main small { color: var(--text-faint); }
-.share-row-actions { display: flex; gap: 6px; flex-shrink: 0; }
-.share-usage-row { display: grid; grid-template-columns: minmax(150px, 1.3fr) minmax(100px, 1fr) auto auto; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border-soft); font-size: 12px; }
 @container accounts-page (max-width: 1180px) {
 	.account-row { grid-template-columns: minmax(180px, 2fr) minmax(125px, 1.25fr) minmax(76px, .65fr) minmax(82px, .65fr) minmax(105px, .85fr) minmax(160px, auto); gap: 10px; }
 	.account-row-actions { flex-direction: column; align-items: stretch; }
@@ -1395,9 +1195,5 @@ onUnmounted(() => {
 	.detail-grid, .limit-grid, .import-proxy-config { grid-template-columns: minmax(0, 1fr); }
 	.usage-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 	.detail-wide { grid-column: auto; }
-  .share-create-form { grid-template-columns: minmax(0, 1fr); }
-  .share-created-content { grid-template-columns: minmax(0, 1fr); }
-  .share-existing article { align-items: stretch; flex-direction: column; }
-  .share-usage-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 </style>
