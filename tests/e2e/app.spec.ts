@@ -33,9 +33,11 @@ test("persists manual dark mode, copies the version, and respects reduced motion
   const radius = await page.locator(".card").first().evaluate((element) => parseFloat(getComputedStyle(element).borderRadius));
   expect(radius).toBeLessThanOrEqual(8);
 
-  await page.locator(".version-copy").click();
+  const versionCopyButton = page.locator(".version-copy");
+  const displayedVersion = (await versionCopyButton.innerText()).trim();
+  await versionCopyButton.click();
   await expect(page.getByText("Version copied")).toBeVisible();
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("v0.3.3");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(displayedVersion);
 
   await page.emulateMedia({ reducedMotion: "reduce" });
   const duration = await page.locator(".nav-item").first().evaluate((element) => getComputedStyle(element).transitionDuration);
