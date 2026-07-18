@@ -5,6 +5,7 @@ import { bytesToBase64URL, randomToken, sha256 } from "./security";
 import type { AppEnv } from "./types";
 
 const maxGatewayBody = 4 * 1024 * 1024;
+const gatewayEncoder = new TextEncoder();
 
 interface AccessGrant {
   key_id: number;
@@ -51,6 +52,17 @@ function requestModel(body: ArrayBuffer): string {
     const parsed = JSON.parse(new TextDecoder().decode(body)) as { model?: unknown };
     return typeof parsed.model === "string" ? parsed.model.slice(0, 128) : "";
   } catch { return ""; }
+}
+
+function normalizeGatewayBody(body: ArrayBuffer): ArrayBuffer {
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(body)) as Record<string, unknown>;
+    if (parsed.model !== "gpt-5.6") return body;
+    parsed.model = "gpt-5.6-sol";
+    return new Uint8Array(gatewayEncoder.encode(JSON.stringify(parsed))).buffer;
+  } catch {
+    return body;
+  }
 }
 
 function upstreamURL(configured: string, path: string): string {
@@ -193,8 +205,9 @@ export async function forwardGroupShare(c: Context<AppEnv>, guestKey: string): P
   if (!guestKey.startsWith("sk-amber-") || guestKey.length > 256) throw new AppError(401, "share_access_revoked", "The access key is invalid or has been revoked.");
   const contentLength = Number(c.req.header("content-length") || 0);
   if (!Number.isFinite(contentLength) || contentLength > maxGatewayBody) throw new AppError(413, "request_too_large", "The gateway request is too large.");
-  const body = await c.req.arrayBuffer();
-  if (body.byteLength > maxGatewayBody) throw new AppError(413, "request_too_large", "The gateway request is too large.");
+  const requestBody = await c.req.arrayBuffer();
+  if (requestBody.byteLength > maxGatewayBody) throw new AppError(413, "request_too_large", "The gateway request is too large.");
+  const body = normalizeGatewayBody(requestBody);
   const grant = await loadGrant(c, guestKey);
   const accounts = await c.env.DB.prepare(`SELECT id,public_id,account_uid,account_type,relay_mode,token_cipher,priority,weight
     FROM share_group_accounts WHERE group_id=? AND enabled=1 ORDER BY priority ASC,id ASC`).bind(grant.group_id).all<GroupAccount>();

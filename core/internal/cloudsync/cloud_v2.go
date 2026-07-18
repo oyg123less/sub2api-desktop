@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"sub2api-desktop/core/internal/openai"
 	"sub2api-desktop/core/internal/store"
 )
 
@@ -712,7 +713,7 @@ func (m *Manager) TestReceivedShare(ctx context.Context, shareID string) (CloudS
 		return CloudShareConnectionTest{}, errors.New("the shared Base URL is not trusted")
 	}
 	payload, _ := json.Marshal(map[string]any{
-		"model": "gpt-5.6", "input": "Reply with OK.", "max_output_tokens": 1, "store": false,
+		"model": openai.DefaultTestModel, "input": "Reply with OK.", "max_output_tokens": 1, "store": false,
 	})
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), bytes.NewReader(payload))
 	if err != nil {

@@ -2,6 +2,7 @@ package cloudsync
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,8 +10,59 @@ import (
 	"testing"
 	"time"
 
+	"sub2api-desktop/core/internal/openai"
 	"sub2api-desktop/core/internal/store"
 )
+
+func TestReceivedShareUsesCatalogDefaultTestModel(t *testing.T) {
+	vaultKey := make([]byte, keySize)
+	for index := range vaultKey {
+		vaultKey[index] = byte(index + 1)
+	}
+	var receivedModel string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/refresh":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"access","access_expires_in":900,"refresh_token":"refresh-next"}`))
+		case "/v1/responses":
+			var payload struct {
+				Model string `json:"model"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("decode test request: %v", err)
+			}
+			receivedModel = payload.Model
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"shared-test"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	st := openTestStore(t, "received-share-test-model")
+	if err := st.SaveCloudSession(store.CloudSession{
+		UserID: 1, Email: "recipient@example.test", Role: "user", SaltKDF: "salt-kdf", SaltAuth: "salt-auth",
+		WrappedVaultKey: "wrapped", VaultKey: rawURL(vaultKey), RefreshToken: "refresh",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveCloudReceivedKey(store.CloudReceivedKey{
+		UserID: 1, GrantPublicID: "sgr_test_model", KeyVersion: 1, KeyPrefix: "sk-amber-test",
+		BaseURL: server.URL + "/v1", GuestKey: "sk-amber-received-test-key",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(st, &testSettings{value: store.DefaultSettings()}, server.URL, "site-key", server.Client(), nil)
+	result, err := manager.TestReceivedShare(context.Background(), "sgr_test_model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || receivedModel != openai.DefaultTestModel {
+		t.Fatalf("received share test = %#v, model = %q", result, receivedModel)
+	}
+}
 
 func TestLoadWorkspaceRunsIndependentCloudReadsConcurrently(t *testing.T) {
 	vaultKey := make([]byte, keySize)
