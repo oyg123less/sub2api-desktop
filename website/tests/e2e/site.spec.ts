@@ -132,10 +132,10 @@ test("documentation exposes the appropriate table of contents", async ({ page })
   }
 });
 
-test("hero screenshot is loaded and nonblank", async ({ page }) => {
+test("hero cover is loaded, sharp, and nonblank", async ({ page }) => {
   await page.goto("/");
-  const heroImage = page.locator(".hero-product-image");
-  await expect(heroImage).toHaveAttribute("src", "/screenshots/hero-dashboard.png");
+  const heroImage = page.locator(".hero-cover-image");
+  await expect(heroImage).toHaveAttribute("src", "/hero-cover.png");
   await expect(heroImage).toBeVisible();
 
   const result = await heroImage.evaluate(async (node) => {
@@ -156,6 +156,7 @@ test("hero screenshot is loaded and nonblank", async ({ page }) => {
     return {
       width: image.naturalWidth,
       height: image.naturalHeight,
+      currentSrc: new URL(image.currentSrc).pathname,
       colors: colors.size,
       renderedWidth,
       renderedHeight,
@@ -163,9 +164,11 @@ test("hero screenshot is loaded and nonblank", async ({ page }) => {
     };
   });
 
+  const mobileCover = (page.viewportSize()?.width ?? 0) <= 640;
   expect(result).toEqual({
-    width: 2880,
-    height: 1800,
+    width: mobileCover ? 1080 : 2880,
+    height: mobileCover ? 1350 : 1280,
+    currentSrc: mobileCover ? "/hero-cover-mobile.png" : "/hero-cover.png",
     colors: expect.any(Number),
     renderedWidth: expect.any(Number),
     renderedHeight: expect.any(Number),
@@ -178,7 +181,7 @@ test("hero screenshot is loaded and nonblank", async ({ page }) => {
   expect(result.pixelDensity).toBeGreaterThanOrEqual(2);
 });
 
-test("homepage keeps copy and product image separate at responsive edges", async ({ page }, testInfo) => {
+test("homepage prioritizes download and cover at responsive edges", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "Smallest viewport regression check runs once.");
 
   for (const width of [761, 720]) {
@@ -186,36 +189,37 @@ test("homepage keeps copy and product image separate at responsive edges", async
     await page.goto("/");
     await page.evaluate(() => document.fonts.ready);
     const tabletLayout = await page.evaluate(() => {
-      const copy = document.querySelector(".hero-content")?.getBoundingClientRect();
-      const stage = document.querySelector(".hero-product-stage")?.getBoundingClientRect();
+      const copy = document.querySelector(".hero-copy")?.getBoundingClientRect();
+      const cover = document.querySelector(".hero-cover")?.getBoundingClientRect();
       return {
         copyBottom: copy?.bottom ?? 0,
-        stageTop: stage?.top ?? 0,
+        coverTop: cover?.top ?? 0,
       };
     });
-    expect(tabletLayout.copyBottom).toBeLessThanOrEqual(tabletLayout.stageTop);
+    expect(tabletLayout.copyBottom).toBeLessThanOrEqual(tabletLayout.coverTop);
   }
 
   await page.setViewportSize({ width: 320, height: 568 });
   await page.goto("/");
+  await expect(page.getByRole("link", { name: /下载最新版 v/ })).toBeVisible();
 
   const layout = await page.evaluate(() => {
-    const copy = document.querySelector(".hero-content")?.getBoundingClientRect();
-    const stage = document.querySelector(".hero-product-stage")?.getBoundingClientRect();
-    const nextSection = document.querySelector(".boundary-strip")?.getBoundingClientRect();
+    const copy = document.querySelector(".hero-copy")?.getBoundingClientRect();
+    const cover = document.querySelector(".hero-cover")?.getBoundingClientRect();
+    const nextSection = document.querySelector(".home-highlights")?.getBoundingClientRect();
     return {
       overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
       copyBottom: copy?.bottom ?? 0,
-      stageTop: stage?.top ?? 0,
-      stageHeight: stage?.height ?? 0,
+      coverTop: cover?.top ?? 0,
+      coverHeight: cover?.height ?? 0,
       nextSectionTop: nextSection?.top ?? Number.POSITIVE_INFINITY,
       viewportHeight: window.innerHeight,
     };
   });
 
   expect(layout.overflow).toBeLessThanOrEqual(1);
-  expect(Math.abs(layout.copyBottom - layout.stageTop)).toBeLessThanOrEqual(1);
-  expect(layout.stageHeight).toBeGreaterThanOrEqual(200);
+  expect(layout.copyBottom).toBeLessThanOrEqual(layout.coverTop);
+  expect(layout.coverHeight).toBeGreaterThanOrEqual(180);
   expect(layout.nextSectionTop).toBeLessThan(layout.viewportHeight);
 });
 
@@ -224,7 +228,7 @@ test("captures homepage and documentation visual evidence", async ({ page }, tes
   fs.mkdirSync(directory, { recursive: true });
 
   await page.goto("/");
-  await page.locator(".hero-product-image").evaluate(async (node) => (node as HTMLImageElement).decode());
+  await page.locator(".hero-cover-image").evaluate(async (node) => (node as HTMLImageElement).decode());
   await page.screenshot({ path: path.join(directory, `home-${testInfo.project.name}.png`), fullPage: true });
   await page.goto("/docs");
   await page.screenshot({ path: path.join(directory, `docs-${testInfo.project.name}.png`), fullPage: true });
