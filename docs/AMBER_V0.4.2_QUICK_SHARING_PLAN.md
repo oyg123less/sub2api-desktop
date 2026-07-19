@@ -1,6 +1,6 @@
 # Amber v0.4.2 连接码共享与云账户界面改造计划
 
-> 文档状态：实施完成，Worker 已部署，待 GitHub Release 与版本门禁
+> 文档状态：实施与生产发布完成
 > 目标版本：v0.4.2
 > 基线版本：v0.4.1
 > 开发分支：`v0.4.2-development`
@@ -12,10 +12,10 @@
 
 - Worker、Go Sidecar、桌面前端、文档与 NSIS v0.4.2 已完成。
 - Claim 严格按“保存密钥 -> 建立禁用映射 -> 真实测试 -> 成功后启用”执行；失败状态可在收到的共享中重试，不会重复领取。
-- D1 `0006_connect_codes.sql` 与 `0007_user_events.sql` 已通过本地 Worker 测试。
+- D1 `0006_connect_codes.sql` 与 `0007_user_events.sql` 已通过测试并应用到生产数据库。
 - Go 全套、定向 race、Rust、前端单元测试、Worker 测试、生产构建和 68 项双窗口 E2E 已通过。
-- NSIS 已生成到 `src-tauri/target/release/bundle/nsis/Amber_0.4.2_x64-setup.exe`，打包过程没有安装或卸载 Amber。
-- 待发布：配置生产 `SHARE_CONNECT_PEPPER` Secret、远程应用 D1 migration、部署 Worker、发布 GitHub Release，最后才将 `enforce_client_version` 改为 `true`。
+- NSIS 已生成到 `src-tauri/target/release/bundle/nsis/Amber_0.4.2_x64-setup.exe`，SHA-256 为 `15816549495C888E6D0566D0C42F085260FB94A93409608899236B9C1672C869`；打包过程没有安装或卸载 Amber。
+- 生产 `SHARE_CONNECT_PEPPER`、Worker、GitHub v0.4.2 Release 和最低客户端版本门禁均已发布；旧客户端返回 HTTP 426，v0.4.2 正常进入鉴权流程。
 - 隔离环境的 v0.4.1 -> v0.4.2 覆盖安装仍需在非用户生产环境执行；禁止用当前已安装 Amber 做该测试。
 
 ---
