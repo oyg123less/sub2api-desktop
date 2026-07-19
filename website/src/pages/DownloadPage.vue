@@ -147,7 +147,7 @@ async function copyChecksum() {
       <span class="status-pill upcoming">即将发布</span>
       <div>
         <h2 id="next-version-title">v{{ upcomingRelease.version }} 尚未发布</h2>
-        <p>工作区隔离、设备定向共享、移除好友主流程与“启动服务并注入”仍在开发和验证中。本页不会提前提供 v{{ upcomingRelease.version }} 安装包。</p>
+        <p>后续 0.4.x 版本将根据稳定性验证与用户反馈继续迭代。未完成发布门禁前，本页不会提前提供安装包或校验值。</p>
       </div>
       <RouterLink class="button button-secondary" to="/changelog">查看开发计划</RouterLink>
     </div>

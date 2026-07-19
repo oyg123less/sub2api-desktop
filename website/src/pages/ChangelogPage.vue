@@ -18,6 +18,10 @@ import {
 
 const history = [
   {
+    version: "v0.4.3",
+    summary: "统一受管理共享账号在云账户、账号测试和 Codex 调用中的路由。",
+  },
+  {
     version: "v0.4.2",
     summary: "加入共享码与临时密码快速共享，并修复 Owner Relay 连接恢复。",
   },
@@ -79,29 +83,29 @@ const history = [
         <article>
           <CheckCircle2 :size="20" aria-hidden="true" />
           <div>
-            <h3>工作区隔离</h3>
-            <p>计划按云用户隔离本地账号、同步状态和运行数据，降低切换账号时的数据串用风险。</p>
+            <h3>可靠性维护</h3>
+            <p>继续改进同步、共享、网络诊断与本地网关的稳定性，并根据实际反馈修复问题。</p>
           </div>
         </article>
         <article>
           <CheckCircle2 :size="20" aria-hidden="true" />
           <div>
-            <h3>设备定向共享</h3>
-            <p>计划按目标账号选择实际持有该账号的在线设备，不再只依赖主设备优先。</p>
+            <h3>使用体验</h3>
+            <p>继续减少高频操作步骤，改善状态反馈、错误说明与窄窗口下的可用性。</p>
           </div>
         </article>
         <article>
           <CheckCircle2 :size="20" aria-hidden="true" />
           <div>
-            <h3>共享流程收敛</h3>
-            <p>计划移除好友入口依赖，继续围绕共享码、临时密码和接收授权组织共享。</p>
+            <h3>兼容性验证</h3>
+            <p>在保持数据和接口兼容的前提下推进后续改进，具体内容以完成验证后的发布说明为准。</p>
           </div>
         </article>
         <article>
           <CheckCircle2 :size="20" aria-hidden="true" />
           <div>
-            <h3>可靠启动与注入</h3>
-            <p>计划将启动本地服务与 Codex 注入合并为可验证的连续操作，并提供更明确的失败反馈。</p>
+            <h3>文档与诊断</h3>
+            <p>根据用户实际问题持续补全文档、诊断路径和可操作的恢复建议。</p>
           </div>
         </article>
       </div>
@@ -127,7 +131,7 @@ const history = [
       </div>
 
       <p class="stable-summary">
-        v{{ stableRelease.version }} 统一了受管理云共享账号在云账户、账号页面、连接测试和 Codex 调用中的路由与数据表现。
+        v{{ stableRelease.version }} 完成同机多用户工作区隔离、设备定向共享、无好友前置的连接码流程，以及可靠的 Codex 启动与注入闭环。
       </p>
 
       <div class="change-grid">
@@ -136,8 +140,9 @@ const history = [
           <div>
             <h3>新增</h3>
             <ul>
-              <li>在云账户和账号工作流中统一呈现可用的受管理共享账号。</li>
-              <li>补齐共享账号测试与 Codex 使用路径所需的上下文。</li>
+              <li>每个云用户使用独立本地工作区，隔离账号、代理、同步队列、日志与 Codex 目标。</li>
+              <li>新共享固定到创建它的设备，并可显式配置最多两台备用设备。</li>
+              <li>共享主流程改为连接码与临时密码，不再要求先添加好友。</li>
             </ul>
           </div>
         </article>
@@ -147,8 +152,9 @@ const history = [
           <div>
             <h3>修复</h3>
             <ul>
-              <li>统一云账户、账号页、连接测试和 Codex 调用的共享路由。</li>
-              <li>规范接收共享时的账号标识与模型输入，减少不同入口的结果差异。</li>
+              <li>账号网络模式明确区分直连、系统代理和指定代理，避免直连账号意外继承代理。</li>
+              <li>Codex 注入会启动服务并验证健康状态、API Key、模型列表与写入结果。</li>
+              <li>云端首选 <code>api.amberapp.asia</code>，幂等请求可回退到 Workers 域名。</li>
             </ul>
           </div>
         </article>
@@ -159,8 +165,8 @@ const history = [
             <h3>兼容性</h3>
             <ul>
               <li>当前安装包面向 Windows x64。</li>
-              <li>继续支持 v0.4.2 引入的共享码与临时密码流程。</li>
-              <li>当前界面仍保留好友功能；移除工作属于 v{{ upcomingRelease.version }} 计划。</li>
+              <li>保留既有共享与 Guest Key 的兼容性，历史好友数据不会在升级时删除。</li>
+              <li>v0.4.3 数据升级时保留原文件，不把新工作区静默合并回旧数据库。</li>
             </ul>
           </div>
         </article>
@@ -170,9 +176,9 @@ const history = [
           <div>
             <h3>已知限制</h3>
             <ul>
-              <li>Owner Relay 优先选择在线主设备，不能保证该设备持有目标账号。</li>
-              <li>本地普通账号和同步队列尚未按云用户完整隔离。</li>
-              <li>需要设备回流的共享要求提供方设备保持 Amber 在线。</li>
+              <li>需要设备回流的共享仍要求主设备或已配置的合格备用设备保持 Amber 在线。</li>
+              <li>上游请求开始后不会跨设备重放；连接中断时可能返回结果未知。</li>
+              <li>归属不明确的历史数据库以只读恢复工作区打开，不会自动同步。</li>
             </ul>
           </div>
         </article>

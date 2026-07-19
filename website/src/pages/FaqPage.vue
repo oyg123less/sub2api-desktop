@@ -40,12 +40,10 @@ const faqs: FaqItem[] = [
     category: "本地服务",
     question: "Codex 返回 502 Bad Gateway 怎么处理？",
     paragraphs: [
-      `${currentVersion} 的常见原因是已经写入 Codex 配置，但 Amber 本地服务尚未启动。打开 Amber，在仪表盘启动服务，确认状态变为“运行中”，然后重新发起 Codex 请求。若仍失败，再查看统计页中的最近错误，区分本地连接问题和上游账号问题。`,
-      `${nextVersion} 计划提供“启动服务并注入”：只有本地健康检查和 /v1/models 验证通过后才写入 Codex 配置。该行为仍是即将发布内容，不能按当前版本使用。`,
+      `${currentVersion} 的“启动服务并注入”会在写入配置前启动本地服务，并验证 Amber 实例、本地 API Key 与 /v1/models。若之后仍出现 502，先确认 Amber 没有退出、端口未变化，再查看统计页最近错误，区分本地连接问题与上游账号问题。`,
     ],
     steps: ["打开 Amber。", "在仪表盘启动服务并确认运行中。", "重新加载 Codex 后再次请求。"],
     keywords: ["502", "bad gateway", "responses", "服务未启动", "注入"],
-    version: "mixed",
   },
   {
     id: "service-stopped",
@@ -63,11 +61,10 @@ const faqs: FaqItem[] = [
     question: "8080 端口被占用时该怎么做？",
     paragraphs: [
       "停止占用该端口且不再需要的程序，或在 Amber 设置中改用一个未占用端口。端口改变后，所有客户端和 Codex 配置中的 Base URL 都必须同步更新。",
-      `${nextVersion} 计划在注入前阻止继续操作，并显示冲突端口和占用信息；当前 ${currentVersion} 用户应先确认服务实际启动成功，再重新执行注入。`,
+      `${currentVersion} 会在注入前验证服务是否成功启动；端口冲突或健康检查失败时不会继续写入 Codex 配置。修复占用或改用新端口后，再执行“启动服务并注入”。`,
     ],
     note: "不要关闭来源不明的系统进程。无法确认占用者时，优先改用其他端口。",
     keywords: ["8080", "端口冲突", "address already in use", "监听", "占用"],
-    version: "mixed",
   },
   {
     id: "proxy-tun",
@@ -85,10 +82,9 @@ const faqs: FaqItem[] = [
     question: "账号测试成功，为什么 Codex 仍然不可用？",
     paragraphs: [
       "账号测试说明该账号当时能够通过所选网络访问上游，不代表本地 API 服务、Codex 配置和运行环境都正确。继续检查 Amber 服务是否运行、Base URL 与端口是否匹配、本地 API Key 是否最新，以及所选模型是否对该账号开放。",
-      `在 ${currentVersion} 中，应先启动服务，再执行一键注入，并重新加载 Codex。若 Codex 运行在 WSL、容器或远程主机，必须使用对应的远程接入方式，不能直接引用 Windows 的 127.0.0.1。${nextVersion} 将在写入配置前完成这些本地验证。`,
+      `在 ${currentVersion} 中，使用“启动服务并注入”完成本地验证和配置写入，再重新加载 Codex。若 Codex 运行在 WSL、容器或远程主机，必须使用对应的远程接入方式，不能直接引用 Windows 的 127.0.0.1。`,
     ],
     keywords: ["账号测试", "codex", "模型权限", "配置", "api key", "wsl", "容器"],
-    version: "mixed",
   },
   {
     id: "reverse-tunnel-online",
@@ -116,10 +112,9 @@ const faqs: FaqItem[] = [
     question: "云同步在 DNS、TCP、TLS 或 HTTP 阶段失败分别意味着什么？",
     paragraphs: [
       "DNS 失败表示域名未解析；TCP 失败表示无法建立到目标端口的连接；TLS 失败通常与证书链、SNI、系统时间或网络拦截有关；HTTP 失败表示连接已建立，但服务返回了错误状态或请求被拒绝。超时则要结合最后完成的阶段判断。",
-      `在云账户的“连接设置”中选择系统代理、Amber 已保存代理或直连，运行网络探测，探测成功后应用并重试同步。部分网络无法连接 workers.dev；api.amberapp.asia 是 ${nextVersion} 的计划首选入口，目前尚不能假定已经可用。`,
+      `在云账户的“连接设置”中选择系统代理、Amber 已保存代理或直连，运行网络探测，探测成功后应用并重试同步。${currentVersion} 首选 api.amberapp.asia；幂等请求在首选入口不可用时可回退到 Workers 域名。`,
     ],
     keywords: ["云同步", "dns", "tcp", "tls", "http", "workers.dev", "连接设置", "超时"],
-    version: "mixed",
   },
   {
     id: "owner-device-offline",
@@ -136,22 +131,20 @@ const faqs: FaqItem[] = [
     category: "云同步与共享",
     question: "同一云账号有多台设备在线时，共享请求走哪一台？",
     paragraphs: [
-      `${currentVersion} 当前按云用户的在线主设备优先选择，主设备离线时可能选择其他在线设备；它不能保证被选设备持有目标账号，也不是可靠的主备切换方案。`,
-      `${nextVersion} 计划让新共享默认绑定创建共享的具体电脑，并允许用户显式配置具备同一目标账号且网络健康的备用设备。上游请求开始后不会跨设备重放。该设备定向行为尚未作为稳定版发布。`,
+      `${currentVersion} 的新共享默认绑定创建共享的具体电脑。共享者可以显式配置最多两台具备目标账号且健康的备用设备；未配置的其他在线设备不会自动接管。`,
+      "故障转移只发生在上游请求开始之前。上游已经开始后不会跨设备重放，以避免重复扣费或重复执行。",
     ],
     keywords: ["同账号", "多设备", "主设备", "备用设备", "设备定向", "路由"],
-    version: "mixed",
   },
   {
     id: "cloud-account-workspaces",
     category: "云同步与共享",
     question: "切换云账号后，本地数据和工作区放在哪里？",
     paragraphs: [
-      `${currentVersion} 的普通账号、代理和同步队列尚未完整按云用户隔离。当前不要在同一数据目录中反复登录不同云账号，以免数据归属和待同步队列混在一起。`,
-      `${nextVersion} 计划为每个云账号建立独立工作区，各自保存账号、代理、同步队列、Guest Key、日志和 SSH 目标。退出登录不会删除数据或解除工作区归属；切换账号将改为切换到对应工作区。该机制仍是即将发布内容。`,
+      `${currentVersion} 为每个云账号建立独立本地工作区，各自保存账号、代理、同步队列、Guest Key、日志和 SSH 目标。退出登录不会删除数据或解除工作区归属；登录另一个账号时会切换或创建对应工作区。`,
+      "升级时若旧数据库包含多个历史用户或归属不明确的同步数据，Amber 会进入只读恢复工作区，不会猜测归属或自动上传。",
     ],
     keywords: ["切换云账号", "工作区", "数据目录", "隔离", "退出登录", "同步队列"],
-    version: "mixed",
   },
 ];
 

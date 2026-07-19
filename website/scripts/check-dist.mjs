@@ -46,14 +46,14 @@ if (fs.existsSync(redirectsFile) && /\/\*\s+\/index\.html\s+200/.test(fs.readFil
 
 const homeHtml = fs.existsSync(routeFile("/")) ? fs.readFileSync(routeFile("/"), "utf8") : "";
 if (!homeHtml.includes('"@type": "SoftwareApplication"')) errors.push("Home page is missing SoftwareApplication JSON-LD");
-if (!homeHtml.includes("v0.4.3")) errors.push("Home page does not identify v0.4.3 as stable");
+if (!homeHtml.includes("v0.4.4")) errors.push("Home page does not identify v0.4.4 as stable");
 if (homeHtml.includes("__AMBER_")) errors.push("Release metadata placeholders were not replaced");
 
 const jsonLdText = new JSDOM(homeHtml).window.document.querySelector('script[type="application/ld+json"]')?.textContent;
 if (jsonLdText) {
   const jsonLd = JSON.parse(jsonLdText);
-  if (jsonLd.softwareVersion !== "0.4.3") errors.push("SoftwareApplication version does not match the stable release");
-  if (!jsonLd.downloadUrl?.endsWith("/v0.4.3/Amber_0.4.3_x64-setup.exe")) {
+  if (jsonLd.softwareVersion !== "0.4.4") errors.push("SoftwareApplication version does not match the stable release");
+  if (!jsonLd.downloadUrl?.endsWith("/v0.4.4/Amber_0.4.4_x64-setup.exe")) {
     errors.push("SoftwareApplication download URL does not match the stable installer");
   }
 }

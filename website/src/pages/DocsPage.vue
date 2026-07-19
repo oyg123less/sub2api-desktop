@@ -9,11 +9,10 @@ import {
 import { ref } from "vue";
 import ImageViewer from "../components/ImageViewer.vue";
 import PageIntro from "../components/PageIntro.vue";
-import { stableRelease, upcomingRelease } from "../config/releases";
+import { stableRelease } from "../config/releases";
 
 const mobileToc = ref<HTMLDetailsElement | null>(null);
 const currentVersion = `v${stableRelease.version}`;
-const nextVersion = `v${upcomingRelease.version}`;
 
 const sections = [
   { id: "install", label: "安装与首次启动" },
@@ -25,8 +24,8 @@ const sections = [
   { id: "ssh-reverse", label: "SSH 反向隧道" },
   { id: "cloud", label: "云账号与同步" },
   { id: "sharing", label: `${currentVersion} 共享` },
-  { id: "devices", label: "多设备限制" },
-  { id: "workspaces", label: "工作区限制" },
+  { id: "devices", label: "多设备路由" },
+  { id: "workspaces", label: "独立工作区" },
   { id: "troubleshooting", label: "常见故障排查" },
 ] as const;
 
@@ -39,7 +38,7 @@ function closeMobileToc() {
   <PageIntro
     eyebrow="使用文档"
     title="从导入账号到 Codex 接入"
-    :description="`本手册以当前稳定版 ${currentVersion} 为准，覆盖本地网关、代理、SSH、云同步与共享。尚未发布的 ${nextVersion} 行为会单独标记，不会与当前功能混写。`"
+    :description="`本手册以当前稳定版 ${currentVersion} 为准，覆盖本地网关、代理、SSH、云同步、独立工作区与连接码共享。`"
   >
     <div class="docs-version-row">
       <span class="status-pill stable"><span class="status-dot" />当前稳定版 {{ currentVersion }}</span>
@@ -86,7 +85,7 @@ function closeMobileToc() {
         <CircleAlert :size="20" aria-hidden="true" />
         <div>
           <strong>截图版本说明</strong>
-          <p>当前图片来自 v0.4.2 模拟数据界面，用于说明现有 v0.4.x 操作位置；请以本页 {{ currentVersion }} 正文为准。{{ nextVersion }} 正式发布前将替换工作区、设备定向共享和“启动服务并注入”等最终截图。</p>
+          <p>部分图片来自 v0.4.2 模拟数据界面，仅用于说明操作位置；按钮名称和状态请以本页 {{ currentVersion }} 正文及应用内实际界面为准。</p>
         </div>
       </div>
 
@@ -209,10 +208,10 @@ function closeMobileToc() {
       <section id="codex-local" class="doc-section">
         <p class="section-index">05</p>
         <h2>本地 Codex 接入</h2>
-        <p class="section-lede">{{ currentVersion }} 的注入操作不会可靠地替你启动网关。正确顺序是先在仪表盘启动服务并确认模型列表可用，再进入“Codex 接入 → 本机接入”。</p>
+        <p class="section-lede">{{ currentVersion }} 提供“启动服务并注入”：Amber 会先启动本地网关，验证健康状态、API Key 和模型列表，再写入并回读 Codex 配置。</p>
 
         <ol class="doc-steps compact">
-          <li><strong>启动 Amber 服务</strong><p>确认状态为“运行中”，端口与仪表盘显示一致。</p></li>
+          <li><strong>选择“启动服务并注入”</strong><p>Amber 会启动本地服务；启动失败、端口冲突或健康检查异常时不会写入配置。</p></li>
           <li><strong>选择模型并核对预览</strong><p>检查将写入的 <code>config.toml</code>、<code>auth.json</code> 路径、Base URL 和模型。</p></li>
           <li><strong>执行一键注入</strong><p>Amber 会先备份已有配置。应用后重新加载或重启 Codex，再发起最小请求。</p></li>
         </ol>
@@ -220,14 +219,9 @@ function closeMobileToc() {
         <ImageViewer
           src="/screenshots/codex-local.png"
           alt="Amber Codex 本机接入与配置预览"
-          :caption="`该截图来自现有版本界面。${currentVersion} 用户必须先手动启动本地服务。`"
+          :caption="`${currentVersion} 会在注入前启动并验证本地服务；完成后仍需重新加载 Codex。`"
         />
 
-        <div class="upcoming-note">
-          <span class="status-pill upcoming"><span class="status-dot" />{{ nextVersion }} 即将发布</span>
-          <h3>“启动服务并注入”闭环</h3>
-          <p>计划中的 {{ nextVersion }} 会先启动服务，完成健康检查和 <code>/v1/models</code> 验证，再写入 Codex 配置。该行为尚未包含在当前 {{ currentVersion }} 中。</p>
-        </div>
       </section>
 
       <section id="ssh-host-key" class="doc-section">
@@ -314,8 +308,8 @@ done</code></pre>
         <div class="callout warning">
           <TriangleAlert :size="20" aria-hidden="true" />
           <div>
-            <strong>自定义 API 域名尚未作为当前公开承诺</strong>
-            <p>以 Amber {{ currentVersion }} 应用内实际显示并通过诊断的云入口为准。不要手工把尚未配置完成的域名写入生产设置。</p>
+            <strong>优先使用应用内置云入口</strong>
+            <p>{{ currentVersion }} 首选 <code>https://api.amberapp.asia</code>，并为幂等请求提供 Workers 域名回退。不要手工写入来历不明的云地址。</p>
           </div>
         </div>
       </section>
@@ -323,7 +317,7 @@ done</code></pre>
       <section id="sharing" class="doc-section">
         <p class="section-index">09</p>
         <h2>当前 {{ currentVersion }} 的共享流程</h2>
-        <p class="section-lede">{{ currentVersion }} 已支持“连接码 + 临时密码”快速共享，同时仍保留好友和旧式共享组入口。使用前，双方都需要登录各自的 Amber 云账号。</p>
+        <p class="section-lede">{{ currentVersion }} 使用“连接码 + 临时密码”快速共享，不要求先添加好友。使用前，双方都需要登录各自的 Amber 云账号。</p>
 
         <div class="sharing-columns">
           <div>
@@ -355,56 +349,49 @@ done</code></pre>
         </div>
 
         <div class="upcoming-note">
-          <span class="status-pill upcoming"><span class="status-dot" />{{ nextVersion }} 即将发布</span>
-          <h3>好友将退出共享主流程</h3>
-          <p>计划中的流程是“选择账号 → 开始共享 → 发送共享码和临时密码”，不再要求好友申请、Friend Code、选择好友或等待接受。{{ currentVersion }} 仍可能显示好友入口，不应按 {{ nextVersion }} 文档寻找当前不存在的界面。</p>
+          <h3>每位接收者独立管理</h3>
+          <p>连接成功后产生独立授权和 Guest Key。共享者可以单独暂停、限流或移除某位接收者，不影响同一共享中的其他人。</p>
         </div>
       </section>
 
       <section id="devices" class="doc-section">
         <p class="section-index">10</p>
-        <h2>{{ currentVersion }} 的多设备承载限制</h2>
-        <p class="section-lede">同一云账号在多台设备在线时，{{ currentVersion }} 的 Owner Relay 会优先选择在线主设备，但不能保证该设备一定拥有目标账号、可用代理或相同网络出口。</p>
+        <h2>{{ currentVersion }} 的多设备定向路由</h2>
+        <p class="section-lede">新共享默认固定到创建它的电脑。共享者可显式添加最多两台具备目标账号且健康的备用设备，其他在线设备不会自动接管。</p>
 
         <div class="callout danger">
           <CircleAlert :size="20" aria-hidden="true" />
           <div>
-            <strong>不要把 {{ currentVersion }} 当作可靠的主备设备切换</strong>
-            <p>共享账号只存在于设备 B，而设备 A 被选为在线主设备时，请求可能因 A 没有该账号而失败。当前版本没有面向普通用户的可靠设备定向保证。</p>
+            <strong>备用设备必须具备相同账号与可用网络</strong>
+            <p>只在线并不代表可以承载共享。备用设备还必须拥有目标账号、账号处于启用和健康状态，并具备可用代理与并发容量。</p>
           </div>
         </div>
 
-        <h3>当前版本的稳妥做法</h3>
+        <h3>路由与故障转移边界</h3>
         <ul class="doc-checklist">
-          <li><CheckCircle2 :size="18" aria-hidden="true" />让实际拥有共享账号和代理的设备保持在线。</li>
-          <li><CheckCircle2 :size="18" aria-hidden="true" />避免同一云账号下多台设备同时竞争本地回流角色。</li>
-          <li><CheckCircle2 :size="18" aria-hidden="true" />设备离线后先恢复原承载设备，不要假设其他设备会自动安全接管。</li>
+          <li><CheckCircle2 :size="18" aria-hidden="true" />主设备正常时，共享始终保持其账号、代理和网络出口。</li>
+          <li><CheckCircle2 :size="18" aria-hidden="true" />主设备在上游开始前不可用时，才按明确优先级尝试合格备用设备。</li>
+          <li><CheckCircle2 :size="18" aria-hidden="true" />上游请求开始后不跨设备重放，避免重复扣费或重复执行。</li>
         </ul>
 
-        <div class="upcoming-note">
-          <span class="status-pill upcoming"><span class="status-dot" />{{ nextVersion }} 即将发布</span>
-          <h3>共享将固定到创建它的电脑</h3>
-          <p>新共享计划默认绑定创建共享的具体设备；只有用户显式指定、且确实拥有目标账号并处于健康状态的备用设备，才可在上游请求开始前接管。请求一旦开始，不会跨设备重放。</p>
-        </div>
       </section>
 
       <section id="workspaces" class="doc-section">
         <p class="section-index">11</p>
-        <h2>{{ currentVersion }} 的云账号切换限制</h2>
-        <p class="section-lede">{{ currentVersion }} 尚未完整地按云用户隔离普通账号、代理、同步队列和本地状态。在同一数据目录内反复切换不同云账号存在数据归属混合风险。</p>
+        <h2>{{ currentVersion }} 的独立云账号工作区</h2>
+        <p class="section-lede">{{ currentVersion }} 为每个云用户使用独立工作区，隔离普通账号、代理、同步队列、Guest Key、日志、设置与 SSH 目标。</p>
 
         <div class="callout danger">
           <ShieldAlert :size="20" aria-hidden="true" />
           <div>
-            <strong>当前版本不要在同一数据目录反复切换不同云账号</strong>
-            <p>退出登录不会自动把本地账号、代理和同步队列变成另一个用户的数据。需要切换实际用户时，先停止同步并保留完整备份，等待正式工作区隔离方案。</p>
+            <strong>退出登录不会删除工作区或改变归属</strong>
+            <p>再次登录同一用户会打开原工作区；登录另一用户时必须切换或创建其工作区，不会复用上一用户的数据。</p>
           </div>
         </div>
 
         <div class="upcoming-note">
-          <span class="status-pill upcoming"><span class="status-dot" />{{ nextVersion }} 即将发布</span>
-          <h3>每个云账号一个独立工作区</h3>
-          <p>计划中的工作区会分别保存账号、代理、同步队列、Guest Key、日志和 SSH 目标。绑定后退出不会删除数据或改变归属；另一个云账号必须创建或打开自己的工作区。旧数据归属不明确时不会自动猜测或合并。</p>
+          <h3>旧数据库归属不明确时只读恢复</h3>
+          <p>检测到多个历史用户、归属不明同步队列或异常元数据时，Amber 不会猜测或自动合并，而是打开只读恢复工作区。确认归属后再显式导出需要的账号和代理。</p>
         </div>
       </section>
 
@@ -447,7 +434,7 @@ done</code></pre>
           </details>
           <details>
             <summary>共享者设备离线</summary>
-            <div><p>OAuth 共享和本机回流依赖共享者设备上的 Amber。恢复该设备、网络、Relay 和目标账号后重试。{{ currentVersion }} 不保证自动选择一台真正具备目标账号的备用设备。</p></div>
+            <div><p>OAuth 共享和本机回流依赖共享者配置的主设备或合格备用设备。恢复设备、网络、Relay 和目标账号后重试；未显式配置的设备不会自动接管。</p></div>
           </details>
         </div>
 

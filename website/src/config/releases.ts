@@ -10,18 +10,18 @@ export interface PublicReleaseInfo {
 }
 
 export const stableRelease: PublicReleaseInfo = {
-  version: "0.4.3",
-  releaseUrl: "https://github.com/oyg123less/sub2api-desktop/releases/tag/v0.4.3",
-  downloadUrl: "https://github.com/oyg123less/sub2api-desktop/releases/download/v0.4.3/Amber_0.4.3_x64-setup.exe",
-  installerName: "Amber_0.4.3_x64-setup.exe",
-  installerSizeBytes: 7_966_422,
-  sha256: "724988948FD9B8E7CA8208C4D9046766CB9DAF79AB50AAA3014468DA5F1C7F12",
-  publishedAt: "2026-07-19T10:46:29Z",
+  version: "0.4.4",
+  releaseUrl: "https://github.com/oyg123less/sub2api-desktop/releases/tag/v0.4.4",
+  downloadUrl: "https://github.com/oyg123less/sub2api-desktop/releases/download/v0.4.4/Amber_0.4.4_x64-setup.exe",
+  installerName: "Amber_0.4.4_x64-setup.exe",
+  installerSizeBytes: 8_005_866,
+  sha256: "BA956575A2F326ECF7D29F42CE48938C42A927DB9805BCB30018347FFBFBE6FD",
+  publishedAt: "2026-07-19T23:35:29Z",
   status: "stable",
 };
 
 export const upcomingRelease: PublicReleaseInfo = {
-  version: "0.4.4",
+  version: "0.4.x",
   releaseUrl: "",
   downloadUrl: "",
   installerName: "",

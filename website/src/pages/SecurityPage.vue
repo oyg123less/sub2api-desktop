@@ -16,10 +16,9 @@ import {
 } from "lucide-vue-next";
 import { RouterLink } from "vue-router";
 import PageIntro from "../components/PageIntro.vue";
-import { stableRelease, upcomingRelease } from "../config/releases";
+import { stableRelease } from "../config/releases";
 
 const currentVersion = `v${stableRelease.version}`;
-const nextVersion = `v${upcomingRelease.version}`;
 </script>
 
 <template>
@@ -170,22 +169,22 @@ const nextVersion = `v${upcomingRelease.version}`;
             <li>在云账户的共享管理中定位对应共享或接收者。</li>
             <li>需要临时阻断时先暂停；确定不再授权时删除接收者或整个共享。</li>
             <li>怀疑 Guest Key 泄露时轮换密钥，并更新合法接收者的配置。</li>
-            <li>设备遗失或会话异常时，当前版本先注销相关登录会话；{{ nextVersion }} 发布后再使用设备管理中的撤销操作。</li>
+            <li>设备遗失或会话异常时，注销相关会话，并在设备管理中撤销不再可信的设备。</li>
           </ol>
-          <p>{{ currentVersion }} 已支持按接收者管理 Guest Key、额度、暂停与撤销；{{ nextVersion }} 计划移除好友前置关系，但继续保留独立授权和撤销能力。</p>
+          <p>{{ currentVersion }} 的连接码共享不要求好友关系，并继续按接收者管理独立 Guest Key、额度、暂停与撤销。</p>
         </article>
 
         <article aria-labelledby="delete-heading">
           <Trash2 :size="26" aria-hidden="true" />
           <h2 id="delete-heading">删除本地工作区数据</h2>
-          <p><strong>退出云账号不会删除本地数据。</strong>当前 {{ currentVersion }} 的数据目录包含账号、代理、日志、设置和加密材料，且尚未完整按云用户拆分。</p>
+          <p><strong>退出云账号不会删除本地数据。</strong>{{ currentVersion }} 按云用户使用独立工作区保存账号、代理、日志、设置和加密材料。</p>
           <ol class="control-steps">
             <li>先在设置中确认当前数据目录；如需保留内容，创建完整备份。</li>
             <li>停止客户端请求和 Amber 本地服务，退出 Amber，避免复制或删除正在使用的数据库。</li>
-            <li>确认目标后再删除整个当前数据目录。该操作会清除其中的全部本地数据，并且不可撤销。</li>
+            <li>在工作区管理中确认归属和目标后再删除对应工作区。该操作会清除其中的全部本地数据，并且不可撤销。</li>
             <li>本地删除不会自动清除云端保险库、登录会话或共享授权；应先注销会话并撤销共享，再按云服务提供的能力处理云端数据。</li>
           </ol>
-          <p>{{ nextVersion }} 计划提供每个云账号独立的工作区。届时退出仍不删除或解除归属，应通过工作区管理明确选择要处理的工作区。</p>
+          <p>归属不明确的旧数据库会以只读恢复工作区打开；确认并导出需要的数据前，不要直接删除恢复工作区或迁移前备份。</p>
         </article>
       </div>
     </section>
