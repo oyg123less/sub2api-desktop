@@ -16,7 +16,7 @@ export const stableRelease: PublicReleaseInfo = {
   installerName: "Amber_0.4.4_x64-setup.exe",
   installerSizeBytes: 8_005_866,
   sha256: "BA956575A2F326ECF7D29F42CE48938C42A927DB9805BCB30018347FFBFBE6FD",
-  publishedAt: "2026-07-19T23:35:29Z",
+  publishedAt: "2026-07-19T23:50:36Z",
   status: "stable",
 };
 
