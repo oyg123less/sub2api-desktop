@@ -79,6 +79,12 @@ func TestReceivedShareUsesCatalogDefaultTestModel(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := st.SaveCloudReceivedAccountLink(store.CloudReceivedAccountLink{
+		UserID: 1, GrantPublicID: "sgr_test_model", OwnerName: "Owner", GroupName: "Shared test",
+		RemoteStatus: "active", Enabled: false, RPMLimit: 30, ConcurrencyLimit: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	manager := NewManager(st, &testSettings{value: store.DefaultSettings()}, server.URL, "site-key", server.Client(), nil)
 	result, err := manager.TestReceivedShare(context.Background(), "sgr_test_model")
 	if err != nil {
@@ -94,6 +100,45 @@ func TestReceivedShareUsesCatalogDefaultTestModel(t *testing.T) {
 		len(receivedInput[0].Content) != 1 || receivedInput[0].Content[0].Type != "input_text" ||
 		receivedInput[0].Content[0].Text == "" {
 		t.Fatalf("received share test input = %#v", receivedInput)
+	}
+	links, err := st.ListCloudReceivedAccountLinks(1)
+	if err != nil || len(links) != 1 || !links[0].Enabled || links[0].HealthStatus != "healthy" || links[0].LastCheckedAt.IsZero() {
+		t.Fatalf("received share health was not enabled after a successful test: %#v, %v", links, err)
+	}
+}
+
+func TestListConnectEventsUsesCursor(t *testing.T) {
+	vaultKey := make([]byte, keySize)
+	for index := range vaultKey {
+		vaultKey[index] = byte(index + 1)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/refresh":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"access","access_expires_in":900,"refresh_token":"refresh-next"}`))
+		case "/v1/events":
+			if r.URL.Query().Get("cursor") != "41" || r.URL.Query().Get("limit") != "100" {
+				t.Errorf("unexpected event query: %s", r.URL.RawQuery)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"events":[{"id":42,"event_type":"connect.access_updated","entity_type":"received_share","entity_public_id":"sgr_test","payload":{},"created_at":"2026-07-19T00:00:00Z"}],"cursor":42,"has_more":false}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	st := openTestStore(t, "connect-events")
+	if err := st.SaveCloudSession(store.CloudSession{
+		UserID: 1, Email: "recipient@example.test", Role: "user", SaltKDF: "salt-kdf", SaltAuth: "salt-auth",
+		WrappedVaultKey: "wrapped", VaultKey: rawURL(vaultKey), RefreshToken: "refresh",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(st, &testSettings{value: store.DefaultSettings()}, server.URL, "site-key", server.Client(), nil)
+	response, err := manager.ListConnectEvents(context.Background(), 41)
+	if err != nil || response.Cursor != 42 || len(response.Events) != 1 || response.Events[0].EntityPublicID != "sgr_test" {
+		t.Fatalf("unexpected event response: %#v, %v", response, err)
 	}
 }
 

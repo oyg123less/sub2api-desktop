@@ -11,9 +11,13 @@ import shareGateway from "./share-gateway";
 import shareGroupRoutes from "./share-group-routes";
 import shareRoutes from "./share-routes";
 import receivedShareRoutes from "./received-share-routes";
+import shareConnectRoutes from "./share-connect-routes";
+import { ShareConnectGuard } from "./share-connect-guard";
+import { requireCurrentClient } from "./client-version";
 import type { AppEnv } from "./types";
 import vaultRoutes from "./vault-routes";
 import webhookRoutes from "./webhook-routes";
+import userEventRoutes from "./user-events";
 
 const app = new Hono<AppEnv>();
 
@@ -27,14 +31,17 @@ app.use("*", async (c, next) => {
   await next();
 });
 
-app.get("/health", (c) => c.json({ ok: true, service: "amber-cloud", version: "0.4.1" }));
+app.get("/health", (c) => c.json({ ok: true, service: "amber-cloud", version: "0.4.2" }));
 app.route("/v1/auth", authRoutes);
+app.use("/v1/*", requireCurrentClient);
 app.route("/v1/vault", vaultRoutes);
 app.route("/v1/admin", adminRoutes);
 app.route("/v1/shares", shareRoutes);
 app.route("/v1", friendRoutes);
 app.route("/v1", shareGroupRoutes);
 app.route("/v1", receivedShareRoutes);
+app.route("/v1", shareConnectRoutes);
+app.route("/v1", userEventRoutes);
 app.route("/v1", deviceRoutes);
 app.route("/v1/webhooks", webhookRoutes);
 app.route("/v1", shareGateway);
@@ -51,4 +58,4 @@ app.onError((error, c) => {
 });
 
 export default app;
-export { OwnerRelay, ShareAccessCoordinator };
+export { OwnerRelay, ShareAccessCoordinator, ShareConnectGuard };

@@ -182,9 +182,22 @@ const workspace = {
       { public_id: "group-1", name: "研发共享池", description: "为开发搭档提供稳定的模型调用", status: "active", route_policy: "balanced", default_rpm: 30, default_concurrency: 2, default_quota_requests: 5000, account_count: 2, enabled_account_count: 2, recipient_count: 2, used_requests: 836, base_url: "https://amber-cloud.example.test/v1", created_at: now, updated_at: now },
     ],
   },
+  connect_host: {
+    configured: true,
+    endpoint: { public_id: "conn-demo", connection_code: "572814639", status: "active", group_status: "active", base_url: "https://amber-cloud.example.test/v1", created_at: now, updated_at: now },
+    window: { public_id: "win-demo", password_version: 2, max_claims: 3, claimed_count: 1, expires_at: "2026-07-19T12:30:00Z", created_at: now },
+    temporary_password: "AB3D5F",
+    accounts: [
+      { public_id: "sga-demo-1", account_uid: "account-demo-1", account_type: "oauth", relay_mode: "owner_device", enabled: true },
+      { public_id: "sga-demo-2", account_uid: "account-demo-2", account_type: "api_key", relay_mode: "worker_direct", enabled: true },
+    ],
+    recipients: [
+      { public_id: "sgr-demo-1", display_name: "小林", friend_code: "AMB-LIN-2026A", status: "active", rpm_limit: 30, concurrency_limit: 2, quota_requests: 2000, used_requests: 318, key_prefix: "sk-amber-demo", created_at: now },
+    ],
+  },
   received_shares: {
     shares: [
-      { public_id: "received-1", status: "active", group: { public_id: "received-group", name: "设计协作", description: "", status: "active", route_policy: "balanced", account_count: 2, owner_device_required: true }, owner: { display_name: "设计团队" }, rpm_limit: 20, concurrency_limit: 2, quota_requests: 2000, used_requests: 318, created_at: now, accepted_at: now, base_url: "https://amber-cloud.example.test/v1", key: { public_id: "key-demo", key_prefix: "sk-amber-demo", key_version: 1, status: "active" }, api_key: "sk-amber-demo-documentation-only" },
+      { public_id: "received-1", status: "active", group: { public_id: "received-group", name: "设计协作", description: "", status: "active", route_policy: "balanced", account_count: 2, owner_device_required: true }, owner: { display_name: "设计团队" }, rpm_limit: 20, concurrency_limit: 2, quota_requests: 2000, used_requests: 318, created_at: now, accepted_at: now, base_url: "https://amber-cloud.example.test/v1", key: { public_id: "key-demo", key_prefix: "sk-amber-demo", key_version: 1, status: "active" }, api_key: "sk-amber-demo-documentation-only", local_enabled: true },
     ],
   },
   devices: {
@@ -206,7 +219,7 @@ async function handleControlRoute(route) {
   const pathname = new URL(request.url()).pathname;
 
   if (pathname === "/control/status") {
-    return json(route, { version: "0.4.1", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "http://127.0.0.1:8080/v1", lan_addresses: [], local_api_key: settings.local_api_key, account_count: accounts.length, schema_version: 13 });
+    return json(route, { version: "0.4.2", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "http://127.0.0.1:8080/v1", lan_addresses: [], local_api_key: settings.local_api_key, account_count: accounts.length, schema_version: 14 });
   }
   if (pathname === "/control/settings") return json(route, settings);
   if (pathname === "/control/accounts" && request.method() === "GET") {

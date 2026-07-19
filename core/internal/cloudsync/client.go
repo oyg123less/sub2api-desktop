@@ -22,12 +22,15 @@ import (
 const maxCloudResponseBytes = 4 * 1024 * 1024
 
 type CloudError struct {
-	Status    int
-	Code      string
-	Message   string
-	Stage     string
-	Retryable bool
-	Attempt   int
+	Status         int
+	Code           string
+	Message        string
+	Stage          string
+	Retryable      bool
+	Attempt        int
+	MinimumVersion string
+	LatestVersion  string
+	UpdateURL      string
 }
 
 func (e *CloudError) Error() string {
@@ -154,8 +157,11 @@ type pushResponse struct {
 
 type cloudErrorResponse struct {
 	Error struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
+		Code           string `json:"code"`
+		Message        string `json:"message"`
+		MinimumVersion string `json:"minimum_version"`
+		LatestVersion  string `json:"latest_version"`
+		UpdateURL      string `json:"update_url"`
 	} `json:"error"`
 	Conflicts []remoteVaultItem `json:"conflicts"`
 }
@@ -211,6 +217,21 @@ type AdminShare struct {
 	UpdatedAt     string `json:"updated_at"`
 }
 
+type AdminConnectEndpoint struct {
+	PublicID       string `json:"public_id"`
+	OwnerID        int64  `json:"owner_id"`
+	OwnerEmail     string `json:"owner_email"`
+	Status         string `json:"status"`
+	GroupStatus    string `json:"group_status"`
+	AccountCount   int    `json:"account_count"`
+	RecipientCount int    `json:"recipient_count"`
+	WindowStatus   string `json:"window_status"`
+	MaxClaims      int    `json:"max_claims"`
+	ClaimedCount   int    `json:"claimed_count"`
+	ExpiresAt      string `json:"expires_at"`
+	UpdatedAt      string `json:"updated_at"`
+}
+
 type Share struct {
 	ID            int64  `json:"id"`
 	AccountUID    string `json:"account_uid"`
@@ -253,11 +274,12 @@ type createShareResponse struct {
 }
 
 type AdminOverview struct {
-	Users    []AdminUser    `json:"users"`
-	Shares   []AdminShare   `json:"shares"`
-	Settings []AdminSetting `json:"settings"`
-	Audit    []AdminAudit   `json:"audit"`
-	Stats    AdminStats     `json:"stats"`
+	Users            []AdminUser            `json:"users"`
+	Shares           []AdminShare           `json:"shares"`
+	ConnectEndpoints []AdminConnectEndpoint `json:"connect_endpoints"`
+	Settings         []AdminSetting         `json:"settings"`
+	Audit            []AdminAudit           `json:"audit"`
+	Stats            AdminStats             `json:"stats"`
 }
 
 func (c *cloudClient) register(ctx context.Context, request registerRequest) error {
@@ -393,7 +415,8 @@ func (c *cloudClient) doJSONWithHeaders(ctx context.Context, method, path, acces
 			return err
 		}
 		request.Header.Set("Accept", "application/json")
-		request.Header.Set("User-Agent", "Amber/0.4.1")
+		request.Header.Set("User-Agent", "Amber/0.4.2")
+		request.Header.Set("X-Amber-Client-Version", "0.4.2")
 		if body != nil {
 			request.Header.Set("Content-Type", "application/json")
 		}
@@ -437,7 +460,8 @@ func (c *cloudClient) doJSONWithHeaders(ctx context.Context, method, path, acces
 			if message == "" {
 				message = "Amber Cloud request failed"
 			}
-			cloudErr := &CloudError{Status: response.StatusCode, Code: code, Message: message, Stage: "http", Retryable: response.StatusCode >= 500 || response.StatusCode == 429, Attempt: attempt}
+			cloudErr := &CloudError{Status: response.StatusCode, Code: code, Message: message, Stage: "http", Retryable: response.StatusCode >= 500 || response.StatusCode == 429, Attempt: attempt,
+				MinimumVersion: payload.Error.MinimumVersion, LatestVersion: payload.Error.LatestVersion, UpdateURL: payload.Error.UpdateURL}
 			if cloudErr.Retryable && attempt < attempts && sleepContext(ctx, c.retryDelay(attempt, retryAfter(response.Header.Get("Retry-After")))) == nil {
 				continue
 			}
@@ -558,6 +582,9 @@ func (c *cloudClient) adminOverview(ctx context.Context, accessToken, adminKey s
 	var shares struct {
 		Shares []AdminShare `json:"shares"`
 	}
+	var connectEndpoints struct {
+		ConnectEndpoints []AdminConnectEndpoint `json:"connect_endpoints"`
+	}
 	var stats AdminStats
 	for _, request := range []struct {
 		path   string
@@ -565,6 +592,7 @@ func (c *cloudClient) adminOverview(ctx context.Context, accessToken, adminKey s
 	}{
 		{"/v1/admin/users?limit=100", &users},
 		{"/v1/admin/shares?limit=100", &shares},
+		{"/v1/admin/connect-endpoints?limit=100", &connectEndpoints},
 		{"/v1/admin/settings", &settings},
 		{"/v1/admin/stats", &stats},
 		{"/v1/admin/audit?limit=50", &audit},
@@ -573,7 +601,8 @@ func (c *cloudClient) adminOverview(ctx context.Context, accessToken, adminKey s
 			return AdminOverview{}, err
 		}
 	}
-	return AdminOverview{Users: users.Users, Shares: shares.Shares, Settings: settings.Settings, Audit: audit.Audit, Stats: stats}, nil
+	return AdminOverview{Users: users.Users, Shares: shares.Shares, ConnectEndpoints: connectEndpoints.ConnectEndpoints,
+		Settings: settings.Settings, Audit: audit.Audit, Stats: stats}, nil
 }
 
 func (c *cloudClient) adminSetUserBanned(ctx context.Context, accessToken, adminKey string, userID int64, banned bool) error {

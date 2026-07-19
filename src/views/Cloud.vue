@@ -290,6 +290,7 @@ function applyAdminOverview(value: CloudAdminOverview) {
     ...value,
     users: Array.isArray(value.users) ? value.users : [],
     shares: Array.isArray(value.shares) ? value.shares : [],
+    connect_endpoints: Array.isArray(value.connect_endpoints) ? value.connect_endpoints : [],
     settings: Array.isArray(value.settings) ? value.settings : [],
     audit: Array.isArray(value.audit) ? value.audit : [],
   };
@@ -617,6 +618,22 @@ onUnmounted(() => {
                     <td class="admin-row-actions"><button class="btn btn-sm" :class="share.revoked ? 'btn-ghost' : 'btn-danger'" type="button" :disabled="adminBusy !== ''" @click="setAdminShareRevoked(share.id, !Boolean(share.revoked))">{{ t(share.revoked ? "cloud.adminShareRestore" : "cloud.adminShareRevoke") }}</button></td>
                   </tr>
                   <tr v-if="adminOverview.shares.length === 0"><td colspan="6" class="admin-empty">{{ t("cloud.adminNoShares") }}</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div><h3>{{ t("cloud.adminConnectTitle") }}</h3><p>{{ t("cloud.adminConnectDesc") }}</p></div>
+            <div class="admin-table-wrap">
+              <table class="admin-table admin-connect-table">
+                <thead><tr><th>{{ t("cloud.adminShareOwner") }}</th><th>{{ t("cloud.adminStatus") }}</th><th>{{ t("cloud.adminConnectResources") }}</th><th>{{ t("cloud.adminConnectClaims") }}</th><th>{{ t("cloud.adminShareExpiry") }}</th></tr></thead>
+                <tbody>
+                  <tr v-for="endpoint in adminOverview.connect_endpoints" :key="endpoint.public_id">
+                    <td><strong>{{ endpoint.owner_email }}</strong><small>#{{ endpoint.owner_id }} · {{ endpoint.public_id }}</small></td>
+                    <td><span class="badge" :class="endpoint.status === 'active' ? 'badge-success' : 'badge-neutral'">{{ t(endpoint.status === "active" ? "cloud.adminShareActive" : "cloud.v4.pause") }}</span></td>
+                    <td>{{ t("cloud.adminConnectResourceCounts", { accounts: endpoint.account_count, recipients: endpoint.recipient_count }) }}</td>
+                    <td>{{ endpoint.claimed_count || 0 }} / {{ endpoint.max_claims || 0 }}</td>
+                    <td>{{ formatTime(endpoint.expires_at) }}</td>
+                  </tr>
+                  <tr v-if="adminOverview.connect_endpoints.length === 0"><td colspan="5" class="admin-empty">{{ t("cloud.adminNoConnect") }}</td></tr>
                 </tbody>
               </table>
             </div>

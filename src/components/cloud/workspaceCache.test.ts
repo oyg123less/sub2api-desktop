@@ -5,6 +5,7 @@ function snapshot(): CloudWorkspaceSnapshot {
   return {
     profile: { display_name: "Owner", friend_code: "AMB-TEST-0001", encryption_public_key: "public", encryption_key_version: 1, created_at: "", updated_at: "" },
     friends: [], friendRequests: [], shareGroups: [], receivedShares: [], devices: [], accounts: [], relayEnabled: false,
+    connectHost: { configured: false, accounts: [], recipients: [] },
   };
 }
 

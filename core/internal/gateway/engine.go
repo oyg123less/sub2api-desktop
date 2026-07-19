@@ -449,6 +449,11 @@ func (e *Engine) selectAccounts(ctx context.Context) ([]*store.Account, func(), 
 	if err != nil {
 		return nil, func() {}, err
 	}
+	received, err := e.store.ListActiveCloudReceivedAccounts()
+	if err != nil {
+		return nil, func() {}, err
+	}
+	all = append(all, received...)
 	now := time.Now()
 	relayUID := relayAccountUID(ctx)
 	var out []*store.Account

@@ -99,6 +99,14 @@ type CloudController interface {
 	ListDevices(context.Context) (cloudsync.CloudDevicesResponse, error)
 	EnsureDevice(context.Context) (cloudsync.CloudDevice, error)
 	SetRelayEnabled(context.Context, bool) error
+	GetConnectHost(context.Context) (cloudsync.CloudDocument, error)
+	ConfigureConnectHostAccounts(context.Context, []cloudsync.ShareGroupAccountSelection) (cloudsync.CloudDocument, error)
+	StartConnectHost(context.Context, cloudsync.ConnectHostStartInput, bool) (cloudsync.CloudDocument, error)
+	ConnectHostAction(context.Context, string) (cloudsync.CloudDocument, error)
+	ConnectRecipientRequest(context.Context, string, string, any) (cloudsync.CloudDocument, error)
+	ListConnectEvents(context.Context, int64) (cloudsync.CloudUserEventsResponse, error)
+	ClaimConnectAndUse(context.Context, cloudsync.ConnectClaimInput) (cloudsync.CloudReceivedShare, error)
+	UpdateConnectReceived(context.Context, string, cloudsync.ConnectReceivedUpdate) (store.CloudReceivedAccountLink, error)
 }
 
 // Control holds control API dependencies.
@@ -248,6 +256,16 @@ func (c *Control) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /control/cloud/devices/ensure", h(c.cloudV2EnsureDevice))
 	mux.HandleFunc("DELETE /control/cloud/devices/{id}", h(c.cloudV2DeleteDevice))
 	mux.HandleFunc("PUT /control/cloud/relay", h(c.cloudV2SetRelay))
+	mux.HandleFunc("GET /control/cloud/connect/host", h(c.cloudConnectHost))
+	mux.HandleFunc("GET /control/cloud/connect/events", h(c.cloudConnectEvents))
+	mux.HandleFunc("PUT /control/cloud/connect/host/accounts", h(c.cloudConnectHostAccounts))
+	mux.HandleFunc("POST /control/cloud/connect/host/start", h(c.cloudConnectHostStart))
+	mux.HandleFunc("POST /control/cloud/connect/host/rotate-password", h(c.cloudConnectHostRotatePassword))
+	mux.HandleFunc("POST /control/cloud/connect/host/{action}", h(c.cloudConnectHostAction))
+	mux.HandleFunc("PATCH /control/cloud/connect/recipients/{id}", h(c.cloudConnectRecipientUpdate))
+	mux.HandleFunc("DELETE /control/cloud/connect/recipients/{id}", h(c.cloudConnectRecipientDelete))
+	mux.HandleFunc("POST /control/cloud/connect/claim-and-use", h(c.cloudConnectClaimAndUse))
+	mux.HandleFunc("PATCH /control/cloud/connect/received/{id}", h(c.cloudConnectReceivedUpdate))
 
 	mux.HandleFunc("GET /control/models", h(c.listModels))
 	mux.HandleFunc("GET /control/pricing", h(c.pricing))

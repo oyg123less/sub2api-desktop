@@ -133,6 +133,20 @@ admin.get("/shares", async (c) => {
   return c.json({ shares: result.results });
 });
 
+admin.get("/connect-endpoints", async (c) => {
+  const limit = Math.min(Math.max(Number(c.req.query("limit") || 100), 1), 100);
+  const result = await c.env.DB.prepare(`SELECT e.public_id,e.owner_id,u.email AS owner_email,e.status,
+    g.status AS group_status,e.updated_at,
+    (SELECT COUNT(*) FROM share_group_accounts a WHERE a.group_id=e.group_id AND a.enabled=1) AS account_count,
+    (SELECT COUNT(*) FROM share_group_recipients r WHERE r.group_id=e.group_id AND r.status IN ('active','paused')) AS recipient_count,
+    w.status AS window_status,w.max_claims,w.claimed_count,w.expires_at
+    FROM share_connect_endpoints e JOIN users u ON u.id=e.owner_id JOIN share_groups g ON g.id=e.group_id
+    LEFT JOIN share_connect_windows w ON w.id=(SELECT id FROM share_connect_windows
+      WHERE endpoint_id=e.id ORDER BY password_version DESC LIMIT 1)
+    WHERE e.status<>'deleted' ORDER BY e.updated_at DESC,e.id DESC LIMIT ?`).bind(limit).all();
+  return c.json({ connect_endpoints: result.results });
+});
+
 admin.patch("/shares/:id", async (c) => {
   const id = positiveID(c.req.param("id"));
   const body = await readJSON<{ revoked?: unknown }>(c);

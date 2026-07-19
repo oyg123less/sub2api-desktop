@@ -49,6 +49,24 @@ func TestCloudClientRetriesSafeReads(t *testing.T) {
 	}
 }
 
+func TestCloudClientSendsVersionAndPreservesUpgradeDetails(t *testing.T) {
+	client, err := newCloudClient("https://cloud.example", &http.Client{Transport: cloudRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Header.Get("User-Agent") != "Amber/0.4.2" || request.Header.Get("X-Amber-Client-Version") != "0.4.2" {
+			t.Fatalf("missing v0.4.2 client headers: %#v", request.Header)
+		}
+		return cloudJSONResponse(http.StatusUpgradeRequired, `{"error":{"code":"client_upgrade_required","message":"Update required","minimum_version":"0.4.2","latest_version":"0.4.3","update_url":"https://example.test/releases/latest"}}`), nil
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.getProfile(context.Background(), "access")
+	var cloudErr *CloudError
+	if !errors.As(err, &cloudErr) || cloudErr.Status != http.StatusUpgradeRequired || cloudErr.Code != "client_upgrade_required" ||
+		cloudErr.MinimumVersion != "0.4.2" || cloudErr.LatestVersion != "0.4.3" || cloudErr.UpdateURL == "" {
+		t.Fatalf("upgrade error metadata lost: %#v", err)
+	}
+}
+
 func TestCloudClientRetriesIdempotentVaultWrites(t *testing.T) {
 	attempts := 0
 	client, err := newCloudClient("https://cloud.example", &http.Client{Transport: cloudRoundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -145,6 +163,8 @@ func TestAdminClientKeepsSecondFactorInHeader(t *testing.T) {
 			_, _ = io.WriteString(w, `{"settings":[{"key":"registration_enabled","value":"true"}]}`)
 		case "/v1/admin/shares":
 			_, _ = io.WriteString(w, `{"shares":[]}`)
+		case "/v1/admin/connect-endpoints":
+			_, _ = io.WriteString(w, `{"connect_endpoints":[]}`)
 		case "/v1/admin/stats":
 			_, _ = io.WriteString(w, `{"users":2,"daily_active_users":1,"vault_items":4}`)
 		case "/v1/admin/audit":

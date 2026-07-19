@@ -74,7 +74,12 @@ async function req<T>(
   if (!res.ok) {
     const payload = data?.error;
     const message = typeof payload === "string" ? payload : payload?.message;
-    throw new Error(message || data?.message || `请求失败 (${res.status})`);
+    throw new ControlAPIError(
+      message || data?.message || `Request failed (${res.status})`,
+      typeof payload === "object" ? String(payload?.code || "") : "",
+      res.status,
+      typeof payload === "object" && payload?.details ? payload.details : {},
+    );
   }
   return data as T;
 }
@@ -185,6 +190,18 @@ export interface RequestLog {
 	attempt_count: number;
 	terminal_event?: string;
   created_at: string;
+}
+
+export class ControlAPIError extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+    readonly status: number,
+    readonly details: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = "ControlAPIError";
+  }
 }
 
 export interface AccountTestRunItem {
@@ -318,9 +335,25 @@ export interface CloudAdminAudit {
 export interface CloudAdminOverview {
   users: CloudAdminUser[];
   shares: CloudAdminShare[];
+  connect_endpoints: CloudAdminConnectEndpoint[];
   settings: CloudAdminSetting[];
   audit: CloudAdminAudit[];
   stats: { users: number; daily_active_users: number; vault_items: number; active_shares: number; share_requests: number; share_error_rate: number };
+}
+
+export interface CloudAdminConnectEndpoint {
+  public_id: string;
+  owner_id: number;
+  owner_email: string;
+  status: "active" | "paused";
+  group_status: string;
+  account_count: number;
+  recipient_count: number;
+  window_status?: string;
+  max_claims?: number;
+  claimed_count?: number;
+  expires_at?: string;
+  updated_at: string;
 }
 
 export interface CloudAdminShare {
@@ -491,6 +524,70 @@ export interface CloudReceivedShare {
   base_url: string;
   key?: { public_id: string; key_prefix: string; key_version: number; status: string };
   api_key?: string;
+  local_enabled: boolean;
+  proxy_id?: number | null;
+  health_status?: "unchecked" | "healthy" | "needs_attention";
+  health_message?: string;
+  last_checked_at?: string;
+  connection_test?: { ok: boolean; status: number; code?: string; message: string };
+}
+
+export interface CloudConnectAccount {
+  public_id: string;
+  account_uid: string;
+  account_type: "oauth" | "api_key";
+  relay_mode: "owner_device" | "worker_direct";
+  enabled: number | boolean;
+}
+
+export interface CloudConnectRecipient {
+  public_id: string;
+  display_name: string;
+  friend_code: string;
+  status: "active" | "paused";
+  rpm_limit: number;
+  concurrency_limit: number;
+  quota_requests: number;
+  used_requests: number;
+  key_prefix: string;
+  created_at: string;
+}
+
+export interface CloudConnectHost {
+  configured: boolean;
+  endpoint?: {
+    public_id: string;
+    connection_code: string;
+    status: "active" | "paused";
+    group_status: "active" | "paused";
+    base_url: string;
+    created_at: string;
+    updated_at: string;
+  };
+  window?: {
+    public_id: string;
+    password_version: number;
+    max_claims: number;
+    claimed_count: number;
+    expires_at: string;
+    created_at: string;
+  } | null;
+  temporary_password?: string;
+  accounts: CloudConnectAccount[];
+  recipients: CloudConnectRecipient[];
+}
+
+export interface CloudUserEventsResponse {
+  events: Array<{
+    id: number;
+    event_type: string;
+    entity_type: string;
+    entity_public_id: string;
+    payload: Record<string, unknown>;
+    created_at: string;
+  }>;
+  cursor: number;
+  has_more: boolean;
 }
 
 export interface CloudDevice {
@@ -518,6 +615,7 @@ export interface CloudWorkspaceResponse {
   share_groups: { groups: CloudShareGroup[] };
   received_shares: { shares: CloudReceivedShare[] };
   devices: { devices: CloudDevice[]; relay_enabled: boolean };
+  connect_host: CloudConnectHost;
 }
 
 export interface CreateShareGroupInput {
@@ -832,6 +930,24 @@ export const api = {
   cloudEnsureDevice: () => req<CloudDevice>("POST", "/control/cloud/devices/ensure"),
   cloudDeleteDevice: (deviceId: string) => req<{ ok: boolean }>("DELETE", `/control/cloud/devices/${deviceId}`),
   cloudSetRelay: (enabled: boolean) => req<{ enabled: boolean }>("PUT", "/control/cloud/relay", { enabled }),
+  cloudConnectHost: () => req<CloudConnectHost>("GET", "/control/cloud/connect/host"),
+  cloudConnectEvents: (cursor: number) => req<CloudUserEventsResponse>("GET", `/control/cloud/connect/events?cursor=${encodeURIComponent(String(cursor))}`),
+  cloudConnectHostAccounts: (accounts: Array<{ account_id: number; relay_mode: "owner_device" | "worker_direct" }>) =>
+    req<CloudConnectHost>("PUT", "/control/cloud/connect/host/accounts", { accounts }),
+  cloudConnectHostStart: (input: { max_claims: number; duration_minutes: number; idempotency_key?: string }) =>
+    req<CloudConnectHost & { host?: CloudConnectHost; temporary_password?: string }>("POST", "/control/cloud/connect/host/start", input),
+  cloudConnectHostRotatePassword: (input: { max_claims: number; duration_minutes: number; idempotency_key?: string }) =>
+    req<CloudConnectHost & { host?: CloudConnectHost; temporary_password?: string }>("POST", "/control/cloud/connect/host/rotate-password", input),
+  cloudConnectHostAction: (action: "pause" | "resume" | "reset-code") =>
+    req<CloudConnectHost>("POST", `/control/cloud/connect/host/${action}`),
+  cloudConnectRecipientUpdate: (recipientId: string, updates: Record<string, unknown>) =>
+    req<CloudConnectHost>("PATCH", `/control/cloud/connect/recipients/${recipientId}`, updates),
+  cloudConnectRecipientDelete: (recipientId: string) =>
+    req<{ ok: boolean }>("DELETE", `/control/cloud/connect/recipients/${recipientId}`),
+  cloudConnectClaimAndUse: (input: { connection_code: string; password: string; idempotency_key?: string }) =>
+    req<CloudReceivedShare>("POST", "/control/cloud/connect/claim-and-use", input),
+  cloudConnectReceivedUpdate: (grantId: string, input: { enabled?: boolean; proxy_id?: number | null; set_proxy?: boolean }) =>
+    req<Record<string, unknown>>("PATCH", `/control/cloud/connect/received/${grantId}`, input),
 
   listAccounts: () => req<{ accounts: Account[]; usage: Record<string, AccountUsage> }>("GET", "/control/accounts"),
   accountRuntime: () => req<{ accounts: AccountRuntimeState[] }>("GET", "/control/accounts/runtime"),

@@ -529,7 +529,15 @@ func writeCloudControlError(w http.ResponseWriter, err error) {
 		if status < 400 || status > 599 {
 			status = http.StatusBadGateway
 		}
-		writeControlError(w, status, cloudErr.Code, cloudErr.Message, cloudErr.Retryable, nil)
+		var details map[string]any
+		if cloudErr.Code == "client_upgrade_required" {
+			details = map[string]any{
+				"minimum_version": cloudErr.MinimumVersion,
+				"latest_version": cloudErr.LatestVersion,
+				"update_url": cloudErr.UpdateURL,
+			}
+		}
+		writeControlError(w, status, cloudErr.Code, cloudErr.Message, cloudErr.Retryable, details)
 		return
 	}
 	message := strings.ToLower(err.Error())

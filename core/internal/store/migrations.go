@@ -16,7 +16,7 @@ import (
 	appcrypto "sub2api-desktop/core/internal/crypto"
 )
 
-const CurrentSchemaVersion = 13
+const CurrentSchemaVersion = 14
 
 type migration struct {
 	version int
@@ -38,6 +38,59 @@ var migrations = []migration{
 	{version: 11, name: "v0.3.3 cloud sync outbox", apply: migrateV033CloudSyncOutbox},
 	{version: 12, name: "v0.4.0 cloud identity and received shares", apply: migrateV040CloudSharing},
 	{version: 13, name: "v0.4.1 device cloud connection settings", apply: migrateV041CloudConnection},
+	{version: 14, name: "v0.4.2 connection-code sharing", apply: migrateV042ConnectSharing},
+}
+
+func migrateV042ConnectSharing(tx *sql.Tx, _ *appcrypto.Cipher) error {
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS cloud_connect_host_state (
+			user_id INTEGER PRIMARY KEY,
+			connection_code TEXT NOT NULL,
+			password_version INTEGER NOT NULL,
+			password_cipher TEXT NOT NULL,
+			expires_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS cloud_received_account_links (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id INTEGER NOT NULL,
+			grant_public_id TEXT NOT NULL,
+			owner_name TEXT NOT NULL DEFAULT '',
+			group_name TEXT NOT NULL DEFAULT '',
+			remote_status TEXT NOT NULL DEFAULT 'active',
+			enabled INTEGER NOT NULL DEFAULT 1,
+			rpm_limit INTEGER NOT NULL DEFAULT 30,
+			concurrency_limit INTEGER NOT NULL DEFAULT 2,
+			quota_requests INTEGER NOT NULL DEFAULT 0,
+			used_requests INTEGER NOT NULL DEFAULT 0,
+			proxy_id INTEGER REFERENCES proxies(id) ON DELETE SET NULL,
+			health_status TEXT NOT NULL DEFAULT 'unchecked' CHECK(health_status IN ('unchecked','healthy','needs_attention')),
+			health_message TEXT NOT NULL DEFAULT '',
+			last_checked_at INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			UNIQUE(user_id,grant_public_id),
+			FOREIGN KEY(user_id,grant_public_id) REFERENCES cloud_received_keys(user_id,grant_public_id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cloud_received_links_enabled
+			ON cloud_received_account_links(user_id,enabled,remote_status,updated_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS cloud_connect_claim_attempts (
+			user_id INTEGER NOT NULL,
+			idempotency_key TEXT NOT NULL,
+			connection_code TEXT NOT NULL,
+			password_cipher TEXT NOT NULL,
+			key_material_json TEXT NOT NULL,
+			guest_key_cipher TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			PRIMARY KEY(user_id,idempotency_key)
+		)`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func migrateV041CloudConnection(tx *sql.Tx, _ *appcrypto.Cipher) error {

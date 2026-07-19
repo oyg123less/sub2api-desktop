@@ -28,6 +28,14 @@ class_name = "OwnerRelay"
 name = "SHARE_ACCESS"
 class_name = "ShareAccessCoordinator"
 
+[[durable_objects.bindings]]
+name = "SHARE_CONNECT_GUARD"
+class_name = "ShareConnectGuard"
+
 [[migrations]]
 tag = "v0.4.0-relay"
 new_sqlite_classes = ["OwnerRelay", "ShareAccessCoordinator"]
+
+[[migrations]]
+tag = "v0.4.2-connect-guard"
+new_sqlite_classes = ["ShareConnectGuard"]

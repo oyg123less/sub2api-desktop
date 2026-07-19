@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -282,5 +283,103 @@ func (c *Control) cloudV2SetRelay(w http.ResponseWriter, r *http.Request) {
 			return nil, err
 		}
 		return map[string]bool{"enabled": *request.Enabled}, nil
+	})
+}
+
+func (c *Control) cloudConnectHost(w http.ResponseWriter, r *http.Request) {
+	c.withCloudV2(w, r, 30*time.Second, func(ctx context.Context) (any, error) {
+		return c.cloud.GetConnectHost(ctx)
+	})
+}
+
+func (c *Control) cloudConnectEvents(w http.ResponseWriter, r *http.Request) {
+	cursor := int64(0)
+	if value := strings.TrimSpace(r.URL.Query().Get("cursor")); value != "" {
+		parsed, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || parsed < 0 {
+			writeControlError(w, http.StatusBadRequest, "invalid_event_cursor", "The event cursor is invalid", false, nil)
+			return
+		}
+		cursor = parsed
+	}
+	c.withCloudV2(w, r, 30*time.Second, func(ctx context.Context) (any, error) {
+		return c.cloud.ListConnectEvents(ctx, cursor)
+	})
+}
+
+func (c *Control) cloudConnectHostAccounts(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Accounts []cloudsync.ShareGroupAccountSelection `json:"accounts"`
+	}
+	if !decodeCloudRequest(w, r, &request) {
+		return
+	}
+	c.withCloudV2(w, r, 60*time.Second, func(ctx context.Context) (any, error) {
+		return c.cloud.ConfigureConnectHostAccounts(ctx, request.Accounts)
+	})
+}
+
+func (c *Control) cloudConnectHostStart(w http.ResponseWriter, r *http.Request) {
+	c.cloudConnectStart(w, r, false)
+}
+
+func (c *Control) cloudConnectHostRotatePassword(w http.ResponseWriter, r *http.Request) {
+	c.cloudConnectStart(w, r, true)
+}
+
+func (c *Control) cloudConnectStart(w http.ResponseWriter, r *http.Request, rotate bool) {
+	var request cloudsync.ConnectHostStartInput
+	if !decodeCloudRequest(w, r, &request) {
+		return
+	}
+	c.withCloudV2(w, r, 45*time.Second, func(ctx context.Context) (any, error) {
+		return c.cloud.StartConnectHost(ctx, request, rotate)
+	})
+}
+
+func (c *Control) cloudConnectHostAction(w http.ResponseWriter, r *http.Request) {
+	action := strings.TrimSpace(r.PathValue("action"))
+	if action != "pause" && action != "resume" && action != "reset-code" {
+		writeControlError(w, http.StatusBadRequest, "invalid_connect_action", "The sharing action is invalid", false, nil)
+		return
+	}
+	c.withCloudV2(w, r, 30*time.Second, func(ctx context.Context) (any, error) {
+		return c.cloud.ConnectHostAction(ctx, action)
+	})
+}
+
+func (c *Control) cloudConnectRecipientUpdate(w http.ResponseWriter, r *http.Request) {
+	var request map[string]any
+	if !decodeCloudRequest(w, r, &request) {
+		return
+	}
+	c.withCloudV2(w, r, 30*time.Second, func(ctx context.Context) (any, error) {
+		return c.cloud.ConnectRecipientRequest(ctx, http.MethodPatch, r.PathValue("id"), request)
+	})
+}
+
+func (c *Control) cloudConnectRecipientDelete(w http.ResponseWriter, r *http.Request) {
+	c.withCloudV2(w, r, 30*time.Second, func(ctx context.Context) (any, error) {
+		return c.cloud.ConnectRecipientRequest(ctx, http.MethodDelete, r.PathValue("id"), nil)
+	})
+}
+
+func (c *Control) cloudConnectClaimAndUse(w http.ResponseWriter, r *http.Request) {
+	var request cloudsync.ConnectClaimInput
+	if !decodeCloudRequest(w, r, &request) {
+		return
+	}
+	c.withCloudV2(w, r, 60*time.Second, func(ctx context.Context) (any, error) {
+		return c.cloud.ClaimConnectAndUse(ctx, request)
+	})
+}
+
+func (c *Control) cloudConnectReceivedUpdate(w http.ResponseWriter, r *http.Request) {
+	var request cloudsync.ConnectReceivedUpdate
+	if !decodeCloudRequest(w, r, &request) {
+		return
+	}
+	c.withCloudV2(w, r, 30*time.Second, func(ctx context.Context) (any, error) {
+		return c.cloud.UpdateConnectReceived(ctx, r.PathValue("id"), request)
 	})
 }

@@ -117,5 +117,20 @@ describe("administrator boundaries", () => {
     expect(auditBody).toContain("share.revoke");
     expect(auditBody).not.toContain("auth_hash");
     expect(auditBody).not.toContain("wrapped_vault_key");
+
+    const group = await env.DB.prepare(`INSERT INTO share_groups
+      (public_id,owner_id,name,description,status,route_policy,default_rpm,default_concurrency,default_quota_requests,created_at,updated_at)
+      VALUES('grp_admin_connect',?,'Admin test','', 'active','balanced',30,2,0,?,?) RETURNING id`)
+      .bind(targetRow?.id, now, now).first<{ id: number }>();
+    await env.DB.prepare(`INSERT INTO share_connect_endpoints
+      (public_id,owner_id,group_id,connection_code,status,created_at,updated_at)
+      VALUES('conn_admin_visible',?,?,'123456789','active',?,?)`).bind(targetRow?.id, group?.id, now, now).run();
+    const connectEntries = await SELF.fetch("https://amber.test/v1/admin/connect-endpoints", { headers });
+    expect(connectEntries.status).toBe(200);
+    const connectBody = JSON.stringify(await connectEntries.json());
+    expect(connectBody).toContain("conn_admin_visible");
+    expect(connectBody).not.toContain("123456789");
+    expect(connectBody).not.toContain("connection_code");
+    expect(connectBody).not.toContain("password");
   });
 });

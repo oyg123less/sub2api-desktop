@@ -14,6 +14,7 @@ export default defineConfig({
         durableObjects: {
           OWNER_RELAY: "OwnerRelay",
           SHARE_ACCESS: "ShareAccessCoordinator",
+          SHARE_CONNECT_GUARD: "ShareConnectGuard",
         },
         bindings: {
           ENVIRONMENT: "test",
@@ -23,6 +24,7 @@ export default defineConfig({
           RESEND_WEBHOOK_SECRET: "whsec_dGVzdC1yZXNlbmQtd2ViaG9vay1zZWNyZXQtMzItYnl0ZXM=",
           ADMIN_API_KEY: "test-admin-second-factor-at-least-32-bytes",
           SHARE_KMS_KEY: "Hx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8",
+          SHARE_CONNECT_PEPPER: "test-share-connect-pepper-at-least-32-bytes",
         },
       },
     }),

@@ -4,6 +4,7 @@ import type {
   CloudFriend,
   CloudFriendRequest,
   CloudProfile,
+  CloudConnectHost,
   CloudReceivedShare,
   CloudShareGroup,
 } from "../../api/control";
@@ -17,6 +18,7 @@ export interface CloudWorkspaceSnapshot {
   devices: CloudDevice[];
   accounts: Account[];
   relayEnabled: boolean;
+  connectHost: CloudConnectHost;
 }
 
 const cacheLifetimeMs = 2 * 60 * 1000;

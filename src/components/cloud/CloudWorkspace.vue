@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   api,
+  ControlAPIError,
   type Account,
   type CloudDevice,
   type CloudFriend,
@@ -15,11 +16,15 @@ import {
   type CloudShareGroupRecipient,
   type CloudShareGroupUsage,
   type CloudStatus,
+  type CloudConnectHost,
   type CreateShareGroupInput,
 } from "../../api/control";
+import { openUrl } from "../../platform";
 import { useAppStore } from "../../store";
 import ConfirmModal from "../ConfirmModal.vue";
 import Icon from "../Icon.vue";
+import QuickShareHost from "./QuickShareHost.vue";
+import QuickShareJoin from "./QuickShareJoin.vue";
 import {
   clearWorkspaceCache,
   readWorkspaceCache,
@@ -45,6 +50,12 @@ const receivedShares = ref<CloudReceivedShare[]>([]);
 const devices = ref<CloudDevice[]>([]);
 const accounts = ref<Account[]>([]);
 const relayEnabled = ref(false);
+const connectHost = ref<CloudConnectHost>({ configured: false, accounts: [], recipients: [] });
+const upgradeRequired = ref<{ minimum: string; latest: string; url: string } | null>(null);
+let eventCursor = 0;
+let eventPollTimer: ReturnType<typeof setTimeout> | undefined;
+let eventPolling = false;
+let eventPollingActive = false;
 
 const addFriendOpen = ref(false);
 const friendCodeInput = ref("");
@@ -134,6 +145,7 @@ function applyWorkspace(snapshot: CloudWorkspaceSnapshot) {
   devices.value = snapshot.devices;
   accounts.value = snapshot.accounts;
   relayEnabled.value = snapshot.relayEnabled;
+  connectHost.value = snapshot.connectHost;
 }
 
 async function refreshWorkspace(silent: boolean) {
@@ -153,17 +165,109 @@ async function refreshWorkspace(silent: boolean) {
       devices: workspace.devices?.devices || [],
       accounts: accountsResult.accounts || [],
       relayEnabled: Boolean(workspace.devices?.relay_enabled),
+      connectHost: workspace.connect_host || { configured: false, accounts: [], recipients: [] },
     };
     applyWorkspace(snapshot);
     writeWorkspaceCache(props.status.email || "", snapshot);
     loadError.value = "";
   } catch (error) {
+    if (error instanceof ControlAPIError && error.code === "client_upgrade_required") {
+      upgradeRequired.value = {
+        minimum: String(error.details.minimum_version || "0.4.2"),
+        latest: String(error.details.latest_version || error.details.minimum_version || "0.4.2"),
+        url: String(error.details.update_url || "https://github.com/oyg123less/sub2api-desktop/releases/latest"),
+      };
+      loadError.value = "";
+      return;
+    }
     if (!silent || !profile.value) {
       loadError.value = (error as Error).message;
       app.toast(loadError.value, "error");
     }
   } finally {
     if (!silent) loading.value = false;
+  }
+}
+
+async function connectHostUpdated(host?: CloudConnectHost) {
+  connectHost.value = host || await api.cloudConnectHost();
+  persistCurrentWorkspace();
+}
+
+async function connectClaimed(share: CloudReceivedShare) {
+  const index = receivedShares.value.findIndex((item) => item.public_id === share.public_id);
+  if (index >= 0) receivedShares.value[index] = share;
+  else receivedShares.value.unshift(share);
+  persistCurrentWorkspace();
+}
+
+function persistCurrentWorkspace() {
+  if (!profile.value) return;
+  writeWorkspaceCache(props.status.email || "", {
+    profile: profile.value,
+    friends: friends.value,
+    friendRequests: friendRequests.value,
+    shareGroups: shareGroups.value,
+    receivedShares: receivedShares.value,
+    devices: devices.value,
+    accounts: accounts.value,
+    relayEnabled: relayEnabled.value,
+    connectHost: connectHost.value,
+  });
+}
+
+async function refreshConnectSections() {
+  const [host, received] = await Promise.all([api.cloudConnectHost(), api.cloudReceivedShares()]);
+  connectHost.value = host;
+  receivedShares.value = received.shares || [];
+  persistCurrentWorkspace();
+}
+
+function scheduleEventPoll() {
+  if (!eventPollingActive) return;
+  clearTimeout(eventPollTimer);
+  const delay = document.visibilityState === "visible" ? 5_000 : 60_000;
+  eventPollTimer = setTimeout(() => void pollConnectEvents(), delay);
+}
+
+async function pollConnectEvents() {
+  if (eventPolling || !profile.value || upgradeRequired.value) {
+    scheduleEventPoll();
+    return;
+  }
+  eventPolling = true;
+  let changed = false;
+  try {
+    for (let page = 0; page < 5; page += 1) {
+      const response = await api.cloudConnectEvents(eventCursor);
+      eventCursor = Math.max(eventCursor, response.cursor || 0);
+      changed ||= response.events.length > 0;
+      if (!response.has_more) break;
+    }
+    if (changed) await refreshConnectSections();
+  } catch {
+    // The normal cloud status surface reports network errors; polling stays quiet.
+  } finally {
+    eventPolling = false;
+    scheduleEventPoll();
+  }
+}
+
+function triggerEventPoll() {
+  clearTimeout(eventPollTimer);
+  void pollConnectEvents();
+}
+
+async function toggleReceivedLocal(share: CloudReceivedShare) {
+  actionBusy.value = `local-${share.public_id}`;
+  try {
+    await api.cloudConnectReceivedUpdate(share.public_id, { enabled: !share.local_enabled });
+    share.local_enabled = !share.local_enabled;
+    app.toast(t(share.local_enabled ? "cloud.v4.connect.localEnabled" : "cloud.v4.connect.localDisabled"), "success");
+  } catch (error) {
+    app.toast((error as Error).message, "error");
+  } finally {
+    actionBusy.value = "";
   }
 }
 
@@ -536,6 +640,12 @@ async function testReceivedShare(share: CloudReceivedShare) {
   actionBusy.value = `test-${share.public_id}`;
   try {
     const result = await api.cloudTestReceivedShare(share.public_id);
+    share.connection_test = result;
+    share.health_status = result.ok ? "healthy" : "needs_attention";
+    share.health_message = result.message;
+    share.last_checked_at = new Date().toISOString();
+    share.local_enabled = result.ok;
+    persistCurrentWorkspace();
     app.toast(result.ok ? t("cloud.v4.testShareSuccess") : `${result.code || result.status}: ${result.message}`, result.ok ? "success" : "error");
   } catch (error) {
     app.toast((error as Error).message, "error");
@@ -579,7 +689,19 @@ async function copy(value: string) {
   }
 }
 
-onMounted(() => loadWorkspace());
+onMounted(async () => {
+  eventPollingActive = true;
+  await loadWorkspace();
+  triggerEventPoll();
+  window.addEventListener("online", triggerEventPoll);
+  document.addEventListener("visibilitychange", triggerEventPoll);
+});
+onUnmounted(() => {
+  eventPollingActive = false;
+  clearTimeout(eventPollTimer);
+  window.removeEventListener("online", triggerEventPoll);
+  document.removeEventListener("visibilitychange", triggerEventPoll);
+});
 watch(() => props.status.last_sync_at, (current, previous) => {
   if (current && current !== previous) void loadWorkspace(true);
 });
@@ -621,11 +743,21 @@ watch(detailTab, (current) => {
       </div>
     </section>
 
-    <div v-if="loading" class="workspace-loading"><span></span><span></span><span></span></div>
+    <section v-if="upgradeRequired" class="upgrade-required" data-test="cloud-upgrade-required" role="alert">
+      <span><Icon name="download" :size="25" /></span>
+      <div><h2>{{ t("cloud.v4.connect.upgradeTitle") }}</h2><p>{{ t("cloud.v4.connect.upgradeDesc", { version: upgradeRequired.minimum }) }}</p><small>{{ t("cloud.v4.connect.upgradeCurrent", { latest: upgradeRequired.latest }) }}</small></div>
+      <button class="btn btn-primary" type="button" @click="openUrl(upgradeRequired.url)"><Icon name="download" :size="15" />{{ t("cloud.v4.connect.downloadLatest") }}</button>
+    </section>
+    <div v-else-if="loading" class="workspace-loading"><span></span><span></span><span></span></div>
     <div v-else-if="loadError" class="workspace-error" role="alert"><Icon name="warn" :size="20" /><span>{{ loadError }}</span><button class="btn btn-ghost btn-sm" @click="loadWorkspace()">{{ t("common.retry") }}</button></div>
 
     <div v-else class="workspace-content">
       <template v-if="tab === 'overview'">
+        <section class="quick-connect-grid" :aria-label="t('cloud.v4.connect.quickTitle')">
+          <QuickShareHost :host="connectHost" :accounts="accounts" @updated="connectHostUpdated" />
+          <QuickShareJoin @connected="connectClaimed" />
+        </section>
+        <div class="advanced-divider"><span>{{ t("cloud.v4.connect.activityOverview") }}</span></div>
         <section class="metric-strip" :aria-label="t('cloud.v4.tabs.overview')">
           <div><span>{{ t("cloud.v4.metrics.activeShares") }}</span><strong>{{ activeGroups.length }}</strong></div>
           <div><span>{{ t("cloud.v4.metrics.relayDevices") }}</span><strong>{{ onlineDevices.length }}</strong></div>
@@ -679,9 +811,11 @@ watch(detailTab, (current) => {
             <div class="received-policy"><span>{{ t("cloud.v4.accountCount", { count: share.group.account_count }) }}</span><span>{{ share.rpm_limit }} RPM</span><span>{{ t("cloud.v4.concurrent", { count: share.concurrency_limit }) }}</span><span>{{ share.used_requests }} / {{ share.quota_requests || "∞" }}</span></div>
             <div v-if="share.status === 'pending'" class="received-actions"><button class="btn btn-ghost" :disabled="actionBusy !== ''" @click="receivedAction(share, 'decline')">{{ t("cloud.v4.decline") }}</button><button class="btn btn-primary" data-test="accept-received-share" :disabled="actionBusy !== ''" @click="receivedAction(share, 'accept')"><Icon name="check" :size="14" />{{ t("cloud.v4.acceptShare") }}</button></div>
             <div v-else-if="share.status === 'active' || share.status === 'paused'" class="credential-area">
+              <div v-if="share.health_status === 'needs_attention'" class="received-health-warning"><Icon name="warn" :size="15" /><span><strong>{{ t("cloud.v4.connect.attentionTitle") }}</strong><small>{{ t("cloud.v4.connect.retryFromReceived") }}</small></span></div>
               <div><label>Base URL</label><code>{{ share.base_url }}</code><button class="icon-button" :title="t('common.copy')" @click="copy(share.base_url)"><Icon name="copy" :size="14" /></button></div>
               <div><label>API Key</label><code>{{ revealKeys[share.public_id] ? (share.api_key || "—") : `${share.key?.key_prefix || "sk-amber-"}••••••••` }}</code><button class="text-action" @click="revealKeys[share.public_id] = !revealKeys[share.public_id]">{{ t(revealKeys[share.public_id] ? "cloud.v4.hide" : "cloud.v4.show") }}</button><button class="icon-button" :title="t('common.copy')" :disabled="!share.api_key" @click="copy(share.api_key || '')"><Icon name="copy" :size="14" /></button></div>
               <div class="received-credential-actions"><button class="btn btn-ghost btn-sm" data-test="test-received-share" :disabled="actionBusy !== ''" @click="testReceivedShare(share)"><Icon name="activity" :size="13" />{{ actionBusy === `test-${share.public_id}` ? t("cloud.v4.testingShare") : t("cloud.v4.testShare") }}</button><button class="text-action leave-action" @click="receivedAction(share, 'leave')">{{ t("cloud.v4.leaveShare") }}</button></div>
+              <div class="local-use-row"><div><strong>{{ t("cloud.v4.connect.localScheduling") }}</strong><small>{{ t("cloud.v4.connect.localSchedulingDesc") }}</small></div><button class="switch" :class="{ on: share.local_enabled }" type="button" role="switch" :aria-checked="share.local_enabled" :disabled="actionBusy !== '' || share.status !== 'active' || (share.health_status === 'needs_attention' && !share.local_enabled)" @click="toggleReceivedLocal(share)"><span></span></button></div>
             </div>
           </article>
         </div>
@@ -775,6 +909,9 @@ watch(detailTab, (current) => {
 
 <style scoped>
 .cloud-workspace { width: 100%; max-width: 1240px; margin: 0 auto; }
+.quick-connect-grid { display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(360px, .92fr); gap: 14px; align-items: stretch; }
+.advanced-divider { display: flex; align-items: center; gap: 12px; margin: 25px 0 9px; color: var(--text-faint); font-size: 11px; text-transform: uppercase; }.advanced-divider::before, .advanced-divider::after { height: 1px; flex: 1; background: var(--border-soft); content: ""; }
+.upgrade-required { min-height: 250px; display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 16px; padding: 28px; border: 1px solid var(--warn); border-radius: 8px; background: var(--warn-soft); }.upgrade-required > span { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 8px; color: var(--warn); background: var(--bg-card); }.upgrade-required h2 { margin: 0; font-size: 18px; }.upgrade-required p { margin: 6px 0; color: var(--text-dim); }.upgrade-required small { color: var(--text-faint); }
 .workspace-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding-bottom: 18px; }
 .workspace-identity, .workspace-actions, .received-heading > div, .relay-control > div { display: flex; align-items: center; gap: 11px; }
 .workspace-avatar { width: 42px; height: 42px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 8px; background: var(--primary-soft); color: var(--primary); font-size: 17px; font-weight: 750; }
@@ -839,6 +976,8 @@ watch(detailTab, (current) => {
 .received-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .credential-area { display: grid; gap: 8px; margin: 14px 0 0 45px; }.credential-area > div { display: grid; grid-template-columns: 82px minmax(0, 1fr) auto auto; align-items: center; gap: 7px; padding: 7px 9px; border: 1px solid var(--border-soft); border-radius: 6px; background: var(--bg-elev); }.credential-area label { color: var(--text-faint); font-size: 11px; }.credential-area code { overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }.leave-action { justify-self: end; color: var(--danger); }
 .credential-area > .received-credential-actions { display: flex; justify-content: flex-end; padding: 0; border: 0; background: transparent; }
+.credential-area > .received-health-warning { display: flex; grid-template-columns: none; align-items: flex-start; justify-content: flex-start; color: var(--warn); background: var(--warn-soft); }.received-health-warning > span { display: grid; gap: 2px; }.received-health-warning small { color: var(--text-dim); }
+.credential-area > .local-use-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 0 0; border: 0; border-top: 1px solid var(--border-soft); background: transparent; }.local-use-row > div { min-width: 0; display: grid; gap: 2px; }.local-use-row small { color: var(--text-faint); }
 .friend-code-band { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 16px; border-block: 1px solid var(--border-soft); background: var(--bg-elev); }.friend-code-band > div { display: grid; gap: 4px; }.friend-code-band span { color: var(--text-faint); font-size: 11px; }.friend-code-band strong { font-size: 16px; }
 .friend-request-list, .friend-list { margin-top: 10px; border-top: 1px solid var(--border-soft); }.friend-request-list article, .friend-list article, .device-list article, .drawer-list article, .security-list article { min-height: 58px; display: flex; align-items: center; gap: 11px; padding: 9px 3px; border-bottom: 1px solid var(--border-soft); }.friend-request-list article > div:nth-child(2), .friend-list article > div { min-width: 0; display: grid; gap: 3px; flex: 1; }.friend-request-list small, .friend-list small, .device-list p, .drawer-list small { color: var(--text-faint); }.friend-request-list article > div:last-child { display: flex; gap: 6px; }
 .relay-control { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px; border-block: 1px solid var(--border-soft); background: var(--bg-elev); }.relay-control p { max-width: 650px; }.switch { width: 42px; height: 24px; padding: 2px; border: 0; border-radius: 12px; background: var(--border); cursor: pointer; transition: background 150ms ease; }.switch span { width: 20px; height: 20px; display: block; border-radius: 50%; background: white; transition: transform 150ms ease; }.switch.on { background: var(--success); }.switch.on span { transform: translateX(18px); }.switch:disabled { opacity: .45; cursor: not-allowed; }
@@ -852,6 +991,6 @@ watch(detailTab, (current) => {
 .drawer-toolbar { flex-wrap: wrap; }.usage-event-list { margin-top: 12px; border-top: 1px solid var(--border-soft); }.usage-event-list article { min-height: 54px; display: flex; align-items: center; gap: 10px; padding: 8px 3px; border-bottom: 1px solid var(--border-soft); }.usage-event-list article > div { min-width: 0; display: grid; gap: 3px; flex: 1; }.usage-event-list small { overflow: hidden; color: var(--text-faint); text-overflow: ellipsis; white-space: nowrap; }.usage-event-list code { color: var(--text-dim); }
 .danger-text { color: var(--danger); }.faint { color: var(--text-faint); }.mono { font-family: var(--font-mono); }
 @media (prefers-reduced-motion: reduce) { .share-group-row, .switch, .switch span { transition: none; } }
-@media (max-width: 980px) { .share-group-row { grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) auto; }.group-usage { display: none; }.metric-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }.metric-strip div:nth-child(2) { border-right: 0; }.metric-strip div:nth-child(-n+2) { border-bottom: 1px solid var(--border-soft); } }
+@media (max-width: 980px) { .quick-connect-grid { grid-template-columns: minmax(0, 1fr); }.share-group-row { grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) auto; }.group-usage { display: none; }.metric-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }.metric-strip div:nth-child(2) { border-right: 0; }.metric-strip div:nth-child(-n+2) { border-bottom: 1px solid var(--border-soft); } }
 @media (max-width: 720px) { .workspace-header { align-items: flex-start; flex-direction: column; }.workspace-actions { width: 100%; justify-content: flex-start; }.relay-state { width: 100%; }.sync-error-band { grid-template-columns: auto minmax(0, 1fr); }.sync-error-actions { grid-column: 2; flex-wrap: wrap; justify-self: start; }.overview-columns, .rules-grid { grid-template-columns: minmax(0, 1fr); }.share-group-row { grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }.group-facts { grid-column: 1 / -1; }.credential-area { margin-left: 0; }.credential-area > div { grid-template-columns: minmax(0, 1fr) auto auto; }.credential-area label { grid-column: 1 / -1; }.received-policy { margin-left: 0; }.wizard-steps small { display: none; }.share-wizard { width: 100%; height: 100%; max-height: none; border-radius: 0; }.selection-list article { align-items: stretch; flex-direction: column; }.selection-list label { width: 100%; }.compact-select { width: 100%; }.wizard-review section { grid-template-columns: minmax(0, 1fr); }.wizard-review section > span { grid-row: auto; }.detail-drawer { width: 100%; }.drawer-list article { align-items: flex-start; flex-wrap: wrap; }.usage-summary { grid-template-columns: minmax(0, 1fr); }.usage-summary div { border-right: 0; border-bottom: 1px solid var(--border-soft); } }
 </style>

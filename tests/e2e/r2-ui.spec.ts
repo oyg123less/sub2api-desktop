@@ -22,6 +22,8 @@ const baseSettings = {
 async function initialize(page: Page) {
   let serverRunning = true;
   const settings = { ...baseSettings };
+  const now = new Date();
+  const localToday = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   await page.addInitScript(() => {
     localStorage.setItem("s2a_control_port", "45678");
     localStorage.setItem("s2a_control_token", "fixture-control-token");
@@ -45,7 +47,7 @@ async function initialize(page: Page) {
     } else if (path === "/control/stats") {
       body = {
         summary: { total_requests: 4, eligible_requests: 4, success_requests: 4, failed_requests: 0, client_cancelled: 0, total_tokens: 1000, prompt_tokens: 700, cached_tokens: 200, completion_tokens: 300, reasoning_tokens: 0, estimated_requests: 0, avg_latency_ms: 120, cost_usd: 3015.4344, pricing_fallback_requests: 0 },
-        daily: [{ date: new Date().toISOString().slice(0, 10), requests: 4, total_tokens: 1000, cost_usd: 1842.6159 }],
+        daily: [{ date: localToday, requests: 4, total_tokens: 1000, cost_usd: 1842.6159 }],
         by_model: [{ model: "gpt-5.6-sol", requests: 4, total_tokens: 1000, cost_usd: 3015.4344 }], failure_breakdown: [], retention: { days: 30, max_rows: 100000, retained_rows: 4 },
         pricing: { version: "2026-07-16", source_url: "https://developers.openai.com/api/docs/pricing", tier: "standard", currency: "USD" },
       };

@@ -11,12 +11,14 @@ export interface Bindings {
   QQ_SMTP_AUTH_CODE?: string;
   ADMIN_API_KEY?: string;
   SHARE_KMS_KEY?: string;
+  SHARE_CONNECT_PEPPER?: string;
   ENVIRONMENT?: "development" | "test" | "production";
   MAILER_MODE?: "console" | "resend";
   RESEND_FROM?: string;
   TURNSTILE_HOSTNAME?: string;
   OWNER_RELAY: DurableObjectNamespace;
   SHARE_ACCESS: DurableObjectNamespace;
+  SHARE_CONNECT_GUARD: DurableObjectNamespace;
 }
 
 export interface AuthUser {

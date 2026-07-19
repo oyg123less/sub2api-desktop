@@ -27,7 +27,7 @@ interface GroupRow {
   updated_at: string;
 }
 
-interface AccountInput {
+export interface AccountInput {
   account_uid: string;
   account_type: "oauth" | "api_key";
   relay_mode: "owner_device" | "worker_direct";
@@ -94,7 +94,7 @@ async function ownedGroup(c: Context<AppEnv>, publicID: string, includeDeleted =
   return row;
 }
 
-async function parseAccount(c: Context<AppEnv>, raw: unknown, publicID = newPublicID("sga")): Promise<AccountInput> {
+export async function parseShareAccount(c: Context<AppEnv>, raw: unknown, publicID = newPublicID("sga")): Promise<AccountInput> {
   if (!raw || typeof raw !== "object") throw new AppError(400, "invalid_share_account", "A shared account is invalid.");
   const value = raw as Record<string, unknown>;
   const accountUID = typeof value.account_uid === "string" ? value.account_uid.trim() : "";
@@ -201,7 +201,7 @@ groups.post("/share-groups", async (c) => {
   const accounts: AccountInput[] = [];
   const accountUIDs = new Set<string>();
   for (const raw of rawAccounts) {
-    const account = await parseAccount(c, raw);
+    const account = await parseShareAccount(c, raw);
     if (accountUIDs.has(account.account_uid)) throw new AppError(400, "duplicate_share_account", "Each account can be selected only once.");
     accountUIDs.add(account.account_uid);
     accounts.push(account);
@@ -337,7 +337,7 @@ groups.post("/share-groups/:id/accounts", async (c) => {
   await requireFeature(c, "share_groups_enabled");
   const group = await ownedGroup(c, c.req.param("id"));
   const body = await readJSON<Record<string, unknown>>(c);
-  const account = await parseAccount(c, body);
+  const account = await parseShareAccount(c, body);
   const now = new Date().toISOString();
   try {
     await c.env.DB.prepare(`INSERT INTO share_group_accounts

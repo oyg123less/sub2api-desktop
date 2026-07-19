@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -123,16 +124,22 @@ type CloudReceivedShare struct {
 	Owner struct {
 		DisplayName string `json:"display_name"`
 	} `json:"owner"`
-	RPMLimit         int                   `json:"rpm_limit"`
-	ConcurrencyLimit int                   `json:"concurrency_limit"`
-	QuotaRequests    int                   `json:"quota_requests"`
-	UsedRequests     int                   `json:"used_requests"`
-	ExpiresAt        string                `json:"expires_at,omitempty"`
-	CreatedAt        string                `json:"created_at"`
-	AcceptedAt       string                `json:"accepted_at,omitempty"`
-	BaseURL          string                `json:"base_url"`
-	Key              *CloudReceivedKeyInfo `json:"key,omitempty"`
-	APIKey           string                `json:"api_key,omitempty"`
+	RPMLimit         int                       `json:"rpm_limit"`
+	ConcurrencyLimit int                       `json:"concurrency_limit"`
+	QuotaRequests    int                       `json:"quota_requests"`
+	UsedRequests     int                       `json:"used_requests"`
+	ExpiresAt        string                    `json:"expires_at,omitempty"`
+	CreatedAt        string                    `json:"created_at"`
+	AcceptedAt       string                    `json:"accepted_at,omitempty"`
+	BaseURL          string                    `json:"base_url"`
+	Key              *CloudReceivedKeyInfo     `json:"key,omitempty"`
+	APIKey           string                    `json:"api_key,omitempty"`
+	LocalEnabled     bool                      `json:"local_enabled"`
+	ProxyID          *int64                    `json:"proxy_id,omitempty"`
+	HealthStatus     string                    `json:"health_status"`
+	HealthMessage    string                    `json:"health_message,omitempty"`
+	LastCheckedAt    string                    `json:"last_checked_at,omitempty"`
+	ConnectionTest   *CloudShareConnectionTest `json:"connection_test,omitempty"`
 }
 
 type CloudReceivedSharesResponse struct {
@@ -158,6 +165,7 @@ type CloudWorkspaceResponse struct {
 	ShareGroups    CloudDocument               `json:"share_groups"`
 	ReceivedShares CloudReceivedSharesResponse `json:"received_shares"`
 	Devices        CloudDevicesResponse        `json:"devices"`
+	ConnectHost    CloudDocument               `json:"connect_host"`
 }
 
 type CloudDevice struct {
@@ -413,6 +421,11 @@ func (m *Manager) LoadWorkspace(ctx context.Context) (CloudWorkspaceResponse, er
 	run(func() error {
 		return m.client.doJSON(workCtx, http.MethodGet, "/v1/devices", accessToken, nil, &result.Devices)
 	})
+	run(func() error {
+		var readErr error
+		result.ConnectHost, readErr = m.getConnectHostLocked(workCtx, accessToken, userID)
+		return readErr
+	})
 	group.Wait()
 	if firstErr != nil {
 		return CloudWorkspaceResponse{}, firstErr
@@ -608,6 +621,12 @@ func (m *Manager) hydrateReceivedShares(ctx context.Context, accessToken string,
 	for index := range response.Shares {
 		share := &response.Shares[index]
 		if share.Status != "active" && share.Status != "paused" {
+			_ = m.store.SaveCloudReceivedAccountLink(store.CloudReceivedAccountLink{
+				UserID: userID, GrantPublicID: share.PublicID, OwnerName: share.Owner.DisplayName,
+				GroupName: share.Group.Name, RemoteStatus: share.Status, Enabled: false,
+				RPMLimit: share.RPMLimit, ConcurrencyLimit: share.ConcurrencyLimit,
+				QuotaRequests: share.QuotaRequests, UsedRequests: share.UsedRequests,
+			})
 			continue
 		}
 		local, localErr := m.store.LoadCloudReceivedKey(userID, share.PublicID)
@@ -630,6 +649,34 @@ func (m *Manager) hydrateReceivedShares(ctx context.Context, accessToken string,
 			return err
 		}
 		share.APIKey = guestKey
+	}
+	links, err := m.store.ListCloudReceivedAccountLinks(userID)
+	if err != nil {
+		return err
+	}
+	linkByGrant := make(map[string]store.CloudReceivedAccountLink, len(links))
+	for _, link := range links {
+		linkByGrant[link.GrantPublicID] = link
+	}
+	for index := range response.Shares {
+		share := &response.Shares[index]
+		if share.Status == "active" || share.Status == "paused" {
+			if err := m.saveReceivedLink(userID, *share, true); err != nil {
+				return err
+			}
+		}
+		if link, ok := linkByGrant[share.PublicID]; ok {
+			share.LocalEnabled = link.Enabled
+			share.ProxyID = link.ProxyID
+			share.HealthStatus = link.HealthStatus
+			share.HealthMessage = link.HealthMessage
+			if !link.LastCheckedAt.IsZero() {
+				share.LastCheckedAt = link.LastCheckedAt.Format(time.RFC3339)
+			}
+		} else if share.Status == "active" || share.Status == "paused" {
+			share.LocalEnabled = true
+			share.HealthStatus = "unchecked"
+		}
 	}
 	return nil
 }
@@ -671,6 +718,10 @@ func (m *Manager) AcceptReceivedShare(ctx context.Context, shareID string) (Clou
 		return CloudReceivedShare{}, err
 	}
 	share.APIKey = guestKey
+	if err := m.saveReceivedLink(userID, share, true); err != nil {
+		return CloudReceivedShare{}, err
+	}
+	share.LocalEnabled = true
 	return share, nil
 }
 
@@ -683,27 +734,15 @@ func (m *Manager) ReceivedShareAction(ctx context.Context, shareID, action strin
 	}
 	response, err := m.client.receivedAction(ctx, accessToken, shareID, action)
 	if err == nil && (action == "leave" || action == "decline") {
+		_ = m.store.DeleteCloudReceivedAccountLink(userID, shareID)
 		_ = m.store.DeleteCloudReceivedKey(userID, shareID)
 	}
 	return response, err
 }
 
-// TestReceivedShare performs one explicit, low-output request through the
-// received Guest Key. It never retries because the upstream may have started.
-func (m *Manager) TestReceivedShare(ctx context.Context, shareID string) (CloudShareConnectionTest, error) {
-	m.opMu.Lock()
-	defer m.opMu.Unlock()
-	_, userID, vaultKey, err := m.cloudV2Access(ctx)
-	if len(vaultKey) > 0 {
-		wipe(vaultKey)
-	}
-	if err != nil {
-		return CloudShareConnectionTest{}, err
-	}
-	key, err := m.store.LoadCloudReceivedKey(userID, strings.TrimSpace(shareID))
-	if err != nil {
-		return CloudShareConnectionTest{}, errors.New("sync and accept this shared access before testing it")
-	}
+// testReceivedKey performs one explicit, low-output request through a received
+// Guest Key. It never retries because the upstream may already have started.
+func (m *Manager) testReceivedKey(ctx context.Context, key *store.CloudReceivedKey) (CloudShareConnectionTest, error) {
 	cloudURL, err := url.Parse(m.client.baseURL)
 	if err != nil {
 		return CloudShareConnectionTest{}, errors.New("Amber Cloud URL is invalid")
@@ -755,6 +794,31 @@ func (m *Manager) TestReceivedShare(ctx context.Context, shareID string) (CloudS
 		failure.Error.Message = http.StatusText(response.StatusCode)
 	}
 	return CloudShareConnectionTest{OK: false, Status: response.StatusCode, Code: failure.Error.Code, Message: failure.Error.Message}, nil
+}
+
+func (m *Manager) TestReceivedShare(ctx context.Context, shareID string) (CloudShareConnectionTest, error) {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	_, userID, vaultKey, err := m.cloudV2Access(ctx)
+	if len(vaultKey) > 0 {
+		wipe(vaultKey)
+	}
+	if err != nil {
+		return CloudShareConnectionTest{}, err
+	}
+	shareID = strings.TrimSpace(shareID)
+	key, err := m.store.LoadCloudReceivedKey(userID, shareID)
+	if err != nil {
+		return CloudShareConnectionTest{}, errors.New("sync and accept this shared access before testing it")
+	}
+	result, testErr := m.testReceivedKey(ctx, key)
+	if testErr != nil {
+		result = CloudShareConnectionTest{OK: false, Code: "share_test_failed", Message: testErr.Error()}
+	}
+	if err := m.store.SetCloudReceivedAccountHealth(userID, shareID, result.OK, result.OK, result.Message); err != nil && !errors.Is(err, store.ErrNotFound) {
+		return CloudShareConnectionTest{}, err
+	}
+	return result, nil
 }
 
 func (m *Manager) ListDevices(ctx context.Context) (CloudDevicesResponse, error) {

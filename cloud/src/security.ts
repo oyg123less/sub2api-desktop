@@ -72,6 +72,10 @@ async function hmac(secret: string, value: string): Promise<Uint8Array> {
   return new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(value)));
 }
 
+export async function hmacBase64URL(secret: string, value: string): Promise<string> {
+  return bytesToBase64URL(await hmac(secret, value));
+}
+
 export async function signAccessToken(env: Bindings, user: AuthUser): Promise<string> {
   if (!env.JWT_SECRET || env.JWT_SECRET.length < 32) {
     throw new AppError(503, "cloud_not_configured", "Cloud authentication is not configured.");
