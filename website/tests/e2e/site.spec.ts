@@ -56,7 +56,7 @@ test("navigation is keyboard reachable and the mobile menu exposes all routes", 
 test("screenshots load with nonblank pixel data and lightbox restores focus", async ({ page }) => {
   await page.goto("/docs");
   const images = page.locator(".image-viewer img");
-  expect(await images.count()).toBeGreaterThan(0);
+  await expect(images).not.toHaveCount(0);
 
   await images.evaluateAll(async (nodes) => {
     await Promise.all(
@@ -134,9 +134,11 @@ test("documentation exposes the appropriate table of contents", async ({ page })
 
 test("hero screenshot is loaded and nonblank", async ({ page }) => {
   await page.goto("/");
-  const result = await page.evaluate(async () => {
-    const image = new Image();
-    image.src = "/screenshots/dashboard.png";
+  const heroImage = page.locator(".hero-product-image");
+  await expect(heroImage).toHaveAttribute("src", "/screenshots/accounts.png");
+
+  const result = await heroImage.evaluate(async (node) => {
+    const image = node as HTMLImageElement;
     await image.decode();
     const canvas = document.createElement("canvas");
     canvas.width = 20;
@@ -153,6 +155,27 @@ test("hero screenshot is loaded and nonblank", async ({ page }) => {
 
   expect(result).toEqual({ width: 1440, height: 900, colors: expect.any(Number) });
   expect(result.colors).toBeGreaterThan(1);
+});
+
+test("homepage keeps copy and product image separate at 320px", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "Smallest viewport regression check runs once.");
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.goto("/");
+
+  const layout = await page.evaluate(() => {
+    const copy = document.querySelector(".hero-content")?.getBoundingClientRect();
+    const stage = document.querySelector(".hero-product-stage")?.getBoundingClientRect();
+    return {
+      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      copyBottom: copy?.bottom ?? 0,
+      stageTop: stage?.top ?? 0,
+      stageHeight: stage?.height ?? 0,
+    };
+  });
+
+  expect(layout.overflow).toBeLessThanOrEqual(1);
+  expect(Math.abs(layout.copyBottom - layout.stageTop)).toBeLessThanOrEqual(1);
+  expect(layout.stageHeight).toBeGreaterThanOrEqual(200);
 });
 
 test("captures homepage and documentation visual evidence", async ({ page }, testInfo) => {

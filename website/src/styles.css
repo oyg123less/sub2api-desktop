@@ -37,7 +37,7 @@ html {
 
 body {
   margin: 0;
-  min-width: 320px;
+  min-width: 0;
   min-height: 100vh;
   background: var(--bg);
   color: var(--ink);
@@ -192,6 +192,7 @@ code {
 }
 
 .primary-nav a {
+  position: relative;
   display: inline-flex;
   min-height: 38px;
   align-items: center;
@@ -210,8 +211,19 @@ code {
 }
 
 .primary-nav a.router-link-exact-active {
-  background: var(--amber-soft);
+  background: transparent;
   color: var(--amber-dark);
+}
+
+.primary-nav a.router-link-exact-active::after {
+  position: absolute;
+  right: 11px;
+  bottom: 2px;
+  left: 11px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--amber);
+  content: "";
 }
 
 .icon-button {
@@ -747,6 +759,14 @@ main {
 
   .primary-nav a {
     justify-content: center;
+  }
+
+  .primary-nav a.router-link-exact-active {
+    background: var(--amber-soft);
+  }
+
+  .primary-nav a.router-link-exact-active::after {
+    display: none;
   }
 
   .feature-grid {
