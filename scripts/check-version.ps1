@@ -7,8 +7,20 @@ $tauri = Get-Content -Raw -LiteralPath (Join-Path $repo 'src-tauri\tauri.conf.js
 $cargo = Get-Content -Raw -LiteralPath (Join-Path $repo 'src-tauri\Cargo.toml')
 $cargoVersion = [regex]::Match($cargo, '(?ms)^\[package\].*?^version\s*=\s*"([^"]+)"').Groups[1].Value
 $lockPath = Join-Path $repo 'package-lock.json'
-$node24 = if ($env:AMBER_NODE24) { $env:AMBER_NODE24 } else { Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe' }
-if (-not (Test-Path -LiteralPath $node24)) { throw "Node.js 24 runtime not found: $node24" }
+$bundledNode24 = Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe'
+if ($env:AMBER_NODE24) {
+    $node24 = $env:AMBER_NODE24
+} elseif (Test-Path -LiteralPath $bundledNode24) {
+    $node24 = $bundledNode24
+} else {
+    $nodeCommand = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $nodeCommand) { throw 'Node.js 24 runtime not found' }
+    $node24 = $nodeCommand.Source
+}
+$nodeVersion = (& $node24 --version).Trim()
+if ($LASTEXITCODE -ne 0 -or $nodeVersion -notmatch '^v24\.') {
+    throw "Node.js 24 is required, found '$nodeVersion' at '$node24'"
+}
 $lockVersions = & $node24 -e "const p=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')); console.log(p.version); console.log(p.packages[''].version)" $lockPath
 if ($LASTEXITCODE -ne 0 -or $lockVersions.Count -lt 2) { throw 'Unable to read package-lock.json versions' }
 
