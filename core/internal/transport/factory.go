@@ -50,6 +50,7 @@ func (e *Error) Unwrap() error { return e.Err }
 
 type Options struct {
 	Proxy              *store.Proxy
+	NetworkMode        store.AccountNetworkMode
 	Purpose            Purpose
 	FingerprintProfile string
 	Timeout            time.Duration
@@ -57,6 +58,19 @@ type Options struct {
 }
 
 func NewClient(options Options) (*http.Client, error) {
+	mode := options.NetworkMode
+	var proxyID *int64
+	if options.Proxy != nil {
+		value := options.Proxy.ID
+		if value <= 0 {
+			value = 1
+		}
+		proxyID = &value
+	}
+	mode = store.ResolveAccountNetworkMode(mode, proxyID)
+	if err := store.ValidateAccountNetwork(mode, proxyID); err != nil {
+		return nil, err
+	}
 	proxyURL, err := buildProxyURL(options.Proxy)
 	if err != nil {
 		return nil, err
@@ -67,13 +81,16 @@ func NewClient(options Options) (*http.Client, error) {
 		// Some local mixed-port proxies terminate CONNECT tunnels when Go
 		// advertises HTTP/2. Keep the v0.1.1 HTTP/1.1 behavior for proxied
 		// standard traffic while retaining HTTP/2 for direct connections.
-		ForceAttemptHTTP2:     proxyURL == nil && standardProfile,
+		ForceAttemptHTTP2:     proxyURL == nil && mode == store.AccountNetworkDirect && standardProfile,
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   20,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   20 * time.Second,
 		ExpectContinueTimeout: time.Second,
 		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: options.RootCAs},
+	}
+	if mode == store.AccountNetworkSystem {
+		transport.Proxy = http.ProxyFromEnvironment
 	}
 
 	useFingerprint := !standardProfile

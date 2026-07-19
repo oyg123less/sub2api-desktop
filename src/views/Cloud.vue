@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { api, type CloudAdminOverview, type CloudAdminUser, type CloudNetworkProbe, type CloudNetworkSettings, type CloudStatus, type Proxy } from "../api/control";
+import { api, ControlAPIError, type CloudAdminOverview, type CloudAdminUser, type CloudNetworkProbe, type CloudNetworkSettings, type CloudStatus, type Proxy } from "../api/control";
 import ConfirmModal from "../components/ConfirmModal.vue";
 import CloudWorkspace from "../components/cloud/CloudWorkspace.vue";
 import Icon from "../components/Icon.vue";
 import TurnstileWidget from "../components/TurnstileWidget.vue";
 import { useAppStore } from "../store";
+import { createWorkspace, listWorkspaces, switchWorkspace, type WorkspaceSummary } from "../tauri";
 
 const { t } = useI18n();
 const app = useAppStore();
@@ -49,6 +50,13 @@ const networkMode = ref<CloudNetworkSettings["mode"]>("system");
 const networkProxyID = ref<number | null>(null);
 const networkProxies = ref<Proxy[]>([]);
 const networkProbe = ref<CloudNetworkProbe | null>(null);
+const workspaceOpen = ref(false);
+const workspaceBusy = ref("");
+const workspaces = ref<WorkspaceSummary[]>([]);
+const newWorkspaceName = ref("");
+const workspaceSwitchTarget = ref<WorkspaceSummary | null>(null);
+const bindingOpen = ref(false);
+const bindingAction = ref<"login" | "verify" | "">("");
 
 const pendingVerification = computed(() => Boolean(status.value?.pending_verification));
 const authenticated = computed(() => Boolean(status.value?.authenticated));
@@ -73,7 +81,37 @@ function normalizeStatus(value: CloudStatus): CloudStatus {
     pending_items: Number.isFinite(value.pending_items) ? value.pending_items : 0,
     consecutive_failures: Number.isFinite(value.consecutive_failures) ? value.consecutive_failures : 0,
     conflicts: Array.isArray(value.conflicts) ? value.conflicts : [],
+    workspace: value.workspace || {
+      workspace_id: "",
+      state: "local",
+      account_count: 0,
+      proxy_count: 0,
+      pending_outbox: 0,
+      quarantined_items: 0,
+    },
   };
+}
+
+function workspaceNeedsBindingConfirmation() {
+  const workspace = status.value?.workspace;
+  if (!workspace) return false;
+  if (workspace.state === "recovery") return workspace.recovery_reason === "legacy_owner_confirmation_required";
+  return workspace.state === "local" && (workspace.account_count > 0 || workspace.proxy_count > 0 || workspace.pending_outbox > 0);
+}
+
+function handleWorkspaceAuthError(error: unknown, action: "login" | "verify") {
+  if (!(error instanceof ControlAPIError)) return false;
+  if (error.code === "workspace_binding_required") {
+    bindingAction.value = action;
+    bindingOpen.value = true;
+    return true;
+  }
+  if (error.code === "workspace_account_mismatch" || error.code === "legacy_workspace_ambiguous" || error.code === "cloud_workspace_owner_mismatch") {
+    app.toast(t(`cloud.workspace.errors.${error.code}`), "error");
+    void openWorkspaceManager();
+    return true;
+  }
+  return false;
 }
 
 let statusRefreshing = false;
@@ -134,19 +172,24 @@ async function register() {
   }
 }
 
-async function verifyEmail() {
+async function verifyEmail(confirmWorkspace = false) {
   if (!/^\d{6}$/.test(verificationCode.value.trim())) {
     app.toast(t("cloud.codeInvalid"), "error");
     return;
   }
+  if (!confirmWorkspace && workspaceNeedsBindingConfirmation()) {
+    bindingAction.value = "verify";
+    bindingOpen.value = true;
+    return;
+  }
   busy.value = "verify";
   try {
-    status.value = normalizeStatus(await api.cloudVerifyEmail(email.value.trim(), verificationCode.value.trim()));
+    status.value = normalizeStatus(await api.cloudVerifyEmail(email.value.trim(), verificationCode.value.trim(), confirmWorkspace));
     verificationCode.value = "";
     app.toast(t("cloud.verified"), "success");
     await syncNow(true);
   } catch (error) {
-    app.toast((error as Error).message, "error");
+    if (!handleWorkspaceAuthError(error, "verify")) app.toast((error as Error).message, "error");
   } finally {
     busy.value = "";
   }
@@ -181,21 +224,79 @@ async function cancelRegistration() {
   }
 }
 
-async function login() {
+async function login(confirmWorkspace = false) {
   if (!email.value.trim() || !password.value) {
     app.toast(t("cloud.loginIncomplete"), "error");
     return;
   }
+  if (!confirmWorkspace && workspaceNeedsBindingConfirmation()) {
+    bindingAction.value = "login";
+    bindingOpen.value = true;
+    return;
+  }
   busy.value = "login";
   try {
-    status.value = normalizeStatus(await api.cloudLogin(email.value.trim(), password.value));
+    status.value = normalizeStatus(await api.cloudLogin(email.value.trim(), password.value, confirmWorkspace));
     password.value = "";
     app.toast(t("cloud.loggedIn"), "success");
     await syncNow(true);
   } catch (error) {
-    app.toast((error as Error).message, "error");
+    if (!handleWorkspaceAuthError(error, "login")) app.toast((error as Error).message, "error");
   } finally {
     busy.value = "";
+  }
+}
+
+async function confirmWorkspaceBinding() {
+  const action = bindingAction.value;
+  bindingOpen.value = false;
+  if (action === "login") await login(true);
+  if (action === "verify") await verifyEmail(true);
+}
+
+async function openWorkspaceManager() {
+  workspaceOpen.value = true;
+  workspaceBusy.value = "load";
+  try {
+    workspaces.value = await listWorkspaces();
+  } catch (error) {
+    app.toast((error as Error).message, "error");
+  } finally {
+    workspaceBusy.value = "";
+  }
+}
+
+function requestWorkspaceSwitch(workspace: WorkspaceSummary) {
+  if (workspace.active) return;
+  workspaceSwitchTarget.value = workspace;
+}
+
+async function confirmWorkspaceSwitch() {
+  const target = workspaceSwitchTarget.value;
+  if (!target) return;
+  workspaceSwitchTarget.value = null;
+  workspaceBusy.value = `switch-${target.id}`;
+  try {
+    workspaces.value = await switchWorkspace(target.id);
+    window.location.reload();
+  } catch (error) {
+    app.toast((error as Error).message, "error");
+  } finally {
+    workspaceBusy.value = "";
+  }
+}
+
+async function createNewWorkspace() {
+  workspaceBusy.value = "create";
+  try {
+    const workspace = await createWorkspace(newWorkspaceName.value.trim());
+    workspaces.value = await listWorkspaces();
+    newWorkspaceName.value = "";
+    requestWorkspaceSwitch(workspace);
+  } catch (error) {
+    app.toast((error as Error).message, "error");
+  } finally {
+    workspaceBusy.value = "";
   }
 }
 
@@ -464,9 +565,9 @@ onUnmounted(() => {
 
 <template>
   <div class="cloud-page">
-    <div v-if="!authenticated" class="page-header">
-      <h1 class="page-title">{{ t("cloud.title") }}</h1>
-      <p class="page-desc">{{ t("cloud.desc") }}</p>
+    <div v-if="!authenticated" class="page-header cloud-page-heading">
+      <div><h1 class="page-title">{{ t("cloud.title") }}</h1><p class="page-desc">{{ t("cloud.desc") }}</p></div>
+      <button class="btn btn-ghost" type="button" @click="openWorkspaceManager"><Icon name="database" :size="14" />{{ t("cloud.workspace.manage") }}</button>
     </div>
 
     <div v-if="loading" class="cloud-skeleton" aria-hidden="true">
@@ -499,7 +600,7 @@ onUnmounted(() => {
         <div class="section-heading"><Icon name="check" :size="20" /><div><h2>{{ t("cloud.verifyTitle") }}</h2><p>{{ t("cloud.verifyDesc", { email }) }}</p></div></div>
         <div class="cloud-form compact-form">
           <label class="field"><span class="field-label">{{ t("cloud.verificationCode") }}</span><input v-model="verificationCode" class="input mono code-input" inputmode="numeric" maxlength="6" autocomplete="one-time-code" /></label>
-          <button class="btn btn-primary" type="button" :disabled="busy !== ''" @click="verifyEmail"><Icon name="check" :size="15" />{{ busy === "verify" ? t("cloud.verifying") : t("cloud.verify") }}</button>
+          <button class="btn btn-primary" type="button" :disabled="busy !== ''" @click="verifyEmail()"><Icon name="check" :size="15" />{{ busy === "verify" ? t("cloud.verifying") : t("cloud.verify") }}</button>
           <div class="verification-actions">
             <button class="btn btn-ghost btn-sm" data-test="cloud-resend-verification" type="button" :disabled="busy !== '' || resendSeconds > 0" @click="resendVerification"><Icon name="refresh" :size="14" />{{ busy === "resend" ? t("cloud.resendingVerification") : resendSeconds > 0 ? t("cloud.resendCountdown", { seconds: resendSeconds }) : t("cloud.resendVerification") }}</button>
             <button class="btn btn-ghost btn-sm" data-test="cloud-cancel-registration" type="button" :disabled="busy !== ''" @click="cancelRegistration"><Icon name="plus" :size="14" />{{ t("cloud.backToRegistration") }}</button>
@@ -512,7 +613,7 @@ onUnmounted(() => {
         <div class="cloud-form">
           <label class="field"><span class="field-label">{{ t("cloud.email") }}</span><input v-model="email" data-test="cloud-email" class="input" type="email" autocomplete="username" :placeholder="t('cloud.emailPlaceholder')" /></label>
           <label class="field"><span class="field-label">{{ t("cloud.masterPassword") }}</span><input v-model="password" data-test="cloud-password" class="input" type="password" autocomplete="current-password" /></label>
-          <button class="btn btn-primary form-submit" data-test="cloud-login" type="button" :disabled="busy !== ''" @click="login"><Icon name="key" :size="15" />{{ busy === "login" ? t("cloud.loggingIn") : t("cloud.login") }}</button>
+          <button class="btn btn-primary form-submit" data-test="cloud-login" type="button" :disabled="busy !== ''" @click="login()"><Icon name="key" :size="15" />{{ busy === "login" ? t("cloud.loggingIn") : t("cloud.login") }}</button>
         </div>
       </section>
 
@@ -543,6 +644,7 @@ onUnmounted(() => {
         @logout="logout"
         @admin="adminOpen ? closeAdmin() : adminOpen = true"
         @password="passwordOpen = true"
+		@workspace="openWorkspaceManager"
       />
 
       <div v-if="networkOpen" class="modal-backdrop" @click.self="networkBusy ? undefined : networkOpen = false">
@@ -563,10 +665,13 @@ onUnmounted(() => {
           </label>
           <div v-if="networkSettings" class="network-current">
             <span>{{ t("cloud.networkCurrent") }}</span>
-            <strong>{{ networkSettings.proxy_name || t(`cloud.networkSource.${networkSettings.effective_source}`) }}</strong>
+            <div>
+              <strong>{{ networkSettings.proxy_name || t(`cloud.networkSource.${networkSettings.effective_source}`) }}</strong>
+              <small v-if="networkSettings.endpoint" class="mono">{{ networkSettings.endpoint }} · {{ t(networkSettings.fallback ? "cloud.networkEndpointFallback" : "cloud.networkEndpointPrimary") }}</small>
+            </div>
           </div>
           <div v-if="networkProbe" class="network-probe" :class="{ failed: !networkProbe.ok }" data-test="cloud-network-probe">
-            <div class="network-probe-head"><strong>{{ networkProbe.ok ? t("cloud.networkProbePassed") : t("cloud.networkProbeFailed") }}</strong><span class="mono">{{ networkProbe.target }}</span></div>
+            <div class="network-probe-head"><strong>{{ networkProbe.ok ? t("cloud.networkProbePassed") : t("cloud.networkProbeFailed") }}</strong><span class="mono">{{ networkProbe.endpoint || networkProbe.target }}</span></div>
             <div class="network-stages">
               <div v-for="stage in networkProbe.stages" :key="stage.id" :class="`stage-${stage.status}`">
                 <Icon :name="stage.status === 'ok' ? 'check' : stage.status === 'failed' ? 'warn' : 'info'" :size="14" />
@@ -705,6 +810,40 @@ onUnmounted(() => {
       </div>
     </template>
 
+    <div v-if="workspaceOpen" class="modal-backdrop" @click.self="workspaceBusy ? undefined : workspaceOpen = false">
+      <div class="modal workspace-modal" role="dialog" aria-modal="true" :aria-label="t('cloud.workspace.title')" @keydown.esc="workspaceBusy ? undefined : workspaceOpen = false">
+        <div class="workspace-modal-heading"><div><h3 class="modal-title">{{ t("cloud.workspace.title") }}</h3><p class="modal-desc">{{ t("cloud.workspace.desc") }}</p></div><button class="btn btn-ghost btn-sm" type="button" :disabled="workspaceBusy !== ''" @click="workspaceOpen = false">{{ t("common.close") }}</button></div>
+        <div class="workspace-list">
+          <article v-for="workspace in workspaces" :key="workspace.id" :class="{ active: workspace.active }">
+            <span class="workspace-list-icon"><Icon name="database" :size="18" /></span>
+            <div><strong>{{ workspace.name }}</strong><small>{{ t(workspace.kind === 'legacy' ? 'cloud.workspace.legacy' : 'cloud.workspace.local') }}</small></div>
+            <span v-if="workspace.active" class="badge badge-success">{{ t("cloud.workspace.current") }}</span>
+            <button v-else class="btn btn-ghost btn-sm" type="button" :disabled="workspaceBusy !== ''" @click="requestWorkspaceSwitch(workspace)">{{ t("cloud.workspace.switch") }}</button>
+          </article>
+          <div v-if="!workspaces.length && workspaceBusy !== 'load'" class="workspace-empty">{{ t("cloud.workspace.none") }}</div>
+        </div>
+        <div class="workspace-create"><label class="field"><span class="field-label">{{ t("cloud.workspace.newName") }}</span><input v-model="newWorkspaceName" class="input" maxlength="64" :placeholder="t('cloud.workspace.newPlaceholder')" /></label><button class="btn btn-primary" type="button" :disabled="workspaceBusy !== ''" @click="createNewWorkspace"><Icon name="plus" :size="14" />{{ workspaceBusy === "create" ? t("cloud.workspace.creating") : t("cloud.workspace.create") }}</button></div>
+        <div class="workspace-safety"><Icon name="info" :size="16" /><span>{{ t("cloud.workspace.safety") }}</span></div>
+      </div>
+    </div>
+
+    <ConfirmModal
+      :open="bindingOpen"
+      :title="t('cloud.workspace.bindTitle')"
+      :desc="t('cloud.workspace.bindDesc', { accounts: status?.workspace.account_count || 0, proxies: status?.workspace.proxy_count || 0 })"
+      :confirm-text="t('cloud.workspace.bindConfirm')"
+      @confirm="confirmWorkspaceBinding"
+      @cancel="bindingOpen = false; bindingAction = ''"
+    />
+    <ConfirmModal
+      :open="Boolean(workspaceSwitchTarget)"
+      :title="t('cloud.workspace.switchTitle')"
+      :desc="t('cloud.workspace.switchDesc', { name: workspaceSwitchTarget?.name || '' })"
+      :confirm-text="t('cloud.workspace.switchConfirm')"
+      @confirm="confirmWorkspaceSwitch"
+      @cancel="workspaceSwitchTarget = null"
+    />
+
     <ConfirmModal
       :open="deleteFirstOpen"
       :title="t('cloud.adminDeleteTitle')"
@@ -727,12 +866,29 @@ onUnmounted(() => {
 
 <style scoped>
 .cloud-page { width: 100%; max-width: 1240px; margin: 0 auto; }
+.cloud-page-heading, .workspace-modal-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.cloud-page-heading .page-desc { margin-bottom: 0; }
+.workspace-modal { width: min(620px, calc(100vw - 32px)); max-width: 620px; }
+.workspace-list { display: grid; gap: 8px; margin-top: 18px; }
+.workspace-list article { min-height: 60px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 11px; padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: 7px; background: var(--bg-card); }
+.workspace-list article.active { border-color: color-mix(in srgb, var(--success) 35%, var(--border)); background: var(--success-soft); }
+.workspace-list-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 6px; background: var(--bg-elev); color: var(--text-dim); }
+.workspace-list article > div { min-width: 0; display: grid; gap: 3px; }
+.workspace-list article small { color: var(--text-faint); }
+.workspace-empty { padding: 22px; color: var(--text-faint); text-align: center; }
+.workspace-create { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border-soft); }
+.workspace-create .field { margin: 0; }
+.workspace-safety { display: flex; align-items: flex-start; gap: 8px; margin-top: 14px; color: var(--text-faint); font-size: 12px; line-height: 1.5; }
 .cloud-network-modal { width: min(680px, calc(100vw - 32px)); max-width: 680px; }
 .network-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .network-modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; margin: 18px 0; padding: 4px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-elev); }
 .network-modes button { min-height: 36px; border: 0; border-radius: 5px; background: transparent; color: var(--text-dim); cursor: pointer; }
 .network-modes button.active { background: var(--bg-card); color: var(--text); box-shadow: var(--shadow-xs); }
 .network-current { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: 6px; color: var(--text-faint); }
+.network-current > div { min-width: 0; display: grid; justify-items: end; gap: 3px; }
+.network-current strong, .network-current small { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.network-current strong { color: var(--text); }
+.network-current small { font-size: 10px; color: var(--text-faint); }
 .network-current strong { color: var(--text); }
 .network-probe { margin-top: 14px; padding: 14px; border: 1px solid color-mix(in srgb, var(--success) 35%, var(--border)); border-radius: 7px; background: var(--success-soft); }
 .network-probe.failed { border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); background: var(--danger-soft); }
@@ -833,6 +989,9 @@ onUnmounted(() => {
 @keyframes cloud-shimmer { to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { .cloud-skeleton span { animation: none; } }
 @media (max-width: 720px) {
+  .cloud-page-heading, .workspace-modal-heading { flex-direction: column; }
+  .workspace-create { grid-template-columns: minmax(0, 1fr); }
+  .workspace-create .btn { justify-self: start; }
   .cloud-notice, .cloud-form, .compact-form, .password-form, .sync-strip { grid-template-columns: minmax(0, 1fr); }
   .cloud-auth-tabs { width: 100%; }
   .account-summary { align-items: stretch; flex-direction: column; }

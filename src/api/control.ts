@@ -120,6 +120,7 @@ export interface Account {
   status_reason?: string;
   rate_limited_until?: string | null;
   proxy_id?: number | null;
+  network_mode: "direct" | "system" | "proxy";
   last_used_at?: string | null;
   last_success_at?: string | null;
   consecutive_failures: number;
@@ -277,10 +278,22 @@ export interface CloudStatus {
   syncing: boolean;
   last_error?: string;
   last_error_code?: string;
-  last_error_stage?: "dns" | "connect" | "tls" | "timeout" | "response" | "http" | "network" | "local";
+  last_error_stage?: "dns" | "connect" | "tls" | "timeout" | "response" | "http" | "network" | "local" | "workspace";
   consecutive_failures: number;
   next_retry_at?: string;
   conflicts: CloudConflict[];
+  workspace: {
+    workspace_id: string;
+    state: "local" | "bound" | "recovery";
+    bound_cloud_user_id?: number;
+    bound_email?: string;
+    suggested_cloud_user_id?: number;
+    recovery_reason?: string;
+    account_count: number;
+    proxy_count: number;
+    pending_outbox: number;
+    quarantined_items: number;
+  };
 }
 
 export interface CloudNetworkSettings {
@@ -289,12 +302,16 @@ export interface CloudNetworkSettings {
   proxy_name?: string;
   proxy_type?: "http" | "https" | "socks5";
   effective_source: "environment" | "windows" | "amber_proxy" | "direct" | "custom" | "unavailable";
+  endpoint?: string;
+  fallback: boolean;
   updated_at?: string;
 }
 
 export interface CloudNetworkProbe {
   ok: boolean;
   target: string;
+  endpoint?: string;
+  fallback: boolean;
   effective_source: string;
   proxy_name?: string;
   proxy_type?: string;
@@ -568,6 +585,8 @@ export interface CloudConnectHost {
     base_url: string;
     created_at: string;
     updated_at: string;
+		route_policy?: "legacy_owner" | "fixed_device" | "primary_backup";
+		host_device?: { public_id: string; name: string } | null;
   };
   window?: {
     public_id: string;
@@ -580,6 +599,7 @@ export interface CloudConnectHost {
   temporary_password?: string;
   accounts: CloudConnectAccount[];
   recipients: CloudConnectRecipient[];
+	devices?: Array<{ public_id: string; name: string; priority: number; enabled: number | boolean; last_seen_at?: string }>;
 }
 
 export interface CloudUserEventsResponse {
@@ -747,10 +767,11 @@ export interface ImportPreviewRow {
   error_message?: string;
   proxy_id?: number;
   proxy_specified: boolean;
+  network_mode: "direct" | "system" | "proxy";
 }
 
 export interface ImportProxyOptions {
-  mode: "preserve" | "direct" | "override";
+  mode: "preserve" | "direct" | "system" | "override";
   proxyId?: number | null;
 }
 
@@ -863,14 +884,14 @@ export const api = {
   probeCloudNetwork: () => req<CloudNetworkProbe>("POST", "/control/cloud/network/probe"),
   cloudRegister: (input: { email: string; password: string; turnstile_token: string; recovery_acknowledged: boolean }) =>
     req<{ ok: boolean; verification_required: boolean }>("POST", "/control/cloud/register", input),
-  cloudVerifyEmail: (email: string, code: string) =>
-    req<CloudStatus>("POST", "/control/cloud/verify-email", { email, code }),
+  cloudVerifyEmail: (email: string, code: string, confirmWorkspace = false) =>
+    req<CloudStatus>("POST", "/control/cloud/verify-email", { email, code, confirm_workspace: confirmWorkspace }),
   cloudResendVerification: (email: string) =>
     req<CloudStatus>("POST", "/control/cloud/resend-verification", { email }),
   cloudCancelRegistration: () =>
     req<CloudStatus>("POST", "/control/cloud/cancel-registration"),
-  cloudLogin: (email: string, password: string) =>
-    req<CloudStatus>("POST", "/control/cloud/login", { email, password }),
+  cloudLogin: (email: string, password: string, confirmWorkspace = false) =>
+    req<CloudStatus>("POST", "/control/cloud/login", { email, password, confirm_workspace: confirmWorkspace }),
   cloudLogout: () => req<CloudStatus>("POST", "/control/cloud/logout"),
   cloudSync: () => req<CloudStatus>("POST", "/control/cloud/sync"),
   cloudChangePassword: (currentPassword: string, newPassword: string) =>
@@ -939,6 +960,8 @@ export const api = {
   cloudConnectEvents: (cursor: number) => req<CloudUserEventsResponse>("GET", `/control/cloud/connect/events?cursor=${encodeURIComponent(String(cursor))}`),
   cloudConnectHostAccounts: (accounts: Array<{ account_id: number; relay_mode: "owner_device" | "worker_direct" }>) =>
     req<CloudConnectHost>("PUT", "/control/cloud/connect/host/accounts", { accounts }),
+	cloudConnectHostDevices: (deviceIds: string[]) =>
+		req<CloudConnectHost>("PUT", "/control/cloud/connect/host/devices", { device_ids: deviceIds }),
   cloudConnectHostStart: (input: { max_claims: number; duration_minutes: number; idempotency_key?: string }) =>
     req<CloudConnectHost & { host?: CloudConnectHost; temporary_password?: string }>("POST", "/control/cloud/connect/host/start", input),
   cloudConnectHostRotatePassword: (input: { max_claims: number; duration_minutes: number; idempotency_key?: string }) =>
@@ -951,7 +974,7 @@ export const api = {
     req<{ ok: boolean }>("DELETE", `/control/cloud/connect/recipients/${recipientId}`),
   cloudConnectClaimAndUse: (input: { connection_code: string; password: string; idempotency_key?: string }) =>
     req<CloudReceivedShare>("POST", "/control/cloud/connect/claim-and-use", input),
-  cloudConnectReceivedUpdate: (grantId: string, input: { enabled?: boolean; proxy_id?: number | null; set_proxy?: boolean }) =>
+  cloudConnectReceivedUpdate: (grantId: string, input: { enabled?: boolean; proxy_id?: number | null; set_proxy?: boolean; network_mode?: Account["network_mode"]; set_network?: boolean }) =>
     req<Record<string, unknown>>("PATCH", `/control/cloud/connect/received/${grantId}`, input),
 
   listAccounts: () => req<{ accounts: Account[]; usage: Record<string, AccountUsage> }>("GET", "/control/accounts"),
@@ -975,8 +998,8 @@ export const api = {
   accountTestRun: (runId: string) => req<AccountTestRun>("GET", `/control/accounts/test-runs/${encodeURIComponent(runId)}`),
   cancelAccountTestRun: (runId: string) => req<AccountTestRun>("DELETE", `/control/accounts/test-runs/${encodeURIComponent(runId)}`),
   refreshAccount: (id: number) => req<{ ok: boolean }>("POST", `/control/accounts/${id}/refresh`),
-  bindProxy: (id: number, proxyId: number | null) =>
-    req<{ ok: boolean }>("POST", `/control/accounts/${id}/proxy`, { proxy_id: proxyId }),
+  bindProxy: (id: number, proxyId: number | null, networkMode?: Account["network_mode"]) =>
+    req<{ ok: boolean }>("POST", `/control/accounts/${id}/proxy`, { proxy_id: proxyId, network_mode: networkMode }),
   testAccount: (id: number, model?: string, prompt?: string) =>
     req<AccountTestResult>("POST", `/control/accounts/${id}/test`, { model: model ?? "", prompt: prompt ?? "" }),
   setAccountStatus: (id: number, status: string) =>

@@ -221,18 +221,19 @@ const sections = computed<Section[]>(() => zh.value ? [
   },
   {
     n: 9,
-    title: "云账户、连接码快速共享与好友管理",
-    lead: "日常共享只需连接码和临时密码；好友与共享组保留为可选的高级管理。",
+    title: "云账户、连接码共享与设备定向回流",
+    lead: "日常共享只需连接码和临时密码，不需要添加好友或等待申请。",
     body: [
       "注册时在同一页填写邮箱、主密码和确认密码，勾选恢复风险确认，通过 Turnstile 后创建账号，再输入邮件中的 6 位验证码。主密码无法找回，请离线保存。",
       "登录后可立即同步账号、代理、设置和 Codex 目标。同步失败时先打开“连接设置”，测试系统代理、Amber 代理或直连，然后重试。",
       "最快路径：共享者在“我的共享”选择账号并开始共享，复制 9 位连接码与 6 位临时密码；接收者粘贴整段信息，点击“连接并使用”，共享会自动加入本地调度。",
       "同一临时密码可允许多人领取，但每人得到独立 Guest Key，可单独暂停或移除。刷新临时密码不会影响已连接用户；暂停共享会暂时阻止所有调用。",
-      "OAuth 账号通过拥有者设备回源，拥有者的 Amber Agent 必须在线；API Key 账号可选择本机回源或 Worker 直连。Friend Code 和旧共享组仍可用于固定联系人和详细规则。",
+      "OAuth 账号通过拥有者选定的主设备回源，主设备不可用时只在上游请求开始前尝试显式备用设备。每个云用户使用独立本地工作区。",
     ],
     bullets: [
       "连接码和临时密码只用于领取权限，不是模型 API Key。",
-      "每个接收好友使用独立密钥，发起者可以暂停、限流、修改额度或撤销。",
+      "每个接收者使用独立密钥，发起者可以暂停、限流、修改额度或撤销。",
+      "共享者固定一台主设备和最多两台备用设备；请求开始访问上游后不会跨设备重放。",
       "云端保存的是加密同步数据；仍需保护主密码和本机数据目录。",
     ],
     shots: [
@@ -356,9 +357,9 @@ const sections = computed<Section[]>(() => zh.value ? [
   {
     n: 9,
     title: "Cloud account and connection-code sharing",
-    lead: "Everyday sharing needs only a connection code and temporary password; friends and groups remain optional advanced tools.",
+    lead: "Everyday sharing needs only a connection code and temporary password; no friend request is required.",
     body: ["Register with email, master password, confirmation, recovery acknowledgment, Turnstile, and the six-digit email code. The master password cannot be recovered.", "The owner selects an account pool, starts sharing, and copies the nine-digit code plus six-character password. The recipient pastes the block and clicks Connect and use.", "One password may allow several claims, while every recipient receives an isolated Guest Key that the owner can pause or revoke independently.", "OAuth routes require the owner's Amber Agent online. API-key accounts may use owner relay or Worker direct. Received access joins local routing automatically."],
-    bullets: ["Connection details grant access; they are not model API keys.", "Refreshing a password blocks new claims without disconnecting current users.", "Friends are optional saved contacts and Amber does not provide chat."],
+    bullets: ["Connection details grant access; they are not model API keys.", "Refreshing a password blocks new claims without disconnecting current users.", "The owner selects one primary device and up to two explicit backup devices for local relay."],
     shots: [{ src: imgCloudRegister, caption: "Cloud registration in one continuous form" }, { src: imgCloudWorkspace, caption: "Copy connection details or paste them and connect in one click" }],
   },
   {
@@ -377,7 +378,7 @@ const sections = computed<Section[]>(() => zh.value ? [
     <header class="page-header docs-header">
       <div>
         <h1 class="page-title">{{ zh ? "Amber 使用手册" : "Amber user guide" }}</h1>
-        <p class="page-desc">{{ zh ? "v0.4.3 · 从账号导入到可靠云共享的完整操作说明" : "v0.4.3 · From account import to reliable cloud sharing" }}</p>
+        <p class="page-desc">{{ zh ? "v0.4.4 · 从账号导入到可靠云共享的完整操作说明" : "v0.4.4 · From account import to reliable cloud sharing" }}</p>
       </div>
       <div class="docs-header-actions">
         <button class="btn btn-ghost btn-sm" type="button" @click="setAllSections(true)"><Icon name="plus" :size="13" />{{ zh ? "全部展开" : "Expand all" }}</button>

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptrace"
@@ -18,6 +19,8 @@ import (
 
 type NetworkSettings struct {
 	NetworkInfo
+	Endpoint  string    `json:"endpoint,omitempty"`
+	Fallback  bool      `json:"fallback"`
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
 
@@ -31,6 +34,8 @@ type NetworkProbeStage struct {
 type NetworkProbe struct {
 	OK              bool                `json:"ok"`
 	Target          string              `json:"target"`
+	Endpoint        string              `json:"endpoint,omitempty"`
+	Fallback        bool                `json:"fallback"`
 	EffectiveSource string              `json:"effective_source"`
 	ProxyName       string              `json:"proxy_name,omitempty"`
 	ProxyType       string              `json:"proxy_type,omitempty"`
@@ -92,7 +97,7 @@ func (m *Manager) buildNetworkClient(value store.CloudConnectionSettings) (*http
 		}
 		selected = proxy
 	}
-	return newConfiguredCloudHTTPClient(m.client.baseURL, value, selected)
+	return newConfiguredCloudHTTPClient(m.client.endpoint(), value, selected)
 }
 
 func (m *Manager) NetworkSettings() (NetworkSettings, error) {
@@ -103,7 +108,7 @@ func (m *Manager) NetworkSettings() (NetworkSettings, error) {
 	m.mu.RLock()
 	info := m.networkInfo
 	m.mu.RUnlock()
-	return NetworkSettings{NetworkInfo: info, UpdatedAt: value.UpdatedAt}, nil
+	return NetworkSettings{NetworkInfo: info, Endpoint: m.client.endpoint(), Fallback: m.client.usingFallback(), UpdatedAt: value.UpdatedAt}, nil
 }
 
 func (m *Manager) UpdateNetworkSettings(value store.CloudConnectionSettings) (NetworkSettings, error) {
@@ -133,14 +138,83 @@ func (m *Manager) UpdateNetworkSettings(value store.CloudConnectionSettings) (Ne
 }
 
 func (m *Manager) ProbeNetwork(ctx context.Context) NetworkProbe {
-	parsed, err := url.Parse(m.client.baseURL)
+	result := m.probeNetworkOnce(ctx)
+	if result.OK || len(m.client.endpoints()) < 2 {
+		return result
+	}
+	previous := m.client.endpoint()
+	if _, err := m.selectHealthyEndpoint(ctx); err != nil || strings.EqualFold(previous, m.client.endpoint()) {
+		return result
+	}
+	result = m.probeNetworkOnce(ctx)
+	if result.OK {
+		m.mu.Lock()
+		m.lastError = ""
+		m.lastErrorCode = ""
+		m.lastErrorStage = ""
+		m.consecutiveFailures = 0
+		m.nextRetryAt = time.Time{}
+		m.mu.Unlock()
+		m.closeRelaySession()
+	}
+	return result
+}
+
+func (m *Manager) selectHealthyEndpoint(ctx context.Context) (string, error) {
+	if m.client == nil || !m.client.configured() {
+		return "", errors.New("Amber Cloud is not configured")
+	}
+	httpClient, err := m.client.httpClient()
+	if err != nil {
+		return "", err
+	}
+	var lastErr error
+	for _, endpoint := range m.client.endpoints() {
+		attemptCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		request, requestErr := http.NewRequestWithContext(attemptCtx, http.MethodGet, strings.TrimRight(endpoint, "/")+"/health", nil)
+		if requestErr != nil {
+			cancel()
+			lastErr = requestErr
+			continue
+		}
+		response, requestErr := httpClient.Do(request)
+		if response != nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64*1024))
+			_ = response.Body.Close()
+		}
+		cancel()
+		if requestErr != nil {
+			lastErr = requestErr
+			continue
+		}
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			lastErr = fmt.Errorf("Amber Cloud health endpoint returned HTTP %d", response.StatusCode)
+			continue
+		}
+		changed := m.client.useEndpoint(endpoint)
+		if changed && m.httpOverride == nil {
+			if err := m.restoreNetworkClient(); err != nil {
+				return "", err
+			}
+		}
+		return endpoint, nil
+	}
+	if lastErr == nil {
+		lastErr = errors.New("Amber Cloud has no healthy endpoint")
+	}
+	return "", lastErr
+}
+
+func (m *Manager) probeNetworkOnce(ctx context.Context) NetworkProbe {
+	endpoint := m.client.endpoint()
+	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Hostname() == "" {
 		return NetworkProbe{ErrorCode: "cloud_not_configured", ErrorStage: "local", Error: "Amber Cloud is not configured"}
 	}
 	m.mu.RLock()
 	info := m.networkInfo
 	m.mu.RUnlock()
-	result := NetworkProbe{Target: parsed.Hostname(), EffectiveSource: info.EffectiveFrom, ProxyName: info.ProxyName, ProxyType: info.ProxyType}
+	result := NetworkProbe{Target: parsed.Hostname(), Endpoint: endpoint, Fallback: m.client.usingFallback(), EffectiveSource: info.EffectiveFrom, ProxyName: info.ProxyName, ProxyType: info.ProxyType}
 	stageOrder := []string{"dns", "connect", "tls", "http"}
 	stages := make(map[string]*NetworkProbeStage, len(stageOrder))
 	for _, id := range stageOrder {
@@ -198,7 +272,7 @@ func (m *Manager) ProbeNetwork(ctx context.Context) NetworkProbe {
 			stageMu.Unlock()
 		},
 	}
-	request, _ := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), http.MethodGet, strings.TrimRight(m.client.baseURL, "/")+"/health", nil)
+	request, _ := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), http.MethodGet, strings.TrimRight(endpoint, "/")+"/health", nil)
 	start := time.Now()
 	response, requestErr := m.client.do(request)
 	stageMu.Lock()

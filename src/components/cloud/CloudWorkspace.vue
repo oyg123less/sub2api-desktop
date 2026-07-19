@@ -33,9 +33,10 @@ import {
 } from "./workspaceCache";
 
 const props = defineProps<{ status: CloudStatus; busy: string; adminOpen: boolean }>();
-const emit = defineEmits<{ sync: []; network: []; logout: []; admin: []; password: [] }>();
+const emit = defineEmits<{ sync: []; network: []; logout: []; admin: []; password: []; workspace: [] }>();
 const { t } = useI18n();
 const app = useAppStore();
+const workspaceCacheIdentity = computed(() => `${props.status.email || "anonymous"}|${props.status.workspace?.workspace_id || "legacy"}`);
 
 type CloudTab = "overview" | "shares" | "received" | "friends" | "devices" | "security";
 const tab = ref<CloudTab>("overview");
@@ -78,6 +79,11 @@ const invitePickerOpen = ref(false);
 const inviteFriendIDs = ref<string[]>([]);
 const recipientEditor = ref<CloudShareGroupRecipient | null>(null);
 const recipientRules = ref({ rpm_limit: 30, concurrency_limit: 2, quota_requests: 0, expires_at: "" });
+
+const hostedDeviceIDs = computed(() => (connectHost.value.devices || [])
+	.filter((device) => Boolean(device.enabled))
+	.sort((left, right) => left.priority - right.priority)
+	.map((device) => device.public_id));
 
 function newIdempotencyKey() {
   return globalThis.crypto?.randomUUID?.() || `amber-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -129,19 +135,18 @@ const availableDetailFriends = computed(() => {
 });
 
 const tabs = computed(() => [
-  { id: "overview" as const, label: t("cloud.v4.tabs.overview"), count: 0 },
-  { id: "shares" as const, label: t("cloud.v4.tabs.shares"), count: 0 },
-  { id: "received" as const, label: t("cloud.v4.tabs.received"), count: pendingReceived.value.length },
-  { id: "friends" as const, label: t("cloud.v4.tabs.friends"), count: incomingRequests.value.length },
+	{ id: "overview" as const, label: t("cloud.v4.tabs.sharingCenter"), count: 0 },
   { id: "devices" as const, label: t("cloud.v4.tabs.devices"), count: 0 },
-  { id: "security" as const, label: t("cloud.v4.tabs.security"), count: 0 },
+	{ id: "security" as const, label: t("cloud.v4.tabs.accountSecurity"), count: 0 },
 ]);
 
 function applyWorkspace(snapshot: CloudWorkspaceSnapshot) {
   profile.value = snapshot.profile;
-  friends.value = snapshot.friends;
-  friendRequests.value = snapshot.friendRequests;
-  shareGroups.value = snapshot.shareGroups;
+	// Legacy friend/share-group data remains server-side for compatibility but
+	// is intentionally excluded from the v0.4.4 product surface and cache.
+	friends.value = [];
+	friendRequests.value = [];
+	shareGroups.value = [];
   receivedShares.value = snapshot.receivedShares;
   devices.value = snapshot.devices;
   accounts.value = snapshot.accounts;
@@ -159,9 +164,6 @@ async function refreshWorkspace(silent: boolean) {
     ]);
     const snapshot: CloudWorkspaceSnapshot = {
       profile: workspace.profile,
-      friends: workspace.friends?.friends || [],
-      friendRequests: workspace.friend_requests?.requests || [],
-      shareGroups: workspace.share_groups?.groups || [],
       receivedShares: workspace.received_shares?.shares || [],
       devices: workspace.devices?.devices || [],
       accounts: accountsResult.accounts || [],
@@ -169,13 +171,13 @@ async function refreshWorkspace(silent: boolean) {
       connectHost: workspace.connect_host || { configured: false, accounts: [], recipients: [] },
     };
     applyWorkspace(snapshot);
-    writeWorkspaceCache(props.status.email || "", snapshot);
+	writeWorkspaceCache(workspaceCacheIdentity.value, snapshot);
     loadError.value = "";
   } catch (error) {
     if (error instanceof ControlAPIError && error.code === "client_upgrade_required") {
       upgradeRequired.value = {
-        minimum: String(error.details.minimum_version || "0.4.3"),
-        latest: String(error.details.latest_version || error.details.minimum_version || "0.4.3"),
+        minimum: String(error.details.minimum_version || "0.4.4"),
+        latest: String(error.details.latest_version || error.details.minimum_version || "0.4.4"),
         url: String(error.details.update_url || "https://github.com/oyg123less/sub2api-desktop/releases/latest"),
       };
       loadError.value = "";
@@ -195,6 +197,26 @@ async function connectHostUpdated(host?: CloudConnectHost) {
   persistCurrentWorkspace();
 }
 
+async function updateHostedDevices(device: CloudDevice, mode: "primary" | "backup" | "remove") {
+	let ids = [...hostedDeviceIDs.value].filter((id) => id !== device.public_id);
+	if (mode === "primary") ids = [device.public_id, ...ids];
+	if (mode === "backup") ids.push(device.public_id);
+	if (ids.length < 1 || ids.length > 3) {
+		app.toast(t("cloud.v4.deviceRouteLimit"), "error");
+		return;
+	}
+	actionBusy.value = `route-${device.public_id}`;
+	try {
+		connectHost.value = await api.cloudConnectHostDevices(ids);
+		persistCurrentWorkspace();
+		app.toast(t("cloud.v4.deviceRouteSaved"), "success");
+	} catch (error) {
+		app.toast((error as Error).message, "error");
+	} finally {
+		actionBusy.value = "";
+	}
+}
+
 async function connectClaimed(share: CloudReceivedShare) {
   const index = receivedShares.value.findIndex((item) => item.public_id === share.public_id);
   if (index >= 0) receivedShares.value[index] = share;
@@ -204,11 +226,8 @@ async function connectClaimed(share: CloudReceivedShare) {
 
 function persistCurrentWorkspace() {
   if (!profile.value) return;
-  writeWorkspaceCache(props.status.email || "", {
+	writeWorkspaceCache(workspaceCacheIdentity.value, {
     profile: profile.value,
-    friends: friends.value,
-    friendRequests: friendRequests.value,
-    shareGroups: shareGroups.value,
     receivedShares: receivedShares.value,
     devices: devices.value,
     accounts: accounts.value,
@@ -286,7 +305,7 @@ async function toggleReceivedLocal(share: CloudReceivedShare) {
 
 async function loadWorkspace(silent = false) {
   if (!silent) {
-    const cached = readWorkspaceCache(props.status.email || "");
+		const cached = readWorkspaceCache(workspaceCacheIdentity.value);
     if (cached) {
       applyWorkspace(cached);
       loading.value = false;
@@ -299,7 +318,7 @@ async function loadWorkspace(silent = false) {
 }
 
 function logoutWorkspace() {
-  clearWorkspaceCache(props.status.email || "");
+	clearWorkspaceCache(workspaceCacheIdentity.value);
   emit("logout");
 }
 
@@ -733,6 +752,7 @@ watch(detailTab, (current) => {
         </div>
       </div>
       <div class="workspace-actions">
+		<button class="btn btn-ghost" type="button" :disabled="busy !== ''" @click="emit('workspace')"><Icon name="database" :size="14" />{{ t("cloud.workspace.manage") }}</button>
         <span class="relay-state" :class="relayEnabled ? 'enabled' : 'disabled'"><i></i>{{ t(relayEnabled ? "cloud.v4.relayEnabled" : "cloud.v4.relayDisabled") }}</span>
         <span class="relay-state" :class="onlineDevices.length ? 'online' : 'offline'" aria-live="polite"><i></i>{{ onlineDevices.length ? t("cloud.v4.relayOnline") : t("cloud.v4.relayOffline") }}</span>
         <button class="btn btn-ghost" data-test="cloud-sync" type="button" :disabled="busy !== ''" @click="emit('sync')"><Icon name="refresh" :size="14" />{{ busy === "sync" ? t("cloud.syncing") : t("cloud.syncNow") }}</button>
@@ -771,35 +791,24 @@ watch(detailTab, (current) => {
           <QuickShareJoin @connected="connectClaimed" />
         </section>
         <div class="advanced-divider"><span>{{ t("cloud.v4.connect.activityOverview") }}</span></div>
-        <section class="metric-strip" :aria-label="t('cloud.v4.tabs.overview')">
-          <div><span>{{ t("cloud.v4.metrics.activeShares") }}</span><strong>{{ activeGroups.length }}</strong></div>
+		<section class="metric-strip" :aria-label="t('cloud.v4.tabs.sharingCenter')">
+		  <div><span>{{ t("cloud.v4.metrics.activeShares") }}</span><strong>{{ connectHost.configured && connectHost.endpoint?.status === 'active' ? 1 : 0 }}</strong></div>
           <div><span>{{ t("cloud.v4.metrics.relayDevices") }}</span><strong>{{ onlineDevices.length }}</strong></div>
           <div><span>{{ t("cloud.v4.metrics.received") }}</span><strong>{{ activeReceived.length }}</strong></div>
           <div><span>{{ t("cloud.lastSync") }}</span><strong class="metric-time">{{ fmt(status.last_sync_at) }}</strong></div>
         </section>
 
-        <section class="workspace-section">
-          <div class="section-title"><div><h2>{{ t("cloud.v4.pendingTitle") }}</h2><p>{{ t("cloud.v4.pendingDesc") }}</p></div></div>
-          <div v-if="!incomingRequests.length && !pendingReceived.length && !status.last_error" class="plain-empty"><Icon name="check" :size="22" /><span>{{ t("cloud.v4.noPending") }}</span></div>
-          <div v-else class="task-list">
-            <button v-for="request in incomingRequests" :key="request.public_id" type="button" @click="tab = 'friends'"><span class="task-icon"><Icon name="accounts" :size="16" /></span><span><strong>{{ request.display_name }}</strong>{{ t("cloud.v4.friendRequestTask") }}</span><Icon name="external" :size="14" /></button>
-            <button v-for="share in pendingReceived" :key="share.public_id" type="button" @click="tab = 'received'"><span class="task-icon"><Icon name="link" :size="16" /></span><span><strong>{{ share.group.name }}</strong>{{ t("cloud.v4.shareInviteTask", { name: share.owner.display_name }) }}</span><Icon name="external" :size="14" /></button>
-            <button v-if="status.last_error" type="button" @click="emit('sync')"><span class="task-icon danger"><Icon name="warn" :size="16" /></span><span><strong>{{ t("cloud.syncFailed") }}</strong>{{ status.last_error }}</span><Icon name="refresh" :size="14" /></button>
-          </div>
-        </section>
-
-        <section class="workspace-section overview-columns">
-          <div>
-            <div class="section-title"><h2>{{ t("cloud.v4.mySharesTitle") }}</h2><button class="text-action" @click="tab = 'shares'">{{ t("common.view") }}</button></div>
-            <div v-if="shareGroups.length" class="compact-list"><button v-for="group in shareGroups.slice(0, 4)" :key="group.public_id" @click="openGroup(group)"><span class="status-dot" :class="group.status"></span><span><strong>{{ group.name }}</strong><small>{{ t("cloud.v4.groupCounts", { accounts: group.account_count, friends: group.recipient_count }) }}</small></span><span class="faint">{{ group.used_requests || 0 }}</span></button></div>
-            <div v-else class="plain-empty compact">{{ t("cloud.v4.noShares") }}</div>
-          </div>
-          <div>
-            <div class="section-title"><h2>{{ t("cloud.v4.friendsTitle") }}</h2><button class="text-action" @click="tab = 'friends'">{{ t("common.view") }}</button></div>
-            <div v-if="friends.length" class="compact-list"><button v-for="friend in friends.slice(0, 4)" :key="friend.public_id" @click="tab = 'friends'"><span class="friend-avatar">{{ friend.display_name.slice(0, 1).toUpperCase() }}</span><span><strong>{{ friend.alias || friend.display_name }}</strong><small class="mono">{{ friend.friend_code }}</small></span></button></div>
-            <div v-else class="plain-empty compact">{{ t("cloud.v4.noFriends") }}</div>
-          </div>
-        </section>
+		<section class="workspace-section">
+		  <div class="section-title"><div><h2>{{ t("cloud.v4.receivedTitle") }}</h2><p>{{ t("cloud.v4.receivedSimpleDesc") }}</p></div></div>
+		  <div v-if="!activeReceived.length" class="plain-empty"><Icon name="download" :size="22" /><span>{{ t("cloud.v4.noReceivedSimple") }}</span></div>
+		  <div v-else class="received-list compact-received-list">
+			<article v-for="share in activeReceived" :key="share.public_id" class="received-row" :class="`state-${share.status}`">
+			  <div class="received-heading"><div><span class="friend-avatar">{{ share.owner.display_name.slice(0, 1).toUpperCase() }}</span><div><h3>{{ share.group.name }}</h3><p>{{ t("cloud.v4.sharedBy", { name: share.owner.display_name }) }}</p></div></div><span class="badge" :class="share.status === 'active' ? 'badge-success' : 'badge-neutral'">{{ t(`cloud.v4.recipientStatus.${share.status}`) }}</span></div>
+			  <div class="received-policy"><span>{{ share.rpm_limit }} RPM</span><span>{{ t("cloud.v4.concurrent", { count: share.concurrency_limit }) }}</span><span>{{ share.used_requests }} / {{ share.quota_requests || "∞" }}</span></div>
+			  <div class="received-credential-actions"><button class="btn btn-ghost btn-sm" :disabled="actionBusy !== ''" @click="testReceivedShare(share)"><Icon name="activity" :size="13" />{{ t("cloud.v4.testShare") }}</button><button class="text-action leave-action" @click="receivedAction(share, 'leave')">{{ t("cloud.v4.leaveShare") }}</button></div>
+			</article>
+		  </div>
+		</section>
       </template>
 
       <template v-else-if="tab === 'shares'">
@@ -845,7 +854,7 @@ watch(detailTab, (current) => {
       <template v-else-if="tab === 'devices'">
         <section class="section-title page-section-title"><div><h2>{{ t("cloud.v4.devicesTitle") }}</h2><p>{{ t("cloud.v4.devicesDesc") }}</p></div><button v-if="!devices.length" class="btn btn-primary" :disabled="actionBusy !== ''" @click="ensureDevice"><Icon name="plus" :size="14" />{{ t("cloud.v4.registerDevice") }}</button></section>
         <div class="relay-control"><div><span class="relay-control-icon"><Icon name="server" :size="20" /></span><div><strong>{{ t("cloud.v4.ownerRelay") }}</strong><p>{{ t("cloud.v4.ownerRelayDesc") }}</p></div></div><button class="switch" :class="{ on: relayEnabled }" type="button" role="switch" :aria-checked="relayEnabled" :disabled="!devices.length || actionBusy !== ''" @click="toggleRelay"><span></span></button></div>
-        <div v-if="devices.length" class="device-list"><article v-for="device in devices" :key="device.public_id"><span class="device-icon"><Icon name="server" :size="18" /></span><div><div><strong>{{ device.name }}</strong><span v-if="device.is_primary" class="badge badge-neutral">{{ t("cloud.v4.primaryDevice") }}</span></div><p>{{ device.online ? t("cloud.v4.deviceOnline") : t("cloud.v4.deviceOffline") }} · {{ device.capabilities.join(" / ") }}</p></div><span class="status-dot" :class="device.online ? 'active' : 'paused'"></span></article></div><div v-else class="feature-empty"><Icon name="server" :size="28" /><h3>{{ t("cloud.v4.noDevices") }}</h3><p>{{ t("cloud.v4.noDevicesDesc") }}</p></div>
+        <div v-if="devices.length" class="device-list"><article v-for="device in devices" :key="device.public_id"><span class="device-icon"><Icon name="server" :size="18" /></span><div><div><strong>{{ device.name }}</strong><span v-if="device.is_primary" class="badge badge-neutral">{{ t("cloud.v4.primaryDevice") }}</span><span v-if="hostedDeviceIDs[0] === device.public_id" class="badge badge-success">{{ t("cloud.v4.shareHostPrimary") }}</span><span v-else-if="hostedDeviceIDs.includes(device.public_id)" class="badge badge-neutral">{{ t("cloud.v4.shareHostBackup") }}</span></div><p>{{ device.online ? t("cloud.v4.deviceOnline") : t("cloud.v4.deviceOffline") }} · {{ device.capabilities.join(" / ") }}</p></div><div v-if="connectHost.configured" class="device-route-actions"><button v-if="hostedDeviceIDs[0] !== device.public_id" class="btn btn-ghost btn-sm" :disabled="actionBusy !== ''" @click="updateHostedDevices(device, 'primary')">{{ t("cloud.v4.setSharePrimary") }}</button><button v-if="!hostedDeviceIDs.includes(device.public_id) && hostedDeviceIDs.length < 3" class="btn btn-ghost btn-sm" :disabled="actionBusy !== ''" @click="updateHostedDevices(device, 'backup')">{{ t("cloud.v4.addShareBackup") }}</button><button v-if="hostedDeviceIDs.includes(device.public_id) && hostedDeviceIDs[0] !== device.public_id" class="btn btn-ghost btn-sm danger-text" :disabled="actionBusy !== ''" @click="updateHostedDevices(device, 'remove')">{{ t("common.remove") }}</button></div><span class="status-dot" :class="device.online ? 'active' : 'paused'"></span></article></div><div v-else class="feature-empty"><Icon name="server" :size="28" /><h3>{{ t("cloud.v4.noDevices") }}</h3><p>{{ t("cloud.v4.noDevicesDesc") }}</p></div>
       </template>
 
       <template v-else>
@@ -996,6 +1005,7 @@ watch(detailTab, (current) => {
 .friend-request-list, .friend-list { margin-top: 10px; border-top: 1px solid var(--border-soft); }.friend-request-list article, .friend-list article, .device-list article, .drawer-list article, .security-list article { min-height: 58px; display: flex; align-items: center; gap: 11px; padding: 9px 3px; border-bottom: 1px solid var(--border-soft); }.friend-request-list article > div:nth-child(2), .friend-list article > div { min-width: 0; display: grid; gap: 3px; flex: 1; }.friend-request-list small, .friend-list small, .device-list p, .drawer-list small { color: var(--text-faint); }.friend-request-list article > div:last-child { display: flex; gap: 6px; }
 .relay-control { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px; border-block: 1px solid var(--border-soft); background: var(--bg-elev); }.relay-control p { max-width: 650px; }.switch { width: 42px; height: 24px; padding: 2px; border: 0; border-radius: 12px; background: var(--border); cursor: pointer; transition: background 150ms ease; }.switch span { width: 20px; height: 20px; display: block; border-radius: 50%; background: white; transition: transform 150ms ease; }.switch.on { background: var(--success); }.switch.on span { transform: translateX(18px); }.switch:disabled { opacity: .45; cursor: not-allowed; }
 .device-list { margin-top: 18px; }.device-list article > div { min-width: 0; flex: 1; }.device-list article > div > div { display: flex; align-items: center; gap: 7px; }.device-list p { margin: 4px 0 0; }
+.device-list article > .device-route-actions { display: flex; flex: 0 0 auto; align-items: center; justify-content: flex-end; gap: 5px; }
 .security-list { border-top: 1px solid var(--border-soft); }.security-list article > span:first-child { width: 34px; height: 34px; display: grid; place-items: center; color: var(--primary); }.security-list article > div { min-width: 0; flex: 1; }.security-list p { margin: 3px 0 0; color: var(--text-dim); }.conflict-list-v4 { border-top: 1px solid var(--border-soft); }.conflict-list-v4 article { display: flex; align-items: center; gap: 10px; padding: 10px 3px; border-bottom: 1px solid var(--border-soft); }.conflict-list-v4 article div { display: grid; gap: 2px; }
 .compact-modal { max-width: 460px; }.textarea { min-height: 84px; resize: vertical; }
 .share-wizard { width: min(760px, calc(100vw - 32px)); max-width: 760px; height: min(760px, calc(100vh - 36px)); display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; padding: 0; overflow: hidden; }.wizard-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 18px 20px 12px; }.wizard-header h3 { margin: 0; font-size: 17px; }.wizard-header p { margin: 4px 0 0; color: var(--text-dim); }.wizard-steps { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0; padding: 0 20px 14px; list-style: none; }.wizard-steps li { position: relative; display: grid; justify-items: center; gap: 5px; color: var(--text-faint); font-size: 10px; }.wizard-steps li::before { content: ""; position: absolute; z-index: 0; top: 11px; right: 50%; width: 100%; height: 1px; background: var(--border); }.wizard-steps li:first-child::before { display: none; }.wizard-steps span { z-index: 1; width: 22px; height: 22px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: 50%; background: var(--bg-card); }.wizard-steps li.active, .wizard-steps li.done { color: var(--primary); }.wizard-steps li.active span, .wizard-steps li.done span { border-color: var(--primary); background: var(--primary-soft); }.wizard-body { overflow-y: auto; padding: 20px; border-block: 1px solid var(--border-soft); }.wizard-form { display: grid; gap: 15px; }.inline-note { display: flex; align-items: flex-start; gap: 9px; padding: 11px 12px; border: 1px solid var(--border-soft); border-radius: 6px; background: var(--bg-elev); color: var(--text-dim); }.inline-note.warn { border-color: rgba(193,134,58,.3); background: var(--warn-soft); color: var(--warn); }

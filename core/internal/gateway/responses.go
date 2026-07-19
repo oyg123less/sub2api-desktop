@@ -168,12 +168,12 @@ func (e *Engine) forwardResponsesOnce(ctx context.Context, w http.ResponseWriter
 		e.logForward(acc, meta, http.StatusBadGateway, 0, 0, time.Since(start), message, "proxy_unavailable", "proxy_resolution_failed")
 		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadGateway, errMsg: message, retryable: true}
 	}
-	client, err := newHTTPClient(proxy, cfg.CompatProfile, 10*time.Minute)
+	client, err := newHTTPClient(proxy, acc.NetworkMode, cfg.CompatProfile, 10*time.Minute)
 	if err != nil {
 		e.logForward(acc, meta, http.StatusInternalServerError, 0, 0, time.Since(start), err.Error(), "upstream_network_error", "client_setup_failed")
 		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: err.Error(), retryable: true}
 	}
-	authClient, _ := newHTTPClient(proxy, "standard", 60*time.Second)
+	authClient, _ := newHTTPClient(proxy, acc.NetworkMode, "standard", 60*time.Second)
 
 	token, err := e.accounts.ValidAccessToken(ctx, authClient, acc)
 	if err != nil {

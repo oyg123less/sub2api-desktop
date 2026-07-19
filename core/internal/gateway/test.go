@@ -62,13 +62,13 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 		})
 		return res
 	}
-	client, err := newHTTPClient(proxy, cfg.CompatProfile, 90*time.Second)
+	client, err := newHTTPClient(proxy, acc.NetworkMode, cfg.CompatProfile, 90*time.Second)
 	if err != nil {
 		res.Error = err.Error()
 		res.ErrorKind = "transport"
 		return res
 	}
-	authClient, _ := newHTTPClient(proxy, "standard", 60*time.Second)
+	authClient, _ := newHTTPClient(proxy, acc.NetworkMode, "standard", 60*time.Second)
 
 	token, err := e.accounts.ValidAccessToken(ctx, authClient, acc)
 	if err != nil {

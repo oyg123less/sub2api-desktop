@@ -163,7 +163,12 @@ func (s *Store) SetAllAccountsProxy(proxyID *int64) (result BatchProxyResult, re
 		return result, err
 	}
 	now := time.Now().Unix()
-	updateResult, err := tx.Exec(`UPDATE accounts SET proxy_id=?,updated_at=? WHERE proxy_id IS NOT ?`, proxyID, now, proxyID)
+	networkMode := AccountNetworkDirect
+	if proxyID != nil {
+		networkMode = AccountNetworkProxy
+	}
+	updateResult, err := tx.Exec(`UPDATE accounts SET proxy_id=?,network_mode=?,updated_at=?
+		WHERE proxy_id IS NOT ? OR network_mode<>?`, proxyID, string(networkMode), now, proxyID, string(networkMode))
 	if err != nil {
 		return result, err
 	}
@@ -172,11 +177,12 @@ func (s *Store) SetAllAccountsProxy(proxyID *int64) (result BatchProxyResult, re
 		return result, err
 	}
 	result.Updated = int(affected)
-	cloudUpdate, err := tx.Exec(`UPDATE cloud_received_account_links SET proxy_id=?,updated_at=?
-		WHERE remote_status IN ('active','paused') AND proxy_id IS NOT ?
+	cloudUpdate, err := tx.Exec(`UPDATE cloud_received_account_links SET proxy_id=?,network_mode=?,updated_at=?
+		WHERE remote_status IN ('active','paused') AND (proxy_id IS NOT ? OR network_mode<>?)
 		AND EXISTS (SELECT 1 FROM cloud_received_keys k WHERE k.user_id=cloud_received_account_links.user_id
 			AND k.grant_public_id=cloud_received_account_links.grant_public_id)
-		AND EXISTS (SELECT 1 FROM cloud_session cs WHERE cs.user_id=cloud_received_account_links.user_id)`, proxyID, now, proxyID)
+		AND EXISTS (SELECT 1 FROM cloud_session cs WHERE cs.user_id=cloud_received_account_links.user_id)`,
+		proxyID, string(networkMode), now, proxyID, string(networkMode))
 	if err != nil {
 		return result, err
 	}

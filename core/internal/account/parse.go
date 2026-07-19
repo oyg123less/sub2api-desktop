@@ -357,7 +357,37 @@ func entryFromMap(value map[string]any) (ImportEntry, []string) {
 	entry.ProxyID, entry.ProxySpecified, entry.ProxyError = firstOptionalID(value,
 		[]string{"proxy_id"}, []string{"proxyId"}, []string{"proxy", "id"},
 	)
+	if raw, ok := firstOptionalString(value, []string{"network_mode"}, []string{"networkMode"}); ok {
+		entry.NetworkSpecified = true
+		entry.NetworkMode = store.AccountNetworkMode(strings.ToLower(strings.TrimSpace(raw)))
+		switch entry.NetworkMode {
+		case store.AccountNetworkDirect, store.AccountNetworkSystem, store.AccountNetworkProxy:
+		default:
+			entry.NetworkError = "network_mode must be direct, system, or proxy"
+		}
+		if (entry.NetworkMode == store.AccountNetworkDirect || entry.NetworkMode == store.AccountNetworkSystem) && !entry.ProxySpecified {
+			entry.ProxySpecified = true
+			entry.ProxyID = nil
+		}
+	} else {
+		entry.NetworkMode = store.ResolveAccountNetworkMode("", entry.ProxyID)
+	}
 	return entry, warnings
+}
+
+func firstOptionalString(value map[string]any, paths ...[]string) (string, bool) {
+	for _, path := range paths {
+		candidate, ok := lookupPath(value, path)
+		if !ok {
+			continue
+		}
+		text, ok := candidate.(string)
+		if !ok {
+			return "", true
+		}
+		return text, true
+	}
+	return "", false
 }
 
 func firstOptionalID(value map[string]any, paths ...[]string) (*int64, bool, string) {

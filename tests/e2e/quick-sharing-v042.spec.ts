@@ -1,7 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 
 const controlOrigin = "http://127.0.0.1:45678";
-const localStatus = { version: "0.4.3", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "http://127.0.0.1:8080/v1", lan_addresses: [], local_api_key: "", account_count: 2, schema_version: 14 };
+const localStatus = { version: "0.4.4", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "http://127.0.0.1:8080/v1", lan_addresses: [], local_api_key: "", account_count: 2, schema_version: 16 };
 const cloudStatus = { configured: true, authenticated: true, pending_verification: false, email: "owner@example.test", role: "user", pending_items: 0, syncing: false, consecutive_failures: 0, conflicts: [] };
 const profile = { display_name: "Owner", friend_code: "AMB-OWNR-0001", encryption_public_key: "fixture", encryption_key_version: 1, created_at: "", updated_at: "" };
 const accounts = [
@@ -101,7 +101,7 @@ test("shows an installer-oriented upgrade screen for rejected old clients", asyn
     if (path === "/control/cloud/status") return fulfill(route, cloudStatus);
     if (path === "/control/accounts") return fulfill(route, { accounts: [], usage: {} });
     if (path === "/control/cloud/workspace") return fulfill(route, {
-      error: { code: "client_upgrade_required", message: "Update Amber", retryable: false, details: { minimum_version: "0.4.3", latest_version: "0.4.3", update_url: "https://github.com/oyg123less/sub2api-desktop/releases/latest" } },
+      error: { code: "client_upgrade_required", message: "Update Amber", retryable: false, details: { minimum_version: "0.4.3", latest_version: "0.4.4", update_url: "https://github.com/oyg123less/sub2api-desktop/releases/latest" } },
     }, 426);
     return fulfill(route, {});
   });

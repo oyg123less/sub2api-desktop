@@ -17,22 +17,23 @@ type vaultEnvelope struct {
 }
 
 type accountPayload struct {
-	AccountType      store.AccountType   `json:"account_type"`
-	BaseURL          string              `json:"base_url"`
-	APIKey           string              `json:"api_key"`
-	Email            string              `json:"email"`
-	ChatGPTAccountID string              `json:"chatgpt_account_id"`
-	PlanType         string              `json:"plan_type"`
-	AccessToken      string              `json:"access_token"`
-	RefreshToken     string              `json:"refresh_token"`
-	IDToken          string              `json:"id_token"`
-	ExpiresAt        time.Time           `json:"expires_at"`
-	Status           store.AccountStatus `json:"status"`
-	StatusReason     string              `json:"status_reason"`
-	MaxConcurrency   int                 `json:"max_concurrency,omitempty"`
-	QueueCapacity    *int                `json:"queue_capacity,omitempty"`
-	ProxyUID         string              `json:"proxy_uid"`
-	CreatedAt        time.Time           `json:"created_at"`
+	AccountType      store.AccountType        `json:"account_type"`
+	BaseURL          string                   `json:"base_url"`
+	APIKey           string                   `json:"api_key"`
+	Email            string                   `json:"email"`
+	ChatGPTAccountID string                   `json:"chatgpt_account_id"`
+	PlanType         string                   `json:"plan_type"`
+	AccessToken      string                   `json:"access_token"`
+	RefreshToken     string                   `json:"refresh_token"`
+	IDToken          string                   `json:"id_token"`
+	ExpiresAt        time.Time                `json:"expires_at"`
+	Status           store.AccountStatus      `json:"status"`
+	StatusReason     string                   `json:"status_reason"`
+	MaxConcurrency   int                      `json:"max_concurrency,omitempty"`
+	QueueCapacity    *int                     `json:"queue_capacity,omitempty"`
+	ProxyUID         string                   `json:"proxy_uid"`
+	NetworkMode      store.AccountNetworkMode `json:"network_mode,omitempty"`
+	CreatedAt        time.Time                `json:"created_at"`
 }
 
 type proxyPayload struct {
@@ -137,7 +138,33 @@ func validateAccountPayload(payload accountPayload) error {
 	if err := store.ValidateAccountLimits(maxConcurrency, queueCapacity); err != nil {
 		return err
 	}
+	mode := payload.NetworkMode
+	if mode == "" {
+		if payload.ProxyUID != "" {
+			mode = store.AccountNetworkProxy
+		} else {
+			mode = store.AccountNetworkDirect
+		}
+	}
+	var sentinelProxyID *int64
+	if payload.ProxyUID != "" {
+		value := int64(1)
+		sentinelProxyID = &value
+	}
+	if err := store.ValidateAccountNetwork(mode, sentinelProxyID); err != nil {
+		return err
+	}
 	return nil
+}
+
+func accountPayloadNetworkMode(payload accountPayload) store.AccountNetworkMode {
+	if payload.NetworkMode != "" {
+		return payload.NetworkMode
+	}
+	if payload.ProxyUID != "" {
+		return store.AccountNetworkProxy
+	}
+	return store.AccountNetworkDirect
 }
 
 func accountPayloadLimits(payload accountPayload) (int, int) {

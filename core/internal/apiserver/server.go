@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"sub2api-desktop/core/internal/gateway"
 	"sub2api-desktop/core/internal/openai"
 	"sub2api-desktop/core/internal/store"
@@ -15,14 +17,17 @@ import (
 
 // Handler builds the /v1 API mux.
 type Handler struct {
-	engine   *gateway.Engine
-	settings func() store.Settings
+	engine     *gateway.Engine
+	settings   func() store.Settings
+	instanceID string
 }
 
 // New creates the API handler.
 func New(engine *gateway.Engine, settings func() store.Settings) *Handler {
-	return &Handler{engine: engine, settings: settings}
+	return &Handler{engine: engine, settings: settings, instanceID: uuid.NewString()}
 }
+
+func (h *Handler) InstanceID() string { return h.instanceID }
 
 // Mount registers routes on the given mux under the API surface.
 func (h *Handler) Mount(mux *http.ServeMux) {
@@ -33,7 +38,9 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 }
 
 func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "time": time.Now().Unix()})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ok", "service": "amber-gateway", "instance_id": h.instanceID, "time": time.Now().Unix(),
+	})
 }
 
 func (h *Handler) auth(next http.HandlerFunc) http.HandlerFunc {

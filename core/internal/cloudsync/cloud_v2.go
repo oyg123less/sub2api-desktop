@@ -398,21 +398,11 @@ func (m *Manager) LoadWorkspace(ctx context.Context) (CloudWorkspaceResponse, er
 			}
 		}()
 	}
-	run(func() error {
-		var readErr error
-		result.Friends, readErr = m.client.friends(workCtx, accessToken)
-		return readErr
-	})
-	run(func() error {
-		var readErr error
-		result.FriendRequests, readErr = m.client.friendRequests(workCtx, accessToken)
-		return readErr
-	})
-	run(func() error {
-		var readErr error
-		result.ShareGroups, readErr = m.client.document(workCtx, http.MethodGet, "/v1/share-groups", accessToken, nil, nil)
-		return readErr
-	})
+	// v0.4.4 keeps legacy friend/share APIs server-side for compatibility, but
+	// the desktop workspace no longer loads them into the primary experience.
+	result.Friends = CloudFriendsResponse{Friends: []CloudFriend{}}
+	result.FriendRequests = CloudFriendRequestsResponse{Requests: []CloudFriendRequest{}}
+	result.ShareGroups = CloudDocument{"groups": []any{}}
 	run(func() error {
 		var readErr error
 		result.ReceivedShares, readErr = m.client.receivedShares(workCtx, accessToken)
@@ -739,12 +729,8 @@ func (m *Manager) ReceivedShareAction(ctx context.Context, shareID, action strin
 // testReceivedKey performs one explicit, low-output request through a received
 // Guest Key. It never retries because the upstream may already have started.
 func (m *Manager) testReceivedKey(ctx context.Context, key *store.CloudReceivedKey, proxyID *int64, model string) (CloudShareConnectionTest, error) {
-	cloudURL, err := url.Parse(m.client.baseURL)
-	if err != nil {
-		return CloudShareConnectionTest{}, errors.New("Amber Cloud URL is invalid")
-	}
 	target, err := url.Parse(strings.TrimRight(key.BaseURL, "/") + "/responses")
-	if err != nil || target.Scheme != cloudURL.Scheme || !strings.EqualFold(target.Host, cloudURL.Host) || target.User != nil {
+	if err != nil || target.User != nil || !m.client.trustedEndpoint(target) {
 		return CloudShareConnectionTest{}, errors.New("the shared Base URL is not trusted")
 	}
 	model = strings.TrimSpace(model)
@@ -781,7 +767,7 @@ func (m *Manager) testReceivedKey(ctx context.Context, key *store.CloudReceivedK
 		if proxyErr != nil {
 			return CloudShareConnectionTest{OK: false, Code: "proxy_unavailable", Message: "The selected proxy is unavailable."}, nil
 		}
-		client, _, proxyErr := newConfiguredCloudHTTPClient(m.client.baseURL, store.CloudConnectionSettings{
+		client, _, proxyErr := newConfiguredCloudHTTPClient(m.client.endpoint(), store.CloudConnectionSettings{
 			Mode: store.CloudConnectionProxy, ProxyID: proxyID,
 		}, selected)
 		if proxyErr != nil {
@@ -863,6 +849,10 @@ func (m *Manager) ListDevices(ctx context.Context) (CloudDevicesResponse, error)
 func (m *Manager) EnsureDevice(ctx context.Context) (CloudDevice, error) {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
+	return m.ensureDeviceLocked(ctx)
+}
+
+func (m *Manager) ensureDeviceLocked(ctx context.Context) (CloudDevice, error) {
 	if _, err := m.ensureProfileLocked(ctx, ""); err != nil {
 		return CloudDevice{}, err
 	}

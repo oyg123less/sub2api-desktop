@@ -41,6 +41,29 @@ func TestStandardHTTP2Policy(t *testing.T) {
 	}
 }
 
+func TestAccountNetworkModeControlsEnvironmentProxy(t *testing.T) {
+	direct, err := NewClient(Options{NetworkMode: store.AccountNetworkDirect, FingerprintProfile: "standard"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	directTransport := direct.Transport.(*http.Transport)
+	if directTransport.Proxy != nil {
+		t.Fatal("direct account unexpectedly inherited a system proxy")
+	}
+
+	system, err := NewClient(Options{NetworkMode: store.AccountNetworkSystem, FingerprintProfile: "standard"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	systemTransport := system.Transport.(*http.Transport)
+	if systemTransport.Proxy == nil {
+		t.Fatal("system account did not install the environment proxy resolver")
+	}
+	if systemTransport.ForceAttemptHTTP2 {
+		t.Fatal("system proxy mode must retain the proxied HTTP/1.1 compatibility policy")
+	}
+}
+
 func TestUnexpectedEOFClassificationAndRetryability(t *testing.T) {
 	err := classifyProxyError(io.ErrUnexpectedEOF, store.ProxyHTTP)
 	if got := Kind(err); got != ErrorTargetHTTP {

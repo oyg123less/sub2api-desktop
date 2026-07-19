@@ -160,7 +160,7 @@ func (m *Manager) relayProxyURL() (*url.URL, error) {
 	case store.CloudConnectionDirect:
 		return nil, nil
 	case store.CloudConnectionSystem:
-		request, err := http.NewRequest(http.MethodGet, strings.TrimRight(m.client.baseURL, "/")+"/health", nil)
+		request, err := http.NewRequest(http.MethodGet, strings.TrimRight(m.client.endpoint(), "/")+"/health", nil)
 		if err != nil {
 			return nil, err
 		}

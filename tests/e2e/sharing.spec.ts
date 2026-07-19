@@ -123,13 +123,10 @@ async function fulfill(route: Route, body: unknown, status = 200) {
   await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 }
 
-test("creates a multi-account, multi-friend share group without the legacy QR flow", async ({ page }) => {
+test("shows the v0.4.4 direct sharing flow without legacy friend or QR controls", async ({ page }) => {
   await initialize(page);
-  let created = false;
-  let createPayload: Record<string, unknown> | undefined;
   await page.route(`${controlOrigin}/control/**`, async (route) => {
-    const request = route.request();
-    const path = new URL(request.url()).pathname;
+    const path = new URL(route.request().url()).pathname;
     if (path === "/control/status") return fulfill(route, localStatus);
     if (path === "/control/cloud/status") return fulfill(route, cloudStatus);
     if (path === "/control/cloud/profile") return fulfill(route, profile);
@@ -137,65 +134,36 @@ test("creates a multi-account, multi-friend share group without the legacy QR fl
       profile,
       friends: { friends },
       friend_requests: { requests: [] },
-      share_groups: { groups: created ? [groupDetails().group] : [] },
+      share_groups: { groups: [groupDetails().group] },
       received_shares: { shares: [] },
       devices: { devices: [], relay_enabled: false },
+      connect_host: { configured: false, accounts: [], recipients: [] },
     });
-    if (path === "/control/cloud/friends") return fulfill(route, { friends });
-    if (path === "/control/cloud/friend-requests") return fulfill(route, { requests: [] });
-    if (path === "/control/cloud/share-groups" && request.method() === "GET") {
-      return fulfill(route, { groups: created ? [groupDetails().group] : [] });
-    }
-    if (path === "/control/cloud/share-groups" && request.method() === "POST") {
-      createPayload = request.postDataJSON() as Record<string, unknown>;
-      created = true;
-      return fulfill(route, groupDetails(), 201);
-    }
     if (path === "/control/cloud/received-shares") return fulfill(route, { shares: [] });
+    if (path === "/control/cloud/connect/host") return fulfill(route, { configured: false, accounts: [], recipients: [] });
+    if (path === "/control/cloud/connect/events") return fulfill(route, { cursor: 0, events: [], has_more: false });
     if (path === "/control/cloud/devices") return fulfill(route, { devices: [], relay_enabled: false });
     if (path === "/control/accounts") return fulfill(route, { accounts, usage: {} });
     return fulfill(route, {});
   });
 
   await page.goto("/#/cloud");
-  await page.locator('[data-test="cloud-tab-shares"]').click();
-  await page.locator('[data-test="new-share-group"]').click();
-  await page.locator('[data-test="share-group-name"]').fill("Team Pool");
-  await page.locator('[data-test="wizard-next"]').click();
-  await page.locator('[data-test="wizard-account-1"]').check();
-  await page.locator('[data-test="wizard-account-2"]').check();
-  await page.getByRole("combobox").selectOption("worker_direct");
-  await page.locator('[data-test="wizard-next"]').click();
-  await page.locator(`[data-test="wizard-friend-${friendshipIDs[0]}"]`).check();
-  await page.locator(`[data-test="wizard-friend-${friendshipIDs[1]}"]`).check();
-  await page.locator('[data-test="wizard-next"]').click();
-  await page.getByLabel("Total request quota").fill("1000");
-  await page.locator('[data-test="wizard-next"]').click();
-  await page.locator('[data-test="wizard-create"]').click();
-
-  await expect(page.locator('[data-test="share-group-detail"]')).toBeVisible();
-  expect(createPayload).toMatchObject({
-    name: "Team Pool",
-    default_quota_requests: 1000,
-    accounts: [
-      { account_id: 1, relay_mode: "owner_device" },
-      { account_id: 2, relay_mode: "worker_direct" },
-    ],
-    recipients: [{ friendship_id: friendshipIDs[0] }, { friendship_id: friendshipIDs[1] }],
-  });
-  expect(typeof createPayload?.idempotency_key).toBe("string");
+  await expect(page.locator('[data-test="quick-share-host"]')).toBeVisible();
+  await expect(page.locator('[data-test="quick-share-join"]')).toBeVisible();
+  await expect(page.locator('[data-test="connect-code"]')).toBeVisible();
+  await expect(page.locator('[data-test="connect-password"]')).toBeVisible();
+  await expect(page.locator('[data-test="cloud-tab-shares"]')).toHaveCount(0);
+  await expect(page.locator('[data-test="cloud-tab-received"]')).toHaveCount(0);
+  await expect(page.locator('[data-test="cloud-tab-friends"]')).toHaveCount(0);
   await expect(page.locator('[data-test="share-qr"]')).toHaveCount(0);
-  await expect(page.locator("body")).not.toContainText("Scan");
+  await expect(page.locator('[data-test="add-friend-open"]')).toHaveCount(0);
 });
 
-test("accepts a received share, keeps its key masked, and tests it through the local control API", async ({ page }) => {
+test("keeps legacy received shares out of the primary v0.4.4 navigation", async ({ page }) => {
   await initialize(page);
-  const guestKey = "sk-amber-received-fixture-secret";
-  let accepted = false;
-  let testCalls = 0;
-  const receivedShare = () => ({
+  const receivedShare = {
     public_id: "sgr_018f1f46-7a19-7cc2-88cb-f577e51d4400",
-    status: accepted ? "active" : "pending",
+    status: "pending",
     group: {
       public_id: "shg_018f1f46-7a19-7cc2-88cb-f577e51d4401",
       name: "Friend Pool",
@@ -212,11 +180,9 @@ test("accepts a received share, keeps its key masked, and tests it through the l
     used_requests: 1,
     created_at: "2026-07-18T00:00:00Z",
     base_url: "https://amber-cloud-api.example.test/v1",
-    ...(accepted ? { key: { public_id: "sak_fixture", key_prefix: "sk-amber-received", key_version: 1, status: "active" }, api_key: guestKey } : {}),
-  });
+  };
   await page.route(`${controlOrigin}/control/**`, async (route) => {
-    const request = route.request();
-    const path = new URL(request.url()).pathname;
+    const path = new URL(route.request().url()).pathname;
     if (path === "/control/status") return fulfill(route, localStatus);
     if (path === "/control/cloud/status") return fulfill(route, cloudStatus);
     if (path === "/control/cloud/profile") return fulfill(route, profile);
@@ -225,29 +191,24 @@ test("accepts a received share, keeps its key masked, and tests it through the l
       friends: { friends: [] },
       friend_requests: { requests: [] },
       share_groups: { groups: [] },
-      received_shares: { shares: [receivedShare()] },
+      received_shares: { shares: [receivedShare] },
       devices: { devices: [], relay_enabled: false },
+      connect_host: { configured: false, accounts: [], recipients: [] },
     });
-    if (path === "/control/cloud/friends") return fulfill(route, { friends: [] });
-    if (path === "/control/cloud/friend-requests") return fulfill(route, { requests: [] });
-    if (path === "/control/cloud/share-groups") return fulfill(route, { groups: [] });
-    if (path === "/control/cloud/received-shares") return fulfill(route, { shares: [receivedShare()] });
-    if (path.endsWith("/accept")) { accepted = true; return fulfill(route, receivedShare()); }
-    if (path.endsWith("/test")) { testCalls += 1; return fulfill(route, { ok: true, status: 200, message: "available" }); }
+    if (path === "/control/cloud/received-shares") return fulfill(route, { shares: [receivedShare] });
+    if (path === "/control/cloud/connect/host") return fulfill(route, { configured: false, accounts: [], recipients: [] });
+    if (path === "/control/cloud/connect/events") return fulfill(route, { cursor: 0, events: [], has_more: false });
     if (path === "/control/cloud/devices") return fulfill(route, { devices: [], relay_enabled: false });
     if (path === "/control/accounts") return fulfill(route, { accounts: [], usage: {} });
     return fulfill(route, {});
   });
 
   await page.goto("/#/cloud");
-  await page.locator('[data-test="cloud-tab-received"]').click();
-  await page.locator('[data-test="accept-received-share"]').click();
-  await expect(page.getByText("sk-amber-received••••••••")).toBeVisible();
-  await expect(page.locator("body")).not.toContainText(guestKey);
-  await page.locator('[data-test="test-received-share"]').click();
-  expect(testCalls).toBe(1);
-  await expect(page.getByText("Shared connection test succeeded")).toBeVisible();
-  expect(await page.evaluate(() => Object.values(localStorage))).not.toContain(guestKey);
+  await expect(page.locator('[data-test="quick-share-host"]')).toBeVisible();
+  await expect(page.locator('[data-test="quick-share-join"]')).toBeVisible();
+  await expect(page.locator('[data-test="cloud-tab-received"]')).toHaveCount(0);
+  await expect(page.locator('[data-test="accept-received-share"]')).toHaveCount(0);
+  await expect(page.locator('[data-test="received-share-row"]')).toHaveCount(0);
 });
 
 test("account details no longer expose legacy one-account sharing or QR controls", async ({ page }) => {

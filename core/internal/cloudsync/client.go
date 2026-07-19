@@ -20,9 +20,11 @@ import (
 )
 
 const (
-	maxCloudResponseBytes = 4 * 1024 * 1024
-	amberClientVersion    = "0.4.3"
-	amberUserAgent        = "Amber/" + amberClientVersion
+	maxCloudResponseBytes   = 4 * 1024 * 1024
+	amberClientVersion      = "0.4.4"
+	amberUserAgent          = "Amber/" + amberClientVersion
+	defaultCloudPrimaryURL  = "https://api.amberapp.asia"
+	defaultCloudFallbackURL = "https://amber-cloud-api.484486528.workers.dev"
 )
 
 type CloudError struct {
@@ -35,6 +37,7 @@ type CloudError struct {
 	MinimumVersion string
 	LatestVersion  string
 	UpdateURL      string
+	Details        map[string]any
 }
 
 func (e *CloudError) Error() string {
@@ -46,6 +49,7 @@ func (e *CloudError) Error() string {
 
 type cloudClient struct {
 	baseURL     string
+	baseURLs    []string
 	mu          sync.RWMutex
 	http        *http.Client
 	configErr   error
@@ -53,28 +57,129 @@ type cloudClient struct {
 }
 
 func newCloudClient(baseURL string, httpClient *http.Client) (*cloudClient, error) {
-	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	if baseURL == "" {
+	baseURLs, err := parseCloudBaseURLs(baseURL)
+	if err != nil {
+		return nil, err
+	}
+	if len(baseURLs) == 0 {
 		return &cloudClient{http: httpClient}, nil
-	}
-	parsed, err := url.Parse(baseURL)
-	if err != nil || parsed.Host == "" || parsed.User != nil {
-		return nil, errors.New("invalid Amber Cloud URL")
-	}
-	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && (parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "localhost")) {
-		return nil, errors.New("Amber Cloud URL must use HTTPS")
 	}
 	if httpClient == nil {
 		httpClient = newDefaultCloudHTTPClient()
 	}
 	return &cloudClient{
-		baseURL:     baseURL,
+		baseURL:     baseURLs[0],
+		baseURLs:    baseURLs,
 		http:        httpClient,
 		retryDelays: []time.Duration{500 * time.Millisecond, 1500 * time.Millisecond},
 	}, nil
 }
 
-func (c *cloudClient) configured() bool { return c != nil && c.baseURL != "" }
+func parseCloudBaseURLs(value string) ([]string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	parts := strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == ';' })
+	candidates := make([]string, 0, len(parts)+1)
+	for _, part := range parts {
+		candidate := strings.TrimRight(strings.TrimSpace(part), "/")
+		if candidate == "" {
+			continue
+		}
+		parsed, err := url.Parse(candidate)
+		if err != nil || parsed.Host == "" || parsed.User != nil {
+			return nil, errors.New("invalid Amber Cloud URL")
+		}
+		if parsed.Scheme != "https" && !(parsed.Scheme == "http" && (parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "localhost")) {
+			return nil, errors.New("Amber Cloud URL must use HTTPS")
+		}
+		candidates = appendUniqueEndpoint(candidates, candidate)
+	}
+	if len(candidates) == 1 && (strings.EqualFold(candidates[0], defaultCloudPrimaryURL) || strings.EqualFold(candidates[0], defaultCloudFallbackURL)) {
+		return []string{defaultCloudPrimaryURL, defaultCloudFallbackURL}, nil
+	}
+	return candidates, nil
+}
+
+func appendUniqueEndpoint(values []string, candidate string) []string {
+	for _, value := range values {
+		if strings.EqualFold(value, candidate) {
+			return values
+		}
+	}
+	return append(values, candidate)
+}
+
+func (c *cloudClient) configured() bool { return c != nil && c.endpoint() != "" }
+
+func (c *cloudClient) endpoint() string {
+	if c == nil {
+		return ""
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.baseURL
+}
+
+func (c *cloudClient) endpoints() []string {
+	if c == nil {
+		return nil
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return append([]string(nil), c.baseURLs...)
+}
+
+func (c *cloudClient) useEndpoint(endpoint string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, candidate := range c.baseURLs {
+		if strings.EqualFold(candidate, endpoint) {
+			changed := !strings.EqualFold(c.baseURL, candidate)
+			c.baseURL = candidate
+			return changed
+		}
+	}
+	return false
+}
+
+func (c *cloudClient) rotateEndpoint() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.baseURLs) < 2 {
+		return false
+	}
+	for index, candidate := range c.baseURLs {
+		if strings.EqualFold(candidate, c.baseURL) {
+			next := c.baseURLs[(index+1)%len(c.baseURLs)]
+			changed := !strings.EqualFold(next, c.baseURL)
+			c.baseURL = next
+			return changed
+		}
+	}
+	c.baseURL = c.baseURLs[0]
+	return true
+}
+
+func (c *cloudClient) usingFallback() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.baseURLs) > 1 && !strings.EqualFold(c.baseURL, c.baseURLs[0])
+}
+
+func (c *cloudClient) trustedEndpoint(target *url.URL) bool {
+	if target == nil {
+		return false
+	}
+	for _, candidate := range c.endpoints() {
+		parsed, err := url.Parse(candidate)
+		if err == nil && target.Scheme == parsed.Scheme && strings.EqualFold(target.Host, parsed.Host) {
+			return true
+		}
+	}
+	return false
+}
 
 func (c *cloudClient) setHTTPClient(httpClient *http.Client, configErr error) {
 	c.mu.Lock()
@@ -414,7 +519,7 @@ func (c *cloudClient) doJSONWithHeaders(ctx context.Context, method, path, acces
 		if body != nil {
 			reader = bytes.NewReader(encoded)
 		}
-		request, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reader)
+		request, err := http.NewRequestWithContext(ctx, method, c.endpoint()+path, reader)
 		if err != nil {
 			return err
 		}
@@ -433,6 +538,7 @@ func (c *cloudClient) doJSONWithHeaders(ctx context.Context, method, path, acces
 		response, err := c.do(request)
 		if err != nil {
 			cloudErr := cloudTransportError(err, attempt)
+			c.rotateEndpoint()
 			if attempt < attempts && sleepContext(ctx, c.retryDelay(attempt, 0)) == nil {
 				continue
 			}
@@ -466,6 +572,9 @@ func (c *cloudClient) doJSONWithHeaders(ctx context.Context, method, path, acces
 			}
 			cloudErr := &CloudError{Status: response.StatusCode, Code: code, Message: message, Stage: "http", Retryable: response.StatusCode >= 500 || response.StatusCode == 429, Attempt: attempt,
 				MinimumVersion: payload.Error.MinimumVersion, LatestVersion: payload.Error.LatestVersion, UpdateURL: payload.Error.UpdateURL}
+			if response.StatusCode >= 500 {
+				c.rotateEndpoint()
+			}
 			if cloudErr.Retryable && attempt < attempts && sleepContext(ctx, c.retryDelay(attempt, retryAfter(response.Header.Get("Retry-After")))) == nil {
 				continue
 			}

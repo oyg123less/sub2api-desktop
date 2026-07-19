@@ -70,6 +70,31 @@ function publishBackendState(state: BackendState) {
   for (const listener of backendListeners) listener(state);
 }
 
+export interface WorkspaceSummary {
+  id: string;
+  name: string;
+  kind: "local" | "legacy";
+  active: boolean;
+  data_dir: string;
+  created_at: number;
+  last_opened_at: number;
+}
+
+export async function listWorkspaces(): Promise<WorkspaceSummary[]> {
+  if (!isTauri()) return [];
+  return invoke<WorkspaceSummary[]>("list_workspaces");
+}
+
+export async function createWorkspace(name: string): Promise<WorkspaceSummary> {
+  return invoke<WorkspaceSummary>("create_workspace", { name });
+}
+
+export async function switchWorkspace(workspaceId: string): Promise<WorkspaceSummary[]> {
+  const workspaces = await invoke<WorkspaceSummary[]>("switch_workspace", { workspaceId });
+  await refreshConnection();
+  return workspaces;
+}
+
 function applyConnection(conn: Connection) {
   if (!conn || conn.control_port <= 0 || conn.control_token.length < 32) return;
   const currentGeneration = window.__SUB2API__?.generation ?? 0;

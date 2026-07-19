@@ -51,6 +51,8 @@ func (m *Manager) Port() int {
 	return m.settings().ListenPort
 }
 
+func (m *Manager) InstanceID() string { return m.handler.InstanceID() }
+
 // Start binds and serves the API. It is safe to call when already running.
 func (m *Manager) Start() error {
 	m.lifecycleMu.Lock()

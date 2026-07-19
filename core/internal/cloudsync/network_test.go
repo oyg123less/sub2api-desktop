@@ -37,6 +37,35 @@ func TestNetworkSettingsSwitchWithoutRestartAndProbeHealth(t *testing.T) {
 	}
 }
 
+func TestStartupHealthSelectionUsesFallbackEndpoint(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unhealthy", http.StatusServiceUnavailable)
+	}))
+	defer primary.Close()
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer fallback.Close()
+
+	st := openTestStore(t, "network-fallback")
+	manager := NewManager(st, &testSettings{value: store.DefaultSettings()}, primary.URL+","+fallback.URL, "site-key", nil, nil)
+	settings, err := manager.NetworkSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.Endpoint != fallback.URL || !settings.Fallback {
+		t.Fatalf("endpoint selection = %#v", settings)
+	}
+	probe := manager.ProbeNetwork(context.Background())
+	if !probe.OK || probe.Endpoint != fallback.URL || !probe.Fallback {
+		t.Fatalf("fallback probe = %#v", probe)
+	}
+}
+
 func TestSelectedCloudProxyIsSanitizedAndFailsClosedAfterDeletion(t *testing.T) {
 	st := openTestStore(t, "network-proxy")
 	manager := NewManager(st, &testSettings{value: store.DefaultSettings()}, "https://cloud.example.test", "site-key", nil, nil)

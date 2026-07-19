@@ -20,7 +20,7 @@ Amber 是一个 Windows 桌面网关，在本机提供 OpenAI 兼容接口，默
 http://127.0.0.1:8080/v1
 ```
 
-Cherry Studio、Cursor、ChatBox、Codex 等客户端可以通过这个地址调用你导入的 ChatGPT OAuth 账号或 OpenAI 兼容 API 账号。Amber 负责账号调度、并发队列、代理、请求统计、Codex 配置以及可选的加密云同步和好友共享。
+Cherry Studio、Cursor、ChatBox、Codex 等客户端可以通过这个地址调用你导入的 ChatGPT OAuth 账号或 OpenAI 兼容 API 账号。Amber 负责账号调度、并发队列、代理、请求统计、Codex 配置，以及可选的加密云同步和连接码共享。
 
 [![Amber 仪表盘](src/assets/docs/dashboard.png)](src/assets/docs/dashboard.png)
 
@@ -36,7 +36,7 @@ Cherry Studio、Cursor、ChatBox、Codex 等客户端可以通过这个地址调
 | 模型与价格 | 模型卡片、Standard 官方价格、缓存和长上下文档 |
 | 用量统计 | 请求、Token、延迟、错误类型和预估费用 |
 | Codex 接入 | 本机配置、远程直连、SSH 反向隧道、备份与恢复 |
-| Amber Cloud | 连接码 + 临时密码一键共享、多账号池、每位接收者独立 Guest Key、好友与加密同步 |
+| Amber Cloud | 连接码 + 临时密码一键共享、多账号池、独立 Guest Key、工作区隔离与设备定向回流 |
 | 本地运维 | 数据目录迁移、日志保留、内置诊断和版本更新提示 |
 
 ## 快速开始
@@ -120,7 +120,7 @@ flowchart LR
     Sidecar --> Scheduler["账号调度、并发队列、代理"]
     Scheduler --> Upstream["ChatGPT / OpenAI 兼容上游"]
     Sidecar -. 加密同步 .-> Worker["Amber Cloud Worker"]
-    Worker -. 好友共享 .-> Agent["拥有者 Amber Agent"]
+    Worker -. 设备定向 Relay .-> Agent["拥有者 Amber Agent"]
     Agent --> Upstream
 ```
 

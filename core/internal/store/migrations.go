@@ -16,7 +16,7 @@ import (
 	appcrypto "sub2api-desktop/core/internal/crypto"
 )
 
-const CurrentSchemaVersion = 14
+const CurrentSchemaVersion = 16
 
 type migration struct {
 	version int
@@ -39,6 +39,192 @@ var migrations = []migration{
 	{version: 12, name: "v0.4.0 cloud identity and received shares", apply: migrateV040CloudSharing},
 	{version: 13, name: "v0.4.1 device cloud connection settings", apply: migrateV041CloudConnection},
 	{version: 14, name: "v0.4.2 connection-code sharing", apply: migrateV042ConnectSharing},
+	{version: 15, name: "v0.4.4 workspace ownership isolation", apply: migrateV044WorkspaceOwnership},
+	{version: 16, name: "v0.4.4 explicit account network modes", apply: migrateV044AccountNetworkModes},
+}
+
+func migrateV044AccountNetworkModes(tx *sql.Tx, _ *appcrypto.Cipher) error {
+	if err := addColumnIfMissing(tx, "accounts", "network_mode",
+		`TEXT NOT NULL DEFAULT 'direct' CHECK(network_mode IN ('direct','system','proxy'))`); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(tx, "cloud_received_account_links", "network_mode",
+		`TEXT NOT NULL DEFAULT 'direct' CHECK(network_mode IN ('direct','system','proxy'))`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE accounts SET network_mode=CASE WHEN proxy_id IS NULL THEN 'direct' ELSE 'proxy' END`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE cloud_received_account_links SET network_mode=CASE WHEN proxy_id IS NULL THEN 'direct' ELSE 'proxy' END`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DROP TRIGGER IF EXISTS accounts_cloud_dirty`); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`CREATE TRIGGER accounts_cloud_dirty AFTER UPDATE OF
+		account_type,base_url,api_key,email,chatgpt_account_id,plan_type,access_token,refresh_token,id_token,expires_at,status,proxy_id,network_mode,max_concurrency,queue_capacity
+		ON accounts WHEN (SELECT value FROM cloud_sync_runtime WHERE key='applying')<>'1'
+		BEGIN UPDATE accounts SET sync_dirty=1 WHERE id=NEW.id; END`)
+	return err
+}
+
+func migrateV044WorkspaceOwnership(tx *sql.Tx, _ *appcrypto.Cipher) error {
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS workspace_meta (
+			id INTEGER PRIMARY KEY CHECK(id=1),
+			workspace_id TEXT NOT NULL DEFAULT '',
+			state TEXT NOT NULL DEFAULT 'local' CHECK(state IN ('local','bound','recovery')),
+			bound_cloud_user_id INTEGER,
+			bound_email TEXT NOT NULL DEFAULT '',
+			suggested_cloud_user_id INTEGER,
+			recovery_reason TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO workspace_meta(id,created_at,updated_at)
+			VALUES(1,unixepoch(),unixepoch()) ON CONFLICT(id) DO NOTHING`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	for table, columns := range map[string][]struct{ name, declaration string }{
+		"cloud_sync_outbox": {
+			{"owner_user_id", `INTEGER NOT NULL DEFAULT 0`},
+			{"quarantined", `INTEGER NOT NULL DEFAULT 1`},
+		},
+		"cloud_sync_tombstones": {
+			{"owner_user_id", `INTEGER NOT NULL DEFAULT 0`},
+			{"quarantined", `INTEGER NOT NULL DEFAULT 1`},
+		},
+		"cloud_sync_conflicts": {
+			{"owner_user_id", `INTEGER NOT NULL DEFAULT 0`},
+			{"quarantined", `INTEGER NOT NULL DEFAULT 1`},
+		},
+		"cloud_sync_runtime": {
+			{"owner_user_id", `INTEGER NOT NULL DEFAULT 0`},
+		},
+	} {
+		for _, column := range columns {
+			if err := addColumnIfMissing(tx, table, column.name, column.declaration); err != nil {
+				return err
+			}
+		}
+	}
+
+	var sessionUser sql.NullInt64
+	var sessionEmail string
+	if err := tx.QueryRow(`SELECT user_id,email FROM cloud_session WHERE id=1`).Scan(&sessionUser, &sessionEmail); err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	rows, err := tx.Query(`SELECT user_id FROM cloud_session
+		UNION SELECT user_id FROM cloud_identities
+		UNION SELECT user_id FROM cloud_received_keys
+		UNION SELECT user_id FROM cloud_connect_host_state`)
+	if err != nil {
+		return err
+	}
+	var historicalUsers []int64
+	for rows.Next() {
+		var userID int64
+		if err := rows.Scan(&userID); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if userID > 0 {
+			historicalUsers = append(historicalUsers, userID)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	var outboxCount int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM cloud_sync_outbox`).Scan(&outboxCount); err != nil {
+		return err
+	}
+
+	state := "local"
+	var boundUser, suggestedUser any
+	reason := ""
+	if sessionUser.Valid && sessionUser.Int64 > 0 {
+		state = "bound"
+		boundUser = sessionUser.Int64
+	} else if len(historicalUsers) == 1 {
+		state = "recovery"
+		suggestedUser = historicalUsers[0]
+		reason = "legacy_owner_confirmation_required"
+	} else if len(historicalUsers) > 1 {
+		state = "recovery"
+		reason = "legacy_multiple_cloud_users"
+	} else if outboxCount > 0 {
+		state = "recovery"
+		reason = "legacy_unowned_outbox"
+	}
+	if _, err := tx.Exec(`UPDATE workspace_meta SET state=?,bound_cloud_user_id=?,bound_email=?,
+		suggested_cloud_user_id=?,recovery_reason=?,updated_at=unixepoch() WHERE id=1`,
+		state, boundUser, sessionEmail, suggestedUser, reason); err != nil {
+		return err
+	}
+	if sessionUser.Valid && sessionUser.Int64 > 0 {
+		owner := sessionUser.Int64
+		for _, statement := range []string{
+			`UPDATE cloud_sync_outbox SET owner_user_id=?,quarantined=0 WHERE owner_user_id=0`,
+			`UPDATE cloud_sync_tombstones SET owner_user_id=?,quarantined=0 WHERE owner_user_id=0`,
+			`UPDATE cloud_sync_conflicts SET owner_user_id=?,quarantined=0 WHERE owner_user_id=0`,
+			`UPDATE cloud_sync_runtime SET owner_user_id=? WHERE owner_user_id=0`,
+		} {
+			if _, err := tx.Exec(statement, owner); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_cloud_sync_outbox_owner
+		ON cloud_sync_outbox(owner_user_id,quarantined,id)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_cloud_sync_tombstones_owner
+		ON cloud_sync_tombstones(owner_user_id,quarantined,updated_at)`); err != nil {
+		return err
+	}
+
+	for _, name := range []string{"accounts_cloud_delete", "proxies_cloud_delete", "codex_remote_cloud_delete"} {
+		if _, err := tx.Exec(`DROP TRIGGER IF EXISTS ` + name); err != nil {
+			return err
+		}
+	}
+	triggers := []string{
+		`CREATE TRIGGER accounts_cloud_delete BEFORE DELETE ON accounts
+			WHEN (SELECT value FROM cloud_sync_runtime WHERE key='applying')<>'1'
+			BEGIN INSERT INTO cloud_sync_tombstones(kind,client_uid,sync_version,updated_at,owner_user_id,quarantined)
+			VALUES('account',OLD.client_uid,OLD.sync_version,unixepoch(),
+				COALESCE((SELECT bound_cloud_user_id FROM workspace_meta WHERE id=1),0),
+				CASE WHEN (SELECT state FROM workspace_meta WHERE id=1)='bound' THEN 0 ELSE 1 END)
+			ON CONFLICT(kind,client_uid) DO UPDATE SET sync_version=MAX(sync_version,excluded.sync_version),
+				updated_at=excluded.updated_at,owner_user_id=excluded.owner_user_id,quarantined=excluded.quarantined; END`,
+		`CREATE TRIGGER proxies_cloud_delete BEFORE DELETE ON proxies
+			WHEN (SELECT value FROM cloud_sync_runtime WHERE key='applying')<>'1'
+			BEGIN INSERT INTO cloud_sync_tombstones(kind,client_uid,sync_version,updated_at,owner_user_id,quarantined)
+			VALUES('proxy',OLD.client_uid,OLD.sync_version,unixepoch(),
+				COALESCE((SELECT bound_cloud_user_id FROM workspace_meta WHERE id=1),0),
+				CASE WHEN (SELECT state FROM workspace_meta WHERE id=1)='bound' THEN 0 ELSE 1 END)
+			ON CONFLICT(kind,client_uid) DO UPDATE SET sync_version=MAX(sync_version,excluded.sync_version),
+				updated_at=excluded.updated_at,owner_user_id=excluded.owner_user_id,quarantined=excluded.quarantined; END`,
+		`CREATE TRIGGER codex_remote_cloud_delete BEFORE DELETE ON codex_remote_targets
+			WHEN (SELECT value FROM cloud_sync_runtime WHERE key='applying')<>'1'
+			BEGIN INSERT INTO cloud_sync_tombstones(kind,client_uid,sync_version,updated_at,owner_user_id,quarantined)
+			VALUES('codex_remote',OLD.client_uid,OLD.sync_version,unixepoch(),
+				COALESCE((SELECT bound_cloud_user_id FROM workspace_meta WHERE id=1),0),
+				CASE WHEN (SELECT state FROM workspace_meta WHERE id=1)='bound' THEN 0 ELSE 1 END)
+			ON CONFLICT(kind,client_uid) DO UPDATE SET sync_version=MAX(sync_version,excluded.sync_version),
+				updated_at=excluded.updated_at,owner_user_id=excluded.owner_user_id,quarantined=excluded.quarantined; END`,
+	}
+	for _, trigger := range triggers {
+		if _, err := tx.Exec(trigger); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func migrateV042ConnectSharing(tx *sql.Tx, _ *appcrypto.Cipher) error {

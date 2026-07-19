@@ -1,4 +1,5 @@
 mod supervisor;
+mod workspace;
 
 use std::{io::Write, sync::Mutex, time::Duration};
 
@@ -35,6 +36,65 @@ fn restart_backend(app: tauri::AppHandle) -> supervisor::BackendState {
     supervisor::backend_state(&app)
 }
 
+#[tauri::command]
+fn list_workspaces(app: tauri::AppHandle) -> Result<Vec<workspace::WorkspaceSummary>, String> {
+    workspace::list(&app)
+}
+
+#[tauri::command]
+fn create_workspace(
+    app: tauri::AppHandle,
+    name: String,
+) -> Result<workspace::WorkspaceSummary, String> {
+    workspace::create(&app, &name)
+}
+
+#[tauri::command]
+async fn switch_workspace(
+    app: tauri::AppHandle,
+    workspace_id: String,
+) -> Result<Vec<workspace::WorkspaceSummary>, String> {
+    let current = workspace::active(&app)?;
+    if current.id == workspace_id {
+        return workspace::list(&app);
+    }
+    let previous_generation = supervisor::backend_state(&app).generation;
+    supervisor::set_migrating(&app);
+    supervisor::stop(&app, supervisor::StopIntent::Migration);
+    if !supervisor::wait_stopped(&app, Duration::from_secs(8)).await {
+        supervisor::restart_after_migration_abort(&app);
+        return Err("timed out while stopping the current workspace".to_string());
+    }
+
+    let previous = match workspace::activate(&app, &workspace_id) {
+        Ok(value) => value,
+        Err(error) => {
+            supervisor::spawn(&app, supervisor::BackendPhase::Starting);
+            return Err(error);
+        }
+    };
+    supervisor::spawn(&app, supervisor::BackendPhase::Starting);
+    if supervisor::wait_ready(&app, previous_generation, Duration::from_secs(20)).await {
+        return workspace::list(&app);
+    }
+
+    supervisor::stop(&app, supervisor::StopIntent::Migration);
+    let stopped = supervisor::wait_stopped(&app, Duration::from_secs(8)).await;
+    let rollback = workspace::activate(&app, &previous);
+    if stopped && rollback.is_ok() {
+        supervisor::spawn(&app, supervisor::BackendPhase::Starting);
+        return Err(
+            "the selected workspace could not start; the previous workspace was restored"
+                .to_string(),
+        );
+    }
+    supervisor::restart_after_migration_abort(&app);
+    Err(match rollback {
+        Err(error) => format!("workspace startup and rollback both failed: {error}"),
+        Ok(_) => "workspace startup failed and the backend did not stop safely".to_string(),
+    })
+}
+
 /// Returns the directory where the data-dir override pointer file lives. This
 /// location never moves (it is always the app config dir) so the app can always
 /// find where the user relocated their data.
@@ -50,7 +110,7 @@ fn default_data_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
 
 /// Resolves the effective data directory: the user override from location.json
 /// if set and non-empty, otherwise the default (app_config_dir/data).
-fn resolve_data_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
+pub(crate) fn resolve_data_root(app: &tauri::AppHandle) -> std::path::PathBuf {
     let pointer = pointer_dir(app).join("location.json");
     if let Ok(bytes) = std::fs::read(&pointer) {
         if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
@@ -74,7 +134,7 @@ struct DataDirInfo {
 
 #[tauri::command]
 fn get_data_dir(app: tauri::AppHandle) -> DataDirInfo {
-    let current = resolve_data_dir(&app);
+    let current = resolve_data_root(&app);
     let default = default_data_dir(&app);
     DataDirInfo {
         is_custom: current != default,
@@ -86,44 +146,14 @@ fn get_data_dir(app: tauri::AppHandle) -> DataDirInfo {
 #[tauri::command]
 async fn open_data_dir(app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
-    let dir = resolve_data_dir(&app);
+    let dir = resolve_data_root(&app);
     let _ = std::fs::create_dir_all(&dir);
     app.opener()
         .open_path(dir.to_string_lossy().to_string(), None::<&str>)
         .map_err(|e| e.to_string())
 }
 
-const DATA_FILES: [&str; 4] = ["sub2api.db", "sub2api.db-wal", "sub2api.db-shm", "key"];
-
-fn copy_data_files(from: &std::path::Path, to: &std::path::Path) -> Result<(), String> {
-    std::fs::create_dir_all(to).map_err(|e| e.to_string())?;
-    for name in DATA_FILES {
-        let source = from.join(name);
-        if source.exists() {
-            std::fs::copy(&source, to.join(name)).map_err(|e| format!("copy {name}: {e}"))?;
-        }
-    }
-    Ok(())
-}
-
-fn validate_migration_copy(dir: &std::path::Path) -> Result<(), String> {
-    let database = dir.join("sub2api.db");
-    let key = dir.join("key");
-    if !database.is_file() || !key.is_file() {
-        return Err("migration copy is missing sub2api.db or key".to_string());
-    }
-    let bytes = std::fs::read(&database).map_err(|e| format!("read copied database: {e}"))?;
-    if !bytes.starts_with(b"SQLite format 3\0") {
-        return Err("copied database has an invalid SQLite header".to_string());
-    }
-    let key_text = std::fs::read_to_string(&key).map_err(|e| format!("read copied key: {e}"))?;
-    if key_text.trim().len() < 40 {
-        return Err("copied encryption key is invalid".to_string());
-    }
-    Ok(())
-}
-
-fn atomic_replace(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn atomic_replace(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     let temporary = path.with_extension("json.tmp");
     let mut file =
         std::fs::File::create(&temporary).map_err(|e| format!("create temporary pointer: {e}"))?;
@@ -190,9 +220,16 @@ fn restore_location_pointer(app: &tauri::AppHandle, previous: Option<&[u8]>) -> 
     }
 }
 
-fn cleanup_migrated_files(dir: &std::path::Path) {
-    for name in DATA_FILES {
-        let _ = std::fs::remove_file(dir.join(name));
+fn cleanup_migrated_root(dir: &std::path::Path) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let _ = std::fs::remove_dir_all(path);
+            } else {
+                let _ = std::fs::remove_file(path);
+            }
+        }
     }
 }
 
@@ -244,17 +281,21 @@ fn canonical_data_dirs(
     Ok((old, new))
 }
 
-fn commit_migration_files(
+fn commit_migration_root(
     temporary: &std::path::Path,
     destination: &std::path::Path,
 ) -> Result<(), String> {
-    for name in DATA_FILES {
-        let source = temporary.join(name);
-        if source.exists() {
-            if let Err(error) = std::fs::rename(&source, destination.join(name)) {
-                cleanup_migrated_files(destination);
-                return Err(format!("commit migrated {name}: {error}"));
-            }
+    let entries = std::fs::read_dir(temporary)
+        .map_err(|error| format!("read migration directory: {error}"))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("read migration entry: {error}"))?;
+        let name = entry.file_name();
+        if let Err(error) = std::fs::rename(entry.path(), destination.join(&name)) {
+            cleanup_migrated_root(destination);
+            return Err(format!(
+                "commit migrated {}: {error}",
+                name.to_string_lossy()
+            ));
         }
     }
     Ok(())
@@ -266,12 +307,9 @@ async fn set_data_dir(app: tauri::AppHandle, path: String) -> Result<DataDirInfo
     if requested_dir.as_os_str().is_empty() {
         return Err("路径不能为空".to_string());
     }
-    let (old_dir, mut new_dir) = canonical_data_dirs(&resolve_data_dir(&app), &requested_dir)?;
+    let (old_dir, mut new_dir) = canonical_data_dirs(&resolve_data_root(&app), &requested_dir)?;
     if new_dir == old_dir {
         return Ok(get_data_dir(app));
-    }
-    if DATA_FILES.iter().any(|name| new_dir.join(name).exists()) {
-        return Err("the target already contains Amber data".to_string());
     }
     std::fs::create_dir_all(&new_dir).map_err(|e| format!("unable to create directory: {e}"))?;
     new_dir = std::fs::canonicalize(&new_dir)
@@ -281,6 +319,13 @@ async fn set_data_dir(app: tauri::AppHandle, path: String) -> Result<DataDirInfo
             "the new data directory cannot contain or be contained by the current directory"
                 .to_string(),
         );
+    }
+    if std::fs::read_dir(&new_dir)
+        .map_err(|e| format!("read target data directory: {e}"))?
+        .next()
+        .is_some()
+    {
+        return Err("the target data directory must be empty".to_string());
     }
     let probe = new_dir.join(".amber-write-test");
     std::fs::write(&probe, b"ok").map_err(|e| format!("target directory is not writable: {e}"))?;
@@ -300,14 +345,14 @@ async fn set_data_dir(app: tauri::AppHandle, path: String) -> Result<DataDirInfo
         .unwrap_or_default()
         .as_millis();
     let temporary = new_dir.join(format!(".amber-migration-{migration_id}"));
-    if let Err(error) =
-        copy_data_files(&old_dir, &temporary).and_then(|_| validate_migration_copy(&temporary))
+    if let Err(error) = workspace::copy_data_root(&old_dir, &temporary)
+        .and_then(|_| workspace::validate_data_root(&temporary))
     {
         let _ = std::fs::remove_dir_all(&temporary);
         supervisor::spawn(&app, supervisor::BackendPhase::Starting);
         return Err(error);
     }
-    if let Err(error) = commit_migration_files(&temporary, &new_dir) {
+    if let Err(error) = commit_migration_root(&temporary, &new_dir) {
         let _ = std::fs::remove_dir_all(&temporary);
         supervisor::spawn(&app, supervisor::BackendPhase::Starting);
         return Err(error);
@@ -321,7 +366,7 @@ async fn set_data_dir(app: tauri::AppHandle, path: String) -> Result<DataDirInfo
         new_dir.to_string_lossy().to_string()
     };
     if let Err(error) = write_location_pointer(&app, &stored) {
-        cleanup_migrated_files(&new_dir);
+        cleanup_migrated_root(&new_dir);
         supervisor::spawn(&app, supervisor::BackendPhase::Starting);
         return Err(error);
     }
@@ -332,7 +377,7 @@ async fn set_data_dir(app: tauri::AppHandle, path: String) -> Result<DataDirInfo
         let stopped = supervisor::wait_stopped(&app, Duration::from_secs(5)).await;
         let restore_error = restore_location_pointer(&app, previous_pointer.as_deref()).err();
         if stopped {
-            cleanup_migrated_files(&new_dir);
+            cleanup_migrated_root(&new_dir);
             supervisor::spawn(&app, supervisor::BackendPhase::Starting);
         } else {
             supervisor::restart_after_migration_abort(&app);
@@ -448,6 +493,9 @@ pub fn run() {
             get_connection,
             get_backend_state,
             restart_backend,
+            list_workspaces,
+            create_workspace,
+            switch_workspace,
             open_external,
             get_data_dir,
             set_data_dir,
@@ -456,6 +504,7 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle();
             build_tray(handle)?;
+            workspace::ensure(handle).map_err(std::io::Error::other)?;
             supervisor::spawn(handle, supervisor::BackendPhase::Starting);
             Ok(())
         })
@@ -493,9 +542,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("sub2api.db"), b"SQLite format 3\0payload").unwrap();
-        assert!(validate_migration_copy(&root).is_err());
+        assert!(workspace::validate_data_root(&root).is_err());
         std::fs::write(root.join("key"), "A".repeat(44)).unwrap();
-        assert!(validate_migration_copy(&root).is_ok());
+        assert!(workspace::validate_data_root(&root).is_ok());
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -546,9 +595,10 @@ mod tests {
         let destination = root.join("destination");
         std::fs::create_dir_all(&temporary).unwrap();
         std::fs::create_dir_all(destination.join("key")).unwrap();
+        std::fs::create_dir_all(destination.join("sub2api.db")).unwrap();
         std::fs::write(temporary.join("sub2api.db"), b"database").unwrap();
         std::fs::write(temporary.join("key"), b"key").unwrap();
-        assert!(commit_migration_files(&temporary, &destination).is_err());
+        assert!(commit_migration_root(&temporary, &destination).is_err());
         assert!(!destination.join("sub2api.db").exists());
         let _ = std::fs::remove_dir_all(root);
     }
