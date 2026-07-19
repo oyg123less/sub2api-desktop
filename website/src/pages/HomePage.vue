@@ -1,23 +1,23 @@
 <script setup lang="ts">
-import { ArrowRight, Download, HardDrive, Laptop, Network } from "lucide-vue-next";
+import { ArrowRight, Download, Laptop, Share2, UsersRound } from "lucide-vue-next";
 import { RouterLink } from "vue-router";
 import { stableRelease } from "../config/releases";
 
 const highlights = [
   {
-    icon: HardDrive,
-    title: "本地运行",
-    text: "数据与配置留在你的电脑上",
+    icon: UsersRound,
+    title: "多账号调度",
+    text: "额度感知与自动切换",
   },
   {
-    icon: Network,
-    title: "统一接入",
-    text: "提供 OpenAI 兼容接口",
+    icon: Share2,
+    title: "受控共享",
+    text: "独立密钥、限流与额度",
   },
   {
     icon: Laptop,
-    title: "连接 Codex",
-    text: "支持本机与远程环境",
+    title: "一键注入",
+    text: "连接本机与远程 Codex",
   },
 ];
 </script>
@@ -27,7 +27,8 @@ const highlights = [
     <div class="container hero-inner">
       <div class="hero-copy">
         <h1 id="home-title">Amber</h1>
-        <p class="hero-lede">把自己的账号，变成 Codex 可用的本地接口。</p>
+        <p class="hero-lede">让多个账号，成为可调度、可共享的 Codex 额度池。</p>
+        <p class="hero-description">基于 sub2api 网关能力，借鉴 CCSwitch 使用体验，支持代理配置、加密云同步，以及 Codex 本地/远程一键注入。</p>
 
         <div class="hero-actions">
           <a class="button button-primary hero-download" :href="stableRelease.downloadUrl">
@@ -94,11 +95,19 @@ const highlights = [
 }
 
 .hero-lede {
-  margin-bottom: 24px;
+  margin-bottom: 8px;
   color: var(--ink);
   font-size: 25px;
   font-weight: 680;
   line-height: 1.45;
+}
+
+.hero-description {
+  max-width: 720px;
+  margin: 0 auto 20px;
+  color: var(--ink-soft);
+  font-size: 14px;
+  line-height: 1.7;
 }
 
 .hero-actions {
@@ -213,6 +222,12 @@ const highlights = [
 
   .highlight-item {
     padding-inline: 18px;
+  }
+}
+
+@media (max-width: 900px) {
+  .hero-description {
+    display: none;
   }
 }
 

@@ -12,7 +12,7 @@ import { stableRelease } from "../config/releases";
           <img src="/app-icon.png" alt="" width="32" height="32" />
           <span>Amber</span>
         </RouterLink>
-        <p>Windows 本地 OpenAI 兼容网关与 Codex 接入工具。</p>
+        <p>Windows Codex 桌面网关与多账号调度工具。</p>
       </div>
 
       <nav aria-label="页脚导航">
