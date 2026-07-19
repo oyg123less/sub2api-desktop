@@ -533,8 +533,8 @@ func writeCloudControlError(w http.ResponseWriter, err error) {
 		if cloudErr.Code == "client_upgrade_required" {
 			details = map[string]any{
 				"minimum_version": cloudErr.MinimumVersion,
-				"latest_version": cloudErr.LatestVersion,
-				"update_url": cloudErr.UpdateURL,
+				"latest_version":  cloudErr.LatestVersion,
+				"update_url":      cloudErr.UpdateURL,
 			}
 		}
 		writeControlError(w, status, cloudErr.Code, cloudErr.Message, cloudErr.Retryable, details)
