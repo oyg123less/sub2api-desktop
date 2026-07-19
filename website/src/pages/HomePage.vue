@@ -43,10 +43,10 @@ const workflow = [
     <div class="hero-product-stage">
       <img
         class="hero-product-image"
-        src="/screenshots/accounts.png"
-        alt="Amber 账号管理界面，展示三个演示账号的健康、额度与并发状态"
-        width="1440"
-        height="900"
+        src="/screenshots/hero-dashboard.png"
+        alt="Amber 运行中的仪表盘，展示账号数量、今日请求、Token、费用、接口配置与最近请求"
+        width="2880"
+        height="1800"
         fetchpriority="high"
         decoding="async"
       />
@@ -217,84 +217,98 @@ const workflow = [
 <style scoped>
 .home-hero {
   position: relative;
-  height: clamp(560px, calc(100svh - 150px), 640px);
+  height: clamp(510px, calc(100svh - 140px), 780px);
   overflow: hidden;
   border-bottom: 1px solid var(--border);
-  background: #f1f0ea;
-}
-
-.home-hero::after {
-  position: absolute;
-  z-index: 1;
-  inset: 0 auto 0 0;
-  width: calc(50% + 10px);
-  background: rgba(247, 247, 244, 0.97);
-  box-shadow: 28px 0 48px rgba(31, 33, 28, 0.04);
-  content: "";
+  background: var(--bg);
 }
 
 .hero-product-stage {
   position: absolute;
   z-index: 0;
-  inset: 0;
+  top: 250px;
+  right: 50%;
+  bottom: -1px;
+  width: min(calc(100% - 48px), 1360px);
+  transform: translateX(50%);
   overflow: hidden;
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: 6px 6px 0 0;
+  background: #f6f4ed;
+  box-shadow: 0 20px 54px rgba(31, 33, 28, 0.11);
 }
 
 .hero-product-image {
   position: absolute;
-  top: 0;
-  right: 0;
-  width: min(1440px, 100vw);
-  max-width: none;
+  top: -10px;
+  left: 0;
+  width: 100%;
   height: auto;
 }
 
 .hero-content {
   position: relative;
   z-index: 2;
-  display: flex;
-  height: 100%;
-  align-items: center;
+  height: auto;
+  padding-block: 32px 24px;
 }
 
 .hero-copy {
-  width: min(510px, 46vw);
-  padding-block: 42px;
+  display: grid;
+  width: 100%;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 44px;
+  align-items: center;
 }
 
 .hero-status {
   display: flex;
+  grid-column: 1 / -1;
   align-items: center;
   gap: 11px;
+  margin-bottom: 8px;
   color: var(--ink-soft);
   font-size: 13px;
 }
 
 .hero-copy h1 {
-  margin: 16px 0 11px;
-  font-size: 60px;
+  grid-column: 1;
+  margin: 0 0 6px;
+  font-size: 52px;
 }
 
 .hero-lede {
-  max-width: 500px;
-  margin-bottom: 13px;
+  grid-column: 1;
+  max-width: 760px;
+  margin-bottom: 7px;
   color: var(--ink);
-  font-size: 26px;
+  font-size: 24px;
   font-weight: 700;
-  line-height: 1.45;
+  line-height: 1.4;
 }
 
 .hero-description {
-  max-width: 490px;
-  margin-bottom: 24px;
+  grid-column: 1;
+  max-width: 760px;
+  margin-bottom: 0;
   color: var(--ink-soft);
   font-size: 16px;
 }
 
+.hero-copy .action-row {
+  grid-column: 2;
+  grid-row: 2 / 4;
+  justify-content: flex-end;
+}
+
 .hero-note {
-  margin: 14px 0 0;
+  grid-column: 2;
+  grid-row: 4;
+  margin: 5px 0 0;
   color: var(--ink-soft);
   font-size: 13px;
+  text-align: right;
 }
 
 .boundary-strip {
@@ -617,16 +631,13 @@ const workflow = [
 }
 
 @media (max-width: 1000px) {
-  .home-hero::after {
-    width: 56%;
-  }
-
-  .hero-product-image {
-    width: 1160px;
+  .hero-product-stage {
+    top: 300px;
+    width: calc(100% - 40px);
   }
 
   .hero-copy {
-    width: 49vw;
+    column-gap: 28px;
   }
 
   .proof-layout,
@@ -687,7 +698,7 @@ const workflow = [
   }
 }
 
-@media (max-width: 700px) {
+@media (max-width: 760px) {
   .home-hero {
     display: flex;
     height: auto;
@@ -695,32 +706,39 @@ const workflow = [
     flex-direction: column;
   }
 
-  .home-hero::after {
-    display: none;
-  }
-
   .hero-product-stage {
     position: relative;
+    top: auto;
+    right: auto;
+    bottom: auto;
     order: 1;
-    width: 100%;
-    height: clamp(200px, 30svh, 250px);
+    width: calc(100% - 28px);
+    height: clamp(210px, 30svh, 250px);
+    margin-inline: auto;
+    transform: none;
     flex: 0 0 auto;
+    border-bottom: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 12px 32px rgba(31, 33, 28, 0.1);
   }
 
   .hero-product-image {
     top: 0;
     right: auto;
-    left: -130px;
-    width: 900px;
+    left: -12px;
+    width: 880px;
+    max-width: none;
   }
 
   .hero-content {
     display: block;
     order: 0;
     height: auto;
+    padding-block: 0;
   }
 
   .hero-copy {
+    display: block;
     width: 100%;
     padding-block: 27px 18px;
   }
@@ -748,7 +766,9 @@ const workflow = [
   }
 
   .hero-copy .action-row {
+    display: flex;
     gap: 8px;
+    justify-content: flex-start;
   }
 
   .hero-copy .button {
@@ -760,6 +780,7 @@ const workflow = [
   .hero-note {
     margin-top: 9px;
     font-size: 12px;
+    text-align: left;
   }
 
   .boundary-grid {
@@ -821,6 +842,11 @@ const workflow = [
 }
 
 @media (max-width: 400px) {
+  .hero-description,
+  .hero-note {
+    display: none;
+  }
+
   .hero-status {
     align-items: flex-start;
     flex-direction: column;

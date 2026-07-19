@@ -3,6 +3,8 @@ import path from "node:path";
 
 const baseURL = process.env.AMBER_DOCS_BASE_URL || "http://127.0.0.1:4173/";
 const outputDir = path.resolve("src/assets/docs");
+const websiteHeroOnly = process.env.AMBER_CAPTURE_WEBSITE_HERO === "1";
+const websiteHeroPath = path.resolve("website/public/screenshots/hero-dashboard.png");
 const now = "2026-07-18T10:30:00Z";
 
 const settings = {
@@ -290,7 +292,8 @@ async function handleControlRoute(route) {
 const browser = await chromium.launch({ headless: true });
 const context = await browser.newContext({
   viewport: { width: 1440, height: 900 },
-  deviceScaleFactor: 1,
+  deviceScaleFactor: websiteHeroOnly ? 2 : 1,
+  timezoneId: websiteHeroOnly ? "Asia/Shanghai" : undefined,
   locale: "zh-CN",
   colorScheme: "light",
   reducedMotion: "reduce",
@@ -304,6 +307,7 @@ await context.addInitScript(() => {
 await context.route("http://127.0.0.1:45678/control/**", handleControlRoute);
 
 const page = await context.newPage();
+if (websiteHeroOnly) await page.clock.setFixedTime(new Date(now));
 
 async function open(route) {
   await page.goto(`${baseURL}#/${route}`, { waitUntil: "domcontentloaded" });
@@ -314,6 +318,16 @@ async function open(route) {
 async function shot(name) {
   await page.screenshot({ path: path.join(outputDir, name), fullPage: false });
   console.log(`captured ${name}`);
+}
+
+if (websiteHeroOnly) {
+  await open("dashboard");
+  await page.addStyleTag({ content: ".sidebar { display: none !important; }" });
+  await page.locator("main.main .badge-success").filter({ hasText: "运行中" }).waitFor({ state: "visible", timeout: 7000 });
+  await page.locator("main.main").screenshot({ path: websiteHeroPath });
+  console.log(`captured ${websiteHeroPath}`);
+  await browser.close();
+  process.exit(0);
 }
 
 await open("dashboard");

@@ -135,7 +135,8 @@ test("documentation exposes the appropriate table of contents", async ({ page })
 test("hero screenshot is loaded and nonblank", async ({ page }) => {
   await page.goto("/");
   const heroImage = page.locator(".hero-product-image");
-  await expect(heroImage).toHaveAttribute("src", "/screenshots/accounts.png");
+  await expect(heroImage).toHaveAttribute("src", "/screenshots/hero-dashboard.png");
+  await expect(heroImage).toBeVisible();
 
   const result = await heroImage.evaluate(async (node) => {
     const image = node as HTMLImageElement;
@@ -150,32 +151,72 @@ test("hero screenshot is loaded and nonblank", async ({ page }) => {
     for (let index = 0; index < data.length; index += 16) {
       colors.add(`${data[index]}-${data[index + 1]}-${data[index + 2]}-${data[index + 3]}`);
     }
-    return { width: image.naturalWidth, height: image.naturalHeight, colors: colors.size };
+    const renderedWidth = image.getBoundingClientRect().width;
+    const renderedHeight = image.getBoundingClientRect().height;
+    return {
+      width: image.naturalWidth,
+      height: image.naturalHeight,
+      colors: colors.size,
+      renderedWidth,
+      renderedHeight,
+      pixelDensity: image.naturalWidth / renderedWidth,
+    };
   });
 
-  expect(result).toEqual({ width: 1440, height: 900, colors: expect.any(Number) });
+  expect(result).toEqual({
+    width: 2880,
+    height: 1800,
+    colors: expect.any(Number),
+    renderedWidth: expect.any(Number),
+    renderedHeight: expect.any(Number),
+    pixelDensity: expect.any(Number),
+  });
   expect(result.colors).toBeGreaterThan(1);
+  expect(result.renderedWidth).toBeGreaterThan(0);
+  expect(result.renderedHeight).toBeGreaterThan(0);
+  expect(Number.isFinite(result.pixelDensity)).toBe(true);
+  expect(result.pixelDensity).toBeGreaterThanOrEqual(2);
 });
 
-test("homepage keeps copy and product image separate at 320px", async ({ page }, testInfo) => {
+test("homepage keeps copy and product image separate at responsive edges", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "Smallest viewport regression check runs once.");
+
+  for (const width of [761, 720]) {
+    await page.setViewportSize({ width, height: 650 });
+    await page.goto("/");
+    await page.evaluate(() => document.fonts.ready);
+    const tabletLayout = await page.evaluate(() => {
+      const copy = document.querySelector(".hero-content")?.getBoundingClientRect();
+      const stage = document.querySelector(".hero-product-stage")?.getBoundingClientRect();
+      return {
+        copyBottom: copy?.bottom ?? 0,
+        stageTop: stage?.top ?? 0,
+      };
+    });
+    expect(tabletLayout.copyBottom).toBeLessThanOrEqual(tabletLayout.stageTop);
+  }
+
   await page.setViewportSize({ width: 320, height: 568 });
   await page.goto("/");
 
   const layout = await page.evaluate(() => {
     const copy = document.querySelector(".hero-content")?.getBoundingClientRect();
     const stage = document.querySelector(".hero-product-stage")?.getBoundingClientRect();
+    const nextSection = document.querySelector(".boundary-strip")?.getBoundingClientRect();
     return {
       overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
       copyBottom: copy?.bottom ?? 0,
       stageTop: stage?.top ?? 0,
       stageHeight: stage?.height ?? 0,
+      nextSectionTop: nextSection?.top ?? Number.POSITIVE_INFINITY,
+      viewportHeight: window.innerHeight,
     };
   });
 
   expect(layout.overflow).toBeLessThanOrEqual(1);
   expect(Math.abs(layout.copyBottom - layout.stageTop)).toBeLessThanOrEqual(1);
   expect(layout.stageHeight).toBeGreaterThanOrEqual(200);
+  expect(layout.nextSectionTop).toBeLessThan(layout.viewportHeight);
 });
 
 test("captures homepage and documentation visual evidence", async ({ page }, testInfo) => {
@@ -183,6 +224,7 @@ test("captures homepage and documentation visual evidence", async ({ page }, tes
   fs.mkdirSync(directory, { recursive: true });
 
   await page.goto("/");
+  await page.locator(".hero-product-image").evaluate(async (node) => (node as HTMLImageElement).decode());
   await page.screenshot({ path: path.join(directory, `home-${testInfo.project.name}.png`), fullPage: true });
   await page.goto("/docs");
   await page.screenshot({ path: path.join(directory, `docs-${testInfo.project.name}.png`), fullPage: true });
