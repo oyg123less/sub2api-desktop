@@ -23,7 +23,8 @@ function requestVersion(headers: Headers): string {
 export const requireCurrentClient = createMiddleware<AppEnv>(async (c, next) => {
   const path = c.req.path;
   if (path.startsWith("/v1/auth/") || path.startsWith("/v1/webhooks/") ||
-      path === "/v1/responses" || path === "/v1/chat/completions") return next();
+      path === "/v1/responses" || path === "/v1/chat/completions" ||
+      path === "/v1/relay/connect") return next();
   const settings = await c.env.DB.prepare(`SELECT key,value FROM platform_settings WHERE key IN
     ('enforce_client_version','minimum_client_version','latest_client_version','client_release_url')`).all<{ key: string; value: string }>();
   const values = Object.fromEntries(settings.results.map((entry) => [entry.key, entry.value]));

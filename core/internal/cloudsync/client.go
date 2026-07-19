@@ -19,7 +19,11 @@ import (
 	"time"
 )
 
-const maxCloudResponseBytes = 4 * 1024 * 1024
+const (
+	maxCloudResponseBytes = 4 * 1024 * 1024
+	amberClientVersion    = "0.4.2"
+	amberUserAgent        = "Amber/" + amberClientVersion
+)
 
 type CloudError struct {
 	Status         int
@@ -415,8 +419,8 @@ func (c *cloudClient) doJSONWithHeaders(ctx context.Context, method, path, acces
 			return err
 		}
 		request.Header.Set("Accept", "application/json")
-		request.Header.Set("User-Agent", "Amber/0.4.2")
-		request.Header.Set("X-Amber-Client-Version", "0.4.2")
+		request.Header.Set("User-Agent", amberUserAgent)
+		request.Header.Set("X-Amber-Client-Version", amberClientVersion)
 		if body != nil {
 			request.Header.Set("Content-Type", "application/json")
 		}

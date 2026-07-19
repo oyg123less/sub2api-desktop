@@ -11,10 +11,12 @@
 ## 实施状态（2026-07-19）
 
 - Worker、Go Sidecar、桌面前端、文档与 NSIS v0.4.2 已完成。
+- v0.4.2 正式热修已解除 Owner Relay WebSocket 的通用版本门禁冲突，补齐 Sidecar 握手版本头，并让 Relay 复用 Amber Cloud 的直连、系统代理、HTTP/HTTPS 与 SOCKS5 网络设置。
+- 云账户现在分别展示“共享回源已开启”和“本机回源在线”，Worker 用量日志保留 `owner_device_offline` 等真实错误码。
 - Claim 严格按“保存密钥 -> 建立禁用映射 -> 真实测试 -> 成功后启用”执行；失败状态可在收到的共享中重试，不会重复领取。
 - D1 `0006_connect_codes.sql` 与 `0007_user_events.sql` 已通过测试并应用到生产数据库。
 - Go 全套、定向 race、Rust、前端单元测试、Worker 测试、生产构建和 68 项双窗口 E2E 已通过。
-- NSIS 已生成到 `src-tauri/target/release/bundle/nsis/Amber_0.4.2_x64-setup.exe`，SHA-256 为 `15816549495C888E6D0566D0C42F085260FB94A93409608899236B9C1672C869`；打包过程没有安装或卸载 Amber。
+- NSIS 已生成到 `src-tauri/target/release/bundle/nsis/Amber_0.4.2_x64-setup.exe`，SHA-256 为 `3F79AD030408F0FF092B96949986DCBDC4DBC8060995408EBDC06F8B49BB5F29`；打包过程没有安装或卸载 Amber。
 - 生产 `SHARE_CONNECT_PEPPER`、Worker、GitHub v0.4.2 Release 和最低客户端版本门禁均已发布；旧客户端返回 HTTP 426，v0.4.2 正常进入鉴权流程。
 - 隔离环境的 v0.4.1 -> v0.4.2 覆盖安装仍需在非用户生产环境执行；禁止用当前已安装 Amber 做该测试。
 

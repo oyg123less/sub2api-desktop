@@ -54,6 +54,13 @@ func TestSelectedCloudProxyIsSanitizedAndFailsClosedAfterDeletion(t *testing.T) 
 	if settings.ProxyName != proxy.Name || settings.ProxyType != string(proxy.Type) || settings.EffectiveFrom != "amber_proxy" {
 		t.Fatalf("unexpected sanitized settings: %#v", settings)
 	}
+	relayProxy, err := manager.relayProxyURL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relayProxy.Scheme != "socks5" || relayProxy.Host != "127.0.0.1:1080" {
+		t.Fatalf("unexpected relay proxy: %s", relayProxy)
+	}
 	if err := st.DeleteProxy(proxy.ID); err != nil {
 		t.Fatal(err)
 	}

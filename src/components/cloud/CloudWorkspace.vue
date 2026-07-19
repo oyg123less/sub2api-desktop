@@ -56,6 +56,7 @@ let eventCursor = 0;
 let eventPollTimer: ReturnType<typeof setTimeout> | undefined;
 let eventPolling = false;
 let eventPollingActive = false;
+let relayPollTick = 0;
 
 const addFriendOpen = ref(false);
 const friendCodeInput = ref("");
@@ -223,6 +224,13 @@ async function refreshConnectSections() {
   persistCurrentWorkspace();
 }
 
+async function refreshRelayState() {
+  const state = await api.cloudDevices();
+  devices.value = state.devices || [];
+  relayEnabled.value = Boolean(state.relay_enabled);
+  persistCurrentWorkspace();
+}
+
 function scheduleEventPoll() {
   if (!eventPollingActive) return;
   clearTimeout(eventPollTimer);
@@ -245,6 +253,11 @@ async function pollConnectEvents() {
       if (!response.has_more) break;
     }
     if (changed) await refreshConnectSections();
+    relayPollTick += 1;
+    if (relayPollTick >= 3) {
+      relayPollTick = 0;
+      await refreshRelayState();
+    }
   } catch {
     // The normal cloud status surface reports network errors; polling stays quiet.
   } finally {
@@ -721,7 +734,8 @@ watch(detailTab, (current) => {
         </div>
       </div>
       <div class="workspace-actions">
-        <span class="relay-state" :class="onlineDevices.length ? 'online' : 'offline'"><i></i>{{ onlineDevices.length ? t("cloud.v4.relayOnline") : t("cloud.v4.relayOffline") }}</span>
+        <span class="relay-state" :class="relayEnabled ? 'enabled' : 'disabled'"><i></i>{{ t(relayEnabled ? "cloud.v4.relayEnabled" : "cloud.v4.relayDisabled") }}</span>
+        <span class="relay-state" :class="onlineDevices.length ? 'online' : 'offline'" aria-live="polite"><i></i>{{ onlineDevices.length ? t("cloud.v4.relayOnline") : t("cloud.v4.relayOffline") }}</span>
         <button class="btn btn-ghost" data-test="cloud-sync" type="button" :disabled="busy !== ''" @click="emit('sync')"><Icon name="refresh" :size="14" />{{ busy === "sync" ? t("cloud.syncing") : t("cloud.syncNow") }}</button>
         <button v-if="status.role === 'admin'" class="btn btn-ghost" data-test="cloud-admin-open" type="button" @click="emit('admin')"><Icon name="settings" :size="14" />{{ t("cloud.adminOpen") }}</button>
         <button class="btn btn-ghost icon-only" data-test="cloud-logout" type="button" :title="t('cloud.logout')" :disabled="busy !== ''" @click="logoutWorkspace"><Icon name="power" :size="16" /></button>
@@ -921,6 +935,7 @@ watch(detailTab, (current) => {
 .icon-only { width: 36px; padding: 0; }
 .relay-state { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: 12px; }
 .relay-state i { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); }
+.relay-state.enabled i { background: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
 .relay-state.online i { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
 .workspace-tabs { display: flex; gap: 2px; overflow-x: auto; border-bottom: 1px solid var(--border); }
 .workspace-tabs button { position: relative; min-width: max-content; min-height: 42px; display: inline-flex; align-items: center; gap: 7px; padding: 0 14px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--text-dim); font-weight: 600; cursor: pointer; }

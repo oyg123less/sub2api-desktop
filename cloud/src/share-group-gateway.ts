@@ -234,6 +234,16 @@ async function copyWithCompletion(response: Response, onComplete: () => Promise<
   return new Response(stream, { status: response.status, statusText: response.statusText, headers: response.headers });
 }
 
+async function responseErrorCode(response: Response): Promise<string | null> {
+  if (response.status < 400) return null;
+  try {
+    const payload = await response.clone().json<{ error?: { code?: unknown } }>();
+    return typeof payload.error?.code === "string" && payload.error.code ? payload.error.code : "request_failed";
+  } catch {
+    return "request_failed";
+  }
+}
+
 export async function forwardGroupShare(c: Context<AppEnv>, guestKey: string): Promise<Response> {
   if (!guestKey.startsWith("sk-amber-") || guestKey.length > 256) throw new AppError(401, "share_access_revoked", "The access key is invalid or has been revoked.");
   const contentLength = Number(c.req.header("content-length") || 0);
@@ -271,10 +281,11 @@ export async function forwardGroupShare(c: Context<AppEnv>, guestKey: string): P
   response ||= errorResponse(c, 503, "share_no_eligible_account", "The share group has no available accounts.");
   const settlement = response.status < 400 ? "settled" : "released";
   await finishReservation(c, reservationID, settlement);
+  const errorCode = await responseErrorCode(response);
   c.executionCtx.waitUntil(c.env.DB.prepare(`INSERT INTO share_usage_log_v2
     (request_id,group_id,recipient_grant_id,group_account_id,route_mode,model,status,error_code,latency_ms,created_at)
     VALUES(?,?,?,?,?,?,?,?,?,?)`).bind(requestID, grant.group_id, grant.recipient_id, selected?.id ?? null,
-      selected?.relay_mode ?? "owner_device", requestModel(body), response.status, response.status >= 400 ? "request_failed" : null,
+      selected?.relay_mode ?? "owner_device", requestModel(body), response.status, errorCode,
       Date.now() - started, new Date().toISOString()).run());
   return copyWithCompletion(response, () => releaseAccess(accessStub, ticket));
 }

@@ -167,7 +167,11 @@ func (m *Manager) connectRelay(ctx context.Context, identity store.CloudIdentity
 	config.Header.Set("X-Amber-Device-Challenge", challenge.Challenge)
 	config.Header.Set("X-Amber-Device-Challenge-Expires", challenge.ExpiresAt)
 	config.Header.Set("X-Amber-Device-Proof", proof)
-	conn, err := websocket.DialConfig(config)
+	proxyURL, err := m.relayProxyURL()
+	if err != nil {
+		return err
+	}
+	conn, err := dialRelayWebSocket(ctx, config, proxyURL)
 	if err != nil {
 		return err
 	}

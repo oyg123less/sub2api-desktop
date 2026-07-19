@@ -72,7 +72,9 @@ func (m *Manager) setNetworkInfo(info NetworkInfo) {
 }
 
 func (m *Manager) ReloadNetworkSettings() error {
-	return m.restoreNetworkClient()
+	err := m.restoreNetworkClient()
+	m.closeRelaySession()
+	return err
 }
 
 func (m *Manager) buildNetworkClient(value store.CloudConnectionSettings) (*http.Client, NetworkInfo, error) {
@@ -126,6 +128,7 @@ func (m *Manager) UpdateNetworkSettings(value store.CloudConnectionSettings) (Ne
 		m.nextRetryAt = time.Time{}
 	}
 	m.mu.Unlock()
+	m.closeRelaySession()
 	return m.NetworkSettings()
 }
 

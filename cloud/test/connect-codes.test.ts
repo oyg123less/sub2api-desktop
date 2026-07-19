@@ -85,6 +85,15 @@ describe("connection-code sharing", () => {
     const firstResponse = await claim(first, 101, firstKey, "connect-claim-first-001");
     expect(firstResponse.status).toBe(201);
     expect((await firstResponse.json<{ share: { status: string } }>()).share.status).toBe("active");
+    const offline = await SELF.fetch("https://amber.test/v1/responses", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${firstKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6", input: "health check" }),
+    });
+    expect(offline.status).toBe(503);
+    await expect(offline.json()).resolves.toMatchObject({ error: { code: "owner_device_offline" } });
+    const usage = await env.DB.prepare("SELECT error_code FROM share_usage_log_v2 ORDER BY id DESC LIMIT 1").first<{ error_code: string }>();
+    expect(usage?.error_code).toBe("owner_device_offline");
     const secondResponse = await claim(second, 121, secondKey, "connect-claim-second-001");
     expect(secondResponse.status).toBe(201);
 
@@ -153,5 +162,14 @@ describe("connection-code sharing", () => {
       headers: { ...user.headers, "X-Amber-Client-Version": "0.4.2" },
     });
     expect(current.status).toBe(200);
+  });
+
+  it("lets an unversioned owner relay reach relay authentication", async () => {
+    await env.DB.prepare("UPDATE platform_settings SET value='true' WHERE key='enforce_client_version'").run();
+    const response = await SELF.fetch("https://amber.test/v1/relay/connect?device_id=dev_missing&protocol=1", {
+      headers: { Upgrade: "websocket" },
+    });
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "authentication_required" } });
   });
 });
