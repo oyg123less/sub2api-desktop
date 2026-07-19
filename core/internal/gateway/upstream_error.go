@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -18,6 +19,13 @@ func classifyUpstreamHTTPError(status int, header http.Header, message string, a
 		message = "upstream returned an error"
 	}
 	lower := strings.ToLower(message)
+	code, publicMessage := structuredUpstreamError(message)
+	if code == "share_access_revoked" {
+		return forwardResult{
+			outcome: outcomeAuthFailed, status: status, errMsg: publicMessage,
+			errorKind: code, terminalEvent: "share_access_revoked",
+		}
+	}
 
 	if status == http.StatusTooManyRequests || (status == http.StatusForbidden && isQuotaFailure(lower)) {
 		reason := statusReasonTransientRateLimit
@@ -53,6 +61,22 @@ func classifyUpstreamHTTPError(status int, header http.Header, message string, a
 		outcome: outcomeUpstreamError, status: status, errMsg: message, retryable: retryable,
 		errorKind: kind, terminalEvent: "http_error",
 	}
+}
+
+func structuredUpstreamError(message string) (string, string) {
+	var payload struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(message), &payload) != nil || payload.Error.Code == "" {
+		return "", message
+	}
+	if strings.TrimSpace(payload.Error.Message) == "" {
+		payload.Error.Message = message
+	}
+	return payload.Error.Code, payload.Error.Message
 }
 
 func isQuotaFailure(message string) bool {

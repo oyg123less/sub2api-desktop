@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+const e2eOrigin = `http://127.0.0.1:${process.env.AMBER_E2E_PORT || "4173"}`;
+
 test("loads the operational desktop shell without horizontal overflow", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator("#app")).toBeVisible();
@@ -16,7 +18,7 @@ test("exposes model and statistics navigation without a standalone diagnostics r
 });
 
 test("persists manual dark mode, copies the version, and respects reduced motion", async ({ page, context }, testInfo) => {
-  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://127.0.0.1:4173" });
+  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: e2eOrigin });
   await page.addInitScript(() => {
     localStorage.setItem("s2a_theme", "light");
     localStorage.setItem("s2a_lang", "en");

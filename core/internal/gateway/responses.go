@@ -118,19 +118,19 @@ func (e *Engine) Responses(w http.ResponseWriter, r *http.Request) {
 		release()
 		switch result.outcome {
 		case outcomeSuccess:
-			_ = e.store.RecordAccountSuccess(acc.ID)
+			e.recordAccountSuccessFor(acc)
 			return
 		case outcomeRateLimited:
 			retry := result.retryAfter
 			if retry <= 0 {
 				retry = 30 * time.Second
 			}
-			_ = e.store.SetRateLimited(acc.ID, time.Now().Add(retry), result.statusReason)
+			e.recordAccountRateLimitFor(acc, time.Now().Add(retry), result.statusReason)
 			lastErr = result.errMsg
 			lastStatus = 0
 			continue
 		case outcomeAuthFailed:
-			e.recordAccountAuthFailure(acc.ID, result.errMsg)
+			e.recordAccountAuthFailureFor(acc, result.errMsg, result.errorKind)
 			lastErr = result.errMsg
 			lastStatus = 0
 			continue

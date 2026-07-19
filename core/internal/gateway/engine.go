@@ -208,7 +208,7 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		release()
 		switch result.outcome {
 		case outcomeSuccess:
-			_ = e.store.RecordAccountSuccess(acc.ID)
+			e.recordAccountSuccessFor(acc)
 			return
 		case outcomeRateLimited:
 			retry := result.retryAfter
@@ -216,12 +216,12 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				retry = 30 * time.Second
 			}
 			until := time.Now().Add(retry)
-			_ = e.store.SetRateLimited(acc.ID, until, result.statusReason)
+			e.recordAccountRateLimitFor(acc, until, result.statusReason)
 			lastErr = result.errMsg
 			lastStatus = 0
 			continue // try next account
 		case outcomeAuthFailed:
-			e.recordAccountAuthFailure(acc.ID, result.errMsg)
+			e.recordAccountAuthFailureFor(acc, result.errMsg, result.errorKind)
 			lastErr = result.errMsg
 			lastStatus = 0
 			continue
@@ -501,6 +501,75 @@ func (e *Engine) recordAccountAuthFailure(accountID int64, message string) {
 		return
 	}
 	_ = e.store.RecordAccountFailure(accountID, message)
+}
+
+func (e *Engine) recordAccountAuthFailureFor(account *store.Account, message, errorKind string) {
+	if account == nil {
+		return
+	}
+	if account.Source == "cloud_share" && account.CloudUserID > 0 && account.CloudGrantID != "" {
+		reason := strings.TrimSpace(errorKind)
+		if reason == "" {
+			reason = message
+		}
+		_ = e.store.SetCloudReceivedAccountHealth(account.CloudUserID, account.CloudGrantID, false, false, reason)
+		return
+	}
+	if errorKind == "share_access_revoked" {
+		_ = e.store.SetAccountStatus(account.ID, store.AccountDisabled, "share_access_revoked")
+		return
+	}
+	e.recordAccountAuthFailure(account.ID, message)
+}
+
+func (e *Engine) recordAccountSuccessFor(account *store.Account) {
+	if account == nil {
+		return
+	}
+	if account.Source == "cloud_share" && account.CloudUserID > 0 && account.CloudGrantID != "" {
+		_ = e.store.UpdateCloudReceivedAccountHealth(account.CloudUserID, account.CloudGrantID, true, "")
+		return
+	}
+	_ = e.store.RecordAccountSuccess(account.ID)
+}
+
+func (e *Engine) recordAccountTestSuccessFor(account *store.Account) {
+	if account == nil {
+		return
+	}
+	if account.Source == "cloud_share" && account.CloudUserID > 0 && account.CloudGrantID != "" {
+		_ = e.store.UpdateCloudReceivedAccountHealth(account.CloudUserID, account.CloudGrantID, true, "")
+		return
+	}
+	_ = e.store.RecordAccountTestSuccess(account.ID)
+}
+
+func (e *Engine) recordAccountRateLimitFor(account *store.Account, until time.Time, reason string) {
+	if account == nil {
+		return
+	}
+	if account.Source == "cloud_share" && account.CloudUserID > 0 && account.CloudGrantID != "" {
+		_ = e.store.UpdateCloudReceivedAccountHealth(account.CloudUserID, account.CloudGrantID, false, reason)
+		return
+	}
+	_ = e.store.SetRateLimited(account.ID, until, reason)
+}
+
+func (e *Engine) currentAccountState(account *store.Account) *store.Account {
+	if account == nil {
+		return nil
+	}
+	var updated *store.Account
+	var err error
+	if account.Source == "cloud_share" {
+		updated, err = e.store.GetCloudReceivedAccount(account.ID)
+	} else {
+		updated, err = e.store.GetAccount(account.ID)
+	}
+	if err != nil {
+		return account
+	}
+	return updated
 }
 
 func isSevereAccountFailure(message string) bool {

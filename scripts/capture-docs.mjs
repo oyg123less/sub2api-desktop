@@ -219,7 +219,7 @@ async function handleControlRoute(route) {
   const pathname = new URL(request.url()).pathname;
 
   if (pathname === "/control/status") {
-    return json(route, { version: "0.4.2", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "http://127.0.0.1:8080/v1", lan_addresses: [], local_api_key: settings.local_api_key, account_count: accounts.length, schema_version: 14 });
+    return json(route, { version: "0.4.3", server_running: true, port: 8080, host: "127.0.0.1", endpoint: "http://127.0.0.1:8080/v1", lan_addresses: [], local_api_key: settings.local_api_key, account_count: accounts.length, schema_version: 14 });
   }
   if (pathname === "/control/settings") return json(route, settings);
   if (pathname === "/control/accounts" && request.method() === "GET") {

@@ -248,7 +248,7 @@ func (c *Control) cloudV2ReceivedShareAction(w http.ResponseWriter, r *http.Requ
 
 func (c *Control) cloudV2ReceivedShareTest(w http.ResponseWriter, r *http.Request) {
 	c.withCloudV2(w, r, 45*time.Second, func(ctx context.Context) (any, error) {
-		return c.cloud.TestReceivedShare(ctx, r.PathValue("id"))
+		return c.cloud.TestReceivedShare(ctx, r.PathValue("id"), "")
 	})
 }
 

@@ -81,9 +81,7 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 		} else {
 			res.ErrorKind = "authentication"
 		}
-		if updated, getErr := e.store.GetAccount(acc.ID); getErr == nil {
-			res.AccountStatus = string(updated.Status)
-		}
+		res.AccountStatus = string(e.currentAccountState(acc).Status)
 		e.logRequest(acc, testModel, http.StatusUnauthorized, 0, 0, time.Since(start), true, res.Error)
 		return res
 	}
@@ -139,13 +137,11 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 		result := classifyUpstreamHTTPError(resp.StatusCode, resp.Header, msg, acc, usage)
 		switch result.outcome {
 		case outcomeRateLimited:
-			_ = e.store.SetRateLimited(acc.ID, time.Now().Add(result.retryAfter), result.statusReason)
+			e.recordAccountRateLimitFor(acc, time.Now().Add(result.retryAfter), result.statusReason)
 		case outcomeAuthFailed:
-			e.recordAccountAuthFailure(acc.ID, msg)
+			e.recordAccountAuthFailureFor(acc, result.errMsg, result.errorKind)
 		}
-		if updated, getErr := e.store.GetAccount(acc.ID); getErr == nil {
-			res.AccountStatus = string(updated.Status)
-		}
+		res.AccountStatus = string(e.currentAccountState(acc).Status)
 		res.Error = result.errMsg
 		res.ErrorKind = result.errorKind
 		res.LatencyMS = time.Since(start).Milliseconds()
@@ -188,12 +184,12 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 	}
 
 	prompt2, completion := usageCounts(state.Usage)
-	_ = e.store.TouchAccount(acc.ID)
-	_ = e.store.RecordAccountTestSuccess(acc.ID)
-	res.OK = true
-	if updated, getErr := e.store.GetAccount(acc.ID); getErr == nil {
-		res.AccountStatus = string(updated.Status)
+	if acc.Source != "cloud_share" {
+		_ = e.store.TouchAccount(acc.ID)
 	}
+	e.recordAccountTestSuccessFor(acc)
+	res.OK = true
+	res.AccountStatus = string(e.currentAccountState(acc).Status)
 	res.PromptTokens = prompt2
 	res.CompletionTokens = completion
 	res.TotalTokens = prompt2 + completion

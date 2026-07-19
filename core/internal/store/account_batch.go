@@ -154,10 +154,16 @@ func (s *Store) SetAllAccountsProxy(proxyID *int64) (result BatchProxyResult, re
 			return result, ErrNotFound
 		}
 	}
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM accounts`).Scan(&result.Matched); err != nil {
+	if err := tx.QueryRow(`SELECT
+		(SELECT COUNT(*) FROM accounts) +
+		(SELECT COUNT(*) FROM cloud_received_account_links l
+		 JOIN cloud_received_keys k ON k.user_id=l.user_id AND k.grant_public_id=l.grant_public_id
+		 JOIN cloud_session cs ON cs.user_id=l.user_id
+		 WHERE l.remote_status IN ('active','paused'))`).Scan(&result.Matched); err != nil {
 		return result, err
 	}
-	updateResult, err := tx.Exec(`UPDATE accounts SET proxy_id=?,updated_at=? WHERE proxy_id IS NOT ?`, proxyID, time.Now().Unix(), proxyID)
+	now := time.Now().Unix()
+	updateResult, err := tx.Exec(`UPDATE accounts SET proxy_id=?,updated_at=? WHERE proxy_id IS NOT ?`, proxyID, now, proxyID)
 	if err != nil {
 		return result, err
 	}
@@ -166,6 +172,19 @@ func (s *Store) SetAllAccountsProxy(proxyID *int64) (result BatchProxyResult, re
 		return result, err
 	}
 	result.Updated = int(affected)
+	cloudUpdate, err := tx.Exec(`UPDATE cloud_received_account_links SET proxy_id=?,updated_at=?
+		WHERE remote_status IN ('active','paused') AND proxy_id IS NOT ?
+		AND EXISTS (SELECT 1 FROM cloud_received_keys k WHERE k.user_id=cloud_received_account_links.user_id
+			AND k.grant_public_id=cloud_received_account_links.grant_public_id)
+		AND EXISTS (SELECT 1 FROM cloud_session cs WHERE cs.user_id=cloud_received_account_links.user_id)`, proxyID, now, proxyID)
+	if err != nil {
+		return result, err
+	}
+	cloudAffected, err := cloudUpdate.RowsAffected()
+	if err != nil {
+		return result, err
+	}
+	result.Updated += int(cloudAffected)
 	result.Unchanged = result.Matched - result.Updated
 	result.ProxyID = proxyID
 	if err := tx.Commit(); err != nil {
@@ -176,7 +195,14 @@ func (s *Store) SetAllAccountsProxy(proxyID *int64) (result BatchProxyResult, re
 
 func (s *Store) AccountProxySummary() (AccountProxySummary, error) {
 	result := AccountProxySummary{Bindings: make([]ProxyBindingCount, 0)}
-	rows, err := s.db.Query(`SELECT proxy_id,COUNT(*) FROM accounts GROUP BY proxy_id ORDER BY proxy_id`)
+	rows, err := s.db.Query(`SELECT proxy_id,COUNT(*) FROM (
+		SELECT proxy_id FROM accounts
+		UNION ALL
+		SELECT l.proxy_id FROM cloud_received_account_links l
+		JOIN cloud_received_keys k ON k.user_id=l.user_id AND k.grant_public_id=l.grant_public_id
+		JOIN cloud_session cs ON cs.user_id=l.user_id
+		WHERE l.remote_status IN ('active','paused')
+	) GROUP BY proxy_id ORDER BY proxy_id`)
 	if err != nil {
 		return result, err
 	}

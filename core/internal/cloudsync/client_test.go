@@ -51,10 +51,10 @@ func TestCloudClientRetriesSafeReads(t *testing.T) {
 
 func TestCloudClientSendsVersionAndPreservesUpgradeDetails(t *testing.T) {
 	client, err := newCloudClient("https://cloud.example", &http.Client{Transport: cloudRoundTripFunc(func(request *http.Request) (*http.Response, error) {
-		if request.Header.Get("User-Agent") != "Amber/0.4.2" || request.Header.Get("X-Amber-Client-Version") != "0.4.2" {
-			t.Fatalf("missing v0.4.2 client headers: %#v", request.Header)
+		if request.Header.Get("User-Agent") != "Amber/0.4.3" || request.Header.Get("X-Amber-Client-Version") != "0.4.3" {
+			t.Fatalf("missing v0.4.3 client headers: %#v", request.Header)
 		}
-		return cloudJSONResponse(http.StatusUpgradeRequired, `{"error":{"code":"client_upgrade_required","message":"Update required","minimum_version":"0.4.2","latest_version":"0.4.3","update_url":"https://example.test/releases/latest"}}`), nil
+		return cloudJSONResponse(http.StatusUpgradeRequired, `{"error":{"code":"client_upgrade_required","message":"Update required","minimum_version":"0.4.3","latest_version":"0.4.3","update_url":"https://example.test/releases/latest"}}`), nil
 	})})
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +62,7 @@ func TestCloudClientSendsVersionAndPreservesUpgradeDetails(t *testing.T) {
 	_, err = client.getProfile(context.Background(), "access")
 	var cloudErr *CloudError
 	if !errors.As(err, &cloudErr) || cloudErr.Status != http.StatusUpgradeRequired || cloudErr.Code != "client_upgrade_required" ||
-		cloudErr.MinimumVersion != "0.4.2" || cloudErr.LatestVersion != "0.4.3" || cloudErr.UpdateURL == "" {
+		cloudErr.MinimumVersion != "0.4.3" || cloudErr.LatestVersion != "0.4.3" || cloudErr.UpdateURL == "" {
 		t.Fatalf("upgrade error metadata lost: %#v", err)
 	}
 }

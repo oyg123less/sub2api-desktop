@@ -154,12 +154,12 @@ describe("connection-code sharing", () => {
     await env.DB.prepare("UPDATE platform_settings SET value='true' WHERE key='enforce_client_version'").run();
     const blocked = await SELF.fetch("https://amber.test/v1/profile", { headers: user.headers });
     expect(blocked.status).toBe(426);
-    expect(blocked.headers.get("X-Amber-Minimum-Version")).toBe("0.4.2");
+    expect(blocked.headers.get("X-Amber-Minimum-Version")).toBe("0.4.3");
     await expect(blocked.json()).resolves.toMatchObject({
-      error: { code: "client_upgrade_required", minimum_version: "0.4.2", update_url: expect.stringContaining("releases") },
+      error: { code: "client_upgrade_required", minimum_version: "0.4.3", update_url: expect.stringContaining("releases") },
     });
     const current = await SELF.fetch("https://amber.test/v1/profile", {
-      headers: { ...user.headers, "X-Amber-Client-Version": "0.4.2" },
+      headers: { ...user.headers, "X-Amber-Client-Version": "0.4.3" },
     });
     expect(current.status).toBe(200);
   });

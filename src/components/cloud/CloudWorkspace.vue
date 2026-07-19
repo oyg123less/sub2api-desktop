@@ -174,8 +174,8 @@ async function refreshWorkspace(silent: boolean) {
   } catch (error) {
     if (error instanceof ControlAPIError && error.code === "client_upgrade_required") {
       upgradeRequired.value = {
-        minimum: String(error.details.minimum_version || "0.4.2"),
-        latest: String(error.details.latest_version || error.details.minimum_version || "0.4.2"),
+        minimum: String(error.details.minimum_version || "0.4.3"),
+        latest: String(error.details.latest_version || error.details.minimum_version || "0.4.3"),
         url: String(error.details.update_url || "https://github.com/oyg123less/sub2api-desktop/releases/latest"),
       };
       loadError.value = "";
@@ -657,7 +657,6 @@ async function testReceivedShare(share: CloudReceivedShare) {
     share.health_status = result.ok ? "healthy" : "needs_attention";
     share.health_message = result.message;
     share.last_checked_at = new Date().toISOString();
-    share.local_enabled = result.ok;
     persistCurrentWorkspace();
     app.toast(result.ok ? t("cloud.v4.testShareSuccess") : `${result.code || result.status}: ${result.message}`, result.ok ? "success" : "error");
   } catch (error) {

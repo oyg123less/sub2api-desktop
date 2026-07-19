@@ -377,7 +377,7 @@ const sections = computed<Section[]>(() => zh.value ? [
     <header class="page-header docs-header">
       <div>
         <h1 class="page-title">{{ zh ? "Amber 使用手册" : "Amber user guide" }}</h1>
-        <p class="page-desc">{{ zh ? "v0.4.2 · 从账号导入到连接码快速共享的完整操作说明" : "v0.4.2 · From account import to connection-code sharing" }}</p>
+        <p class="page-desc">{{ zh ? "v0.4.3 · 从账号导入到可靠云共享的完整操作说明" : "v0.4.3 · From account import to reliable cloud sharing" }}</p>
       </div>
       <div class="docs-header-actions">
         <button class="btn btn-ghost btn-sm" type="button" @click="setAllSections(true)"><Icon name="plus" :size="13" />{{ zh ? "全部展开" : "Expand all" }}</button>

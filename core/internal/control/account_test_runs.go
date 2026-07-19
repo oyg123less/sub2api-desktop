@@ -114,14 +114,19 @@ func (r *accountTestRuns) Start(scope string, requested []int64, model string) (
 	if err != nil {
 		return accountTestRunSnapshot{}, err
 	}
+	received, err := r.store.ListCloudReceivedAccounts()
+	if err != nil {
+		return accountTestRunSnapshot{}, err
+	}
+	accounts = append(accounts, received...)
 	selected := make(map[int64]struct{}, len(requested))
 	if scope == "selected" {
 		if len(requested) == 0 || len(requested) > store.MaxAccountBatchSize {
 			return accountTestRunSnapshot{}, fmt.Errorf("account_ids must contain between 1 and %d entries", store.MaxAccountBatchSize)
 		}
 		for _, id := range requested {
-			if id <= 0 {
-				return accountTestRunSnapshot{}, errors.New("account_ids must contain positive integers")
+			if id == 0 {
+				return accountTestRunSnapshot{}, errors.New("account_ids must contain non-zero integers")
 			}
 			selected[id] = struct{}{}
 		}
@@ -226,7 +231,13 @@ func (r *accountTestRuns) executeOne(ctx context.Context, run *accountTestRun, i
 		item.Status = "running"
 	}
 	r.mu.Unlock()
-	account, err := r.store.GetAccount(id)
+	var account *store.Account
+	var err error
+	if id < 0 {
+		account, err = r.store.GetCloudReceivedAccount(id)
+	} else {
+		account, err = r.store.GetAccount(id)
+	}
 	if err != nil {
 		r.mu.Lock()
 		if errors.Is(err, store.ErrNotFound) {

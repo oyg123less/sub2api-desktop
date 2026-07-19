@@ -17,6 +17,11 @@ type FixtureAccount = {
   waiting: number;
   created_at: string;
   client_uid: string;
+  source?: "cloud_share";
+  cloud_grant_id?: string;
+  cloud_owner_name?: string;
+  cloud_group_name?: string;
+  cloud_local_enabled?: boolean;
 };
 
 function account(id: number, email: string): FixtureAccount {
@@ -52,6 +57,7 @@ async function initialize(page: Page, accounts: FixtureAccount[], hooks: {
   cloudSharesError?: string;
   batchDelete?: (ids: number[]) => void;
   accountTestRun?: (method: string, path: string) => unknown;
+  accountTestPath?: (path: string) => void;
 } = {}) {
   await page.addInitScript(() => {
     localStorage.setItem("s2a_control_port", "45678");
@@ -107,9 +113,12 @@ async function initialize(page: Page, accounts: FixtureAccount[], hooks: {
       body = { auth_url: "https://auth.example.test/authorize", state: "oauth-fixture" };
     }
     if (path === "/control/oauth/poll") body = { done: false };
-    if (/^\/control\/accounts\/\d+\/test$/.test(path)) body = hooks.testResult ?? {
+    if (/^\/control\/accounts\/-?\d+\/test$/.test(path)) {
+      hooks.accountTestPath?.(path);
+      body = hooks.testResult ?? {
       ok: true, status: 200, model: "gpt-5.6", prompt_tokens: 4, completion_tokens: 2, total_tokens: 6, latency_ms: 80, account_status: "active",
-    };
+      };
+    }
     const limitsMatch = path.match(/^\/control\/accounts\/(\d+)\/limits$/);
     if (limitsMatch && request.method() === "PUT") {
       const input = request.postDataJSON() as { max_concurrency: number; queue_capacity: number };
@@ -358,6 +367,48 @@ test("tests from the account row and contains long upstream errors", async ({ pa
   await page.locator('[data-test="account-details"]').click();
   await expect(page.locator('[data-test="account-detail-modal"]')).toBeVisible();
   await expect(page.locator('[data-test="account-detail-modal"] [data-test="account-test"]')).toHaveCount(0);
+});
+
+test("manages received cloud shares as canonical accounts without stale-key actions", async ({ page }) => {
+  const managed = account(-7, "Shared workspace");
+  managed.source = "cloud_share";
+  managed.cloud_grant_id = "sgr_current";
+  managed.cloud_owner_name = "Share owner";
+  managed.cloud_group_name = "Shared workspace";
+  managed.cloud_local_enabled = true;
+  let testedPath = "";
+  await initialize(page, [managed], { accountTestPath: (path) => { testedPath = path; } });
+  await page.goto("/#/accounts");
+
+  const row = page.locator('[data-test="account-row"]');
+  await expect(row.getByText("Cloud share", { exact: true })).toBeVisible();
+  await expect(row.getByText("Shared by Share owner", { exact: true })).toBeVisible();
+  await expect(row.locator('[data-test="account-delete"]')).toHaveCount(0);
+  await expect(row.locator('[data-test="cloud-share-manage"]')).toBeVisible();
+
+  await row.locator('[data-test="account-test"]').click();
+  await page.getByRole("button", { name: "Run test" }).click();
+  await expect.poll(() => testedPath).toBe("/control/accounts/-7/test");
+  await page.getByRole("button", { name: "Close" }).click();
+
+  await page.locator(".batch-select-all input").check();
+  await expect(page.getByRole("button", { name: "Delete selected" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Test selected" })).toBeEnabled();
+
+  await row.locator('[data-test="account-details"]').click();
+  await expect(page.getByText("Concurrency, quota, and expiry are managed by the owner.", { exact: false })).toBeVisible();
+  await expect(page.getByLabel("Maximum concurrency")).toHaveCount(0);
+});
+
+test("explains revoked shared access without asking for ChatGPT re-login", async ({ page }) => {
+  const stale = account(4, "Old shared key");
+  stale.status = "disabled";
+  stale.status_reason = "share_access_revoked";
+  await initialize(page, [stale]);
+  await page.goto("/#/accounts");
+
+  await expect(page.getByText("This shared access has expired or been revoked; reconnect it from the Cloud account page", { exact: true })).toBeVisible();
+  await expect(page.getByText("Re-login needed", { exact: true })).toHaveCount(0);
 });
 
 test("submits selected proxies for API, OAuth, and JSON imports", async ({ page }) => {

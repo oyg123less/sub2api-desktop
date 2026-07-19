@@ -352,7 +352,7 @@ func (m *Manager) ClaimConnectAndUse(ctx context.Context, input ConnectClaimInpu
 	if err != nil {
 		return CloudReceivedShare{}, err
 	}
-	testResult, testErr := m.testReceivedKey(ctx, key)
+	testResult, testErr := m.testReceivedKey(ctx, key, nil, "")
 	if testErr != nil {
 		testResult = CloudShareConnectionTest{OK: false, Code: "share_test_failed", Message: testErr.Error()}
 	}

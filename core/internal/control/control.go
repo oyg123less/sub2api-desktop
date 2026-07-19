@@ -95,7 +95,7 @@ type CloudController interface {
 	ListReceivedShares(context.Context) (cloudsync.CloudReceivedSharesResponse, error)
 	AcceptReceivedShare(context.Context, string) (cloudsync.CloudReceivedShare, error)
 	ReceivedShareAction(context.Context, string, string) (cloudsync.CloudDocument, error)
-	TestReceivedShare(context.Context, string) (cloudsync.CloudShareConnectionTest, error)
+	TestReceivedShare(context.Context, string, string) (cloudsync.CloudShareConnectionTest, error)
 	ListDevices(context.Context) (cloudsync.CloudDevicesResponse, error)
 	EnsureDevice(context.Context) (cloudsync.CloudDevice, error)
 	SetRelayEnabled(context.Context, bool) error
@@ -326,6 +326,8 @@ func extractBearer(h string) string {
 
 func (c *Control) status(w http.ResponseWriter, r *http.Request) {
 	accounts, _ := c.store.ListAccounts()
+	received, _ := c.store.ListCloudReceivedAccounts()
+	accounts = append(accounts, received...)
 	cfg := c.settings.Get()
 	host := "127.0.0.1"
 	if cfg.AllowLAN {
@@ -610,6 +612,12 @@ func (c *Control) listAccounts(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	received, err := c.store.ListCloudReceivedAccounts()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	accounts = append(accounts, received...)
 	usage := c.usageByAccount()
 	for _, account := range accounts {
 		account.InFlight, account.Waiting = c.engine.AccountRuntime(account.ID)
@@ -627,6 +635,14 @@ func (c *Control) listAccountRuntime(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	received, err := c.store.ListCloudReceivedAccounts()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	for _, account := range received {
+		states = append(states, &store.AccountRuntimeState{ID: account.ID, Status: account.Status, StatusReason: account.StatusReason})
+	}
 	for _, state := range states {
 		state.InFlight, state.Waiting = c.engine.AccountRuntime(state.ID)
 	}
@@ -640,11 +656,6 @@ func (c *Control) testAccount(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	acc, err := c.store.GetAccount(id)
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "account not found"})
-		return
-	}
 	var body struct {
 		Model  string `json:"model"`
 		Prompt string `json:"prompt"`
@@ -652,6 +663,20 @@ func (c *Control) testAccount(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	ctx, cancel := context.WithTimeout(r.Context(), 100*time.Second)
 	defer cancel()
+	if id < 0 {
+		account, err := c.store.GetCloudReceivedAccount(id)
+		if err != nil {
+			writeControlError(w, http.StatusNotFound, "account_not_found", "cloud shared account not found", false, nil)
+			return
+		}
+		writeJSON(w, http.StatusOK, c.engine.TestAccount(ctx, account, body.Model, body.Prompt))
+		return
+	}
+	acc, err := c.store.GetAccount(id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "account not found"})
+		return
+	}
 	res := c.engine.TestAccount(ctx, acc, body.Model, body.Prompt)
 	writeJSON(w, http.StatusOK, res)
 }
@@ -680,6 +705,23 @@ func (c *Control) setAccountStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid status"})
 		return
 	}
+	if id < 0 {
+		account, err := c.store.GetCloudReceivedAccount(id)
+		if err != nil || c.cloud == nil {
+			writeControlError(w, http.StatusNotFound, "account_not_found", "cloud shared account not found", false, nil)
+			return
+		}
+		enabled := status == store.AccountActive
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		if _, err := c.cloud.UpdateConnectReceived(ctx, account.CloudGrantID, cloudsync.ConnectReceivedUpdate{Enabled: &enabled}); err != nil {
+			writeCloudControlError(w, err)
+			return
+		}
+		updated, _ := c.store.GetCloudReceivedAccount(id)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "account": updated})
+		return
+	}
 	reason := ""
 	if status == store.AccountDisabled {
 		reason = "manually_disabled"
@@ -695,6 +737,10 @@ func (c *Control) setAccountStatus(w http.ResponseWriter, r *http.Request) {
 func (c *Control) setAccountLimits(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
 	if !ok {
+		return
+	}
+	if id < 0 {
+		writeControlError(w, http.StatusConflict, "cloud_share_managed", "Cloud shared limits are managed by the share owner.", false, nil)
 		return
 	}
 	var body struct {
@@ -841,6 +887,10 @@ func (c *Control) deleteAccount(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if id < 0 {
+		writeControlError(w, http.StatusConflict, "cloud_share_managed", "Remove cloud shared access from the Cloud account page.", false, nil)
+		return
+	}
 	if err := c.store.DeleteAccount(id); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -946,6 +996,21 @@ func (c *Control) bindProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if id < 0 {
+		account, err := c.store.GetCloudReceivedAccount(id)
+		if err != nil || c.cloud == nil {
+			writeControlError(w, http.StatusNotFound, "account_not_found", "cloud shared account not found", false, nil)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		if _, err := c.cloud.UpdateConnectReceived(ctx, account.CloudGrantID, cloudsync.ConnectReceivedUpdate{ProxyID: body.ProxyID, SetProxy: true}); err != nil {
+			writeCloudControlError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
 	if err := c.store.SetAccountProxy(id, body.ProxyID); err != nil {

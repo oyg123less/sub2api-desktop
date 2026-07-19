@@ -100,6 +100,47 @@ func TestSetAllAccountsProxyAndSummary(t *testing.T) {
 	}
 }
 
+func TestSetAllAccountsProxyIncludesManagedCloudShares(t *testing.T) {
+	st := openCloudTestStore(t)
+	createBatchTestAccount(t, st, "local", "sk-local")
+	proxy, err := st.CreateProxy(&Proxy{Name: "relay", Type: ProxySOCKS5, Host: "127.0.0.1", Port: 1080})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveCloudSession(CloudSession{
+		UserID: 9, Email: "recipient@example.test", Role: "user", SaltKDF: "kdf", SaltAuth: "auth",
+		WrappedVaultKey: "wrapped", VaultKey: "vault-key", RefreshToken: "refresh",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveCloudReceivedKey(CloudReceivedKey{
+		UserID: 9, GrantPublicID: "sgr_proxy", KeyVersion: 1, KeyPrefix: "sk-amber-proxy",
+		BaseURL: "https://cloud.example.test/v1", GuestKey: "sk-amber-proxy-secret",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveCloudReceivedAccountLink(CloudReceivedAccountLink{
+		UserID: 9, GrantPublicID: "sgr_proxy", OwnerName: "Owner", GroupName: "Shared",
+		RemoteStatus: "active", Enabled: true, RPMLimit: 30, ConcurrencyLimit: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := st.SetAllAccountsProxy(&proxy.ID)
+	if err != nil || result.Matched != 2 || result.Updated != 2 || result.Unchanged != 0 {
+		t.Fatalf("global proxy result = %#v, err = %v", result, err)
+	}
+	managed, err := st.GetCloudReceivedAccountByGrant(9, "sgr_proxy")
+	if err != nil || managed.ProxyID == nil || *managed.ProxyID != proxy.ID {
+		t.Fatalf("managed cloud proxy was not updated: %#v, err = %v", managed, err)
+	}
+	summary, err := st.AccountProxySummary()
+	if err != nil || summary.Total != 2 || summary.Bound != 2 || summary.Mixed ||
+		summary.UniformProxyID == nil || *summary.UniformProxyID != proxy.ID {
+		t.Fatalf("proxy summary omitted managed cloud account: %#v, err = %v", summary, err)
+	}
+}
+
 func TestCloudConnectionSettingsAreDeviceLocalAndValidated(t *testing.T) {
 	st := openCloudTestStore(t)
 	initial, err := st.CloudConnectionSettings()

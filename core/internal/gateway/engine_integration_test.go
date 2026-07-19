@@ -306,6 +306,73 @@ func TestAPIKeyAccountUsesBaseURLWithoutOAuthRefresh(t *testing.T) {
 	}
 }
 
+func TestManagedCloudShareTestUsesCurrentKeyAndDisablesRevokedAccess(t *testing.T) {
+	revoked := false
+	var authorization string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization = r.Header.Get("Authorization")
+		if revoked {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"error":{"code":"share_access_revoked","message":"The shared access was revoked."}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp_share","status":"completed","model":"gpt-5.6","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	st := newTestStore(t)
+	if err := st.SaveCloudSession(store.CloudSession{
+		UserID: 15, Email: "recipient@example.test", Role: "user", SaltKDF: "kdf", SaltAuth: "auth",
+		WrappedVaultKey: "wrapped", VaultKey: "vault-key", RefreshToken: "refresh",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveCloudReceivedKey(store.CloudReceivedKey{
+		UserID: 15, GrantPublicID: "sgr_engine", KeyVersion: 1, KeyPrefix: "sk-amber-old",
+		BaseURL: upstream.URL + "/v1", GuestKey: "sk-amber-old-secret",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveCloudReceivedAccountLink(store.CloudReceivedAccountLink{
+		UserID: 15, GrantPublicID: "sgr_engine", OwnerName: "Owner", GroupName: "Shared",
+		RemoteStatus: "active", Enabled: true, RPMLimit: 20, ConcurrencyLimit: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveCloudReceivedKey(store.CloudReceivedKey{
+		UserID: 15, GrantPublicID: "sgr_engine", KeyVersion: 2, KeyPrefix: "sk-amber-current",
+		BaseURL: upstream.URL + "/v1", GuestKey: "sk-amber-current-secret",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	accounts, err := st.ListActiveCloudReceivedAccounts()
+	if err != nil || len(accounts) != 1 {
+		t.Fatalf("managed accounts = %#v, err = %v", accounts, err)
+	}
+	engine := gateway.New(st, account.NewManager(st), func() store.Settings { settings, _ := st.LoadSettings(); return settings }, nil)
+
+	result := engine.TestAccount(t.Context(), accounts[0], "gpt-5.6", "hi")
+	if !result.OK || result.AccountStatus != string(store.AccountActive) || authorization != "Bearer sk-amber-current-secret" {
+		t.Fatalf("current managed share test = %#v, authorization = %q", result, authorization)
+	}
+	current, err := st.GetCloudReceivedAccount(accounts[0].ID)
+	if err != nil || current.Status != store.AccountActive || current.LastSuccessAt == nil {
+		t.Fatalf("successful managed share health = %#v, err = %v", current, err)
+	}
+
+	revoked = true
+	result = engine.TestAccount(t.Context(), current, "gpt-5.6", "hi")
+	if result.OK || result.ErrorKind != "share_access_revoked" || result.AccountStatus != string(store.AccountDisabled) {
+		t.Fatalf("revoked managed share test = %#v", result)
+	}
+	disabled, err := st.GetCloudReceivedAccount(current.ID)
+	if err != nil || disabled.Status != store.AccountDisabled || disabled.StatusReason != "share_access_revoked" {
+		t.Fatalf("revoked managed share state = %#v, err = %v", disabled, err)
+	}
+}
+
 func TestChatStreamingFailureEmitsErrorWithoutDone(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

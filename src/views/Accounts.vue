@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
+import { useRouter } from "vue-router";
 import Icon from "../components/Icon.vue";
 import ConfirmModal from "../components/ConfirmModal.vue";
 import EmptyState from "../components/EmptyState.vue";
@@ -25,6 +26,7 @@ import { openUrl } from "../platform";
 
 const { t } = useI18n();
 const app = useAppStore();
+const router = useRouter();
 
 const accounts = ref<Account[]>([]);
 const usage = ref<Record<string, AccountUsage>>({});
@@ -135,6 +137,7 @@ const pageEnd = computed(() => Math.min(currentPage.value * accountsPerPage, acc
 const allAccountsSelected = computed(() => pagedAccounts.value.length > 0 && pagedAccounts.value.every((account) => selectedAccountIDs.value.has(account.id)));
 const someAccountsSelected = computed(() => pagedAccounts.value.some((account) => selectedAccountIDs.value.has(account.id)) && !allAccountsSelected.value);
 const batchTestTargetCount = computed(() => selectedAccountIDs.value.size || accounts.value.length);
+const selectedHasCloudShare = computed(() => accounts.value.some((account) => selectedAccountIDs.value.has(account.id) && account.source === "cloud_share"));
 const filteredBatchResults = computed(() => {
   const rows = batchTestRun.value?.results || [];
   if (batchTestFilter.value === "succeeded") return rows.filter((row) => row.status === "succeeded");
@@ -480,6 +483,11 @@ function openDetails(account: Account) {
 	limitsQueueCapacity.value = account.queue_capacity ?? 20;
 }
 
+function manageCloudShare() {
+	detailTarget.value = null;
+	void router.push("/cloud");
+}
+
 function closeDetails() {
 	if (limitsSaving.value) return;
 	detailTarget.value = null;
@@ -497,6 +505,10 @@ async function toggleAccount(account: Account, enabled: boolean) {
 	} finally {
 		accountToggling.value[account.id] = false;
 	}
+}
+
+function accountRoutingEnabled(account: Account) {
+	return account.source === "cloud_share" ? Boolean(account.cloud_local_enabled) : account.status !== "disabled";
 }
 
 async function saveAccountLimits() {
@@ -579,7 +591,7 @@ function cancelLogin() {
 }
 
 async function confirmDelete() {
-  if (!deleteTarget.value) return;
+  if (!deleteTarget.value || deleteTarget.value.source === "cloud_share") return;
   try {
     await api.deleteAccount(deleteTarget.value.id);
 		if (detailTarget.value?.id === deleteTarget.value.id) detailTarget.value = null;
@@ -751,7 +763,7 @@ function accountStatusReason(account: Account) {
 			? t("accounts.statusReason.transient_rate_limit_until", { time: fmtReset(seconds) })
 			: t("accounts.statusReason.transient_rate_limit");
 	}
-	if (["manually_disabled", "auto_disabled_auth_failures", "auto_disabled_account_inactive", "transient_rate_limit", "quota_exhausted"].includes(account.status_reason)) {
+	if (["manually_disabled", "auto_disabled_auth_failures", "auto_disabled_account_inactive", "transient_rate_limit", "quota_exhausted", "share_access_revoked", "cloud_share_disabled", "cloud_share_paused"].includes(account.status_reason)) {
 		return t(`accounts.statusReason.${account.status_reason}`);
 	}
 	return account.status_reason;
@@ -815,7 +827,7 @@ onUnmounted(() => {
         </label>
         <div v-if="selectedAccountIDs.size" class="batch-actions">
           <button class="btn btn-ghost btn-sm" :disabled="batchTestRun?.status === 'running'" @click="openBatchTest"><Icon name="activity" :size="14" />{{ t("accounts.testSelected") }}</button>
-          <button class="btn btn-danger btn-sm" :disabled="batchDeleting" @click="batchDeleteOpen = true"><Icon name="trash" :size="14" />{{ t("accounts.deleteSelected") }}</button>
+          <button class="btn btn-danger btn-sm" :disabled="batchDeleting || selectedHasCloudShare" :title="selectedHasCloudShare ? t('accounts.cloudManagedDelete') : ''" @click="batchDeleteOpen = true"><Icon name="trash" :size="14" />{{ t("accounts.deleteSelected") }}</button>
         </div>
       </div>
       <div class="account-list" data-test="account-list">
@@ -828,9 +840,9 @@ onUnmounted(() => {
           <div class="account-name-wrap">
             <strong :title="a.email || t('common.unknown')">{{ a.email || t("common.unknown") }}</strong>
             <div class="account-subline">
-              <span class="badge badge-neutral">{{ t(`accounts.accountType.${a.account_type}`) }}</span>
-              <span class="account-subtitle" :title="a.account_type === 'api_key' ? a.base_url : (a.plan_type || 'ChatGPT')">
-                {{ a.account_type === "api_key" ? a.base_url : (a.plan_type || "ChatGPT") }}
+              <span class="badge" :class="a.source === 'cloud_share' ? 'badge-success' : 'badge-neutral'">{{ a.source === "cloud_share" ? t("accounts.cloudShare") : t(`accounts.accountType.${a.account_type}`) }}</span>
+              <span class="account-subtitle" :title="a.source === 'cloud_share' ? t('accounts.cloudSharedBy', { name: a.cloud_owner_name || a.email }) : a.account_type === 'api_key' ? a.base_url : (a.plan_type || 'ChatGPT')">
+                {{ a.source === "cloud_share" ? t("accounts.cloudSharedBy", { name: a.cloud_owner_name || a.email }) : a.account_type === "api_key" ? a.base_url : (a.plan_type || "ChatGPT") }}
               </span>
             </div>
             <div class="account-load-inline">
@@ -860,11 +872,11 @@ onUnmounted(() => {
           <div><span>{{ t("accounts.estCost") }}</span><strong class="mono">{{ fmtCost(usage[a.id]?.cost_usd) }}</strong></div>
         </div>
         <div class="account-row-actions">
-          <label class="switch account-switch" :title="t(a.status === 'disabled' ? 'accounts.enableAccount' : 'accounts.disableAccount')">
+          <label class="switch account-switch" :title="t(accountRoutingEnabled(a) ? 'accounts.disableAccount' : 'accounts.enableAccount')">
             <input
               type="checkbox"
-              :aria-label="t(a.status === 'disabled' ? 'accounts.enableAccount' : 'accounts.disableAccount')"
-              :checked="a.status !== 'disabled'"
+              :aria-label="t(accountRoutingEnabled(a) ? 'accounts.disableAccount' : 'accounts.enableAccount')"
+              :checked="accountRoutingEnabled(a)"
               :disabled="accountToggling[a.id]"
               @change="toggleAccount(a, ($event.target as HTMLInputElement).checked)"
             />
@@ -876,7 +888,8 @@ onUnmounted(() => {
           <button class="btn btn-ghost btn-sm" data-test="account-details" :title="t('accounts.viewDetails')" :aria-label="t('accounts.viewDetails')" @click="openDetails(a)">
             <Icon name="info" :size="14" /><span class="action-label">{{ t("accounts.viewDetails") }}</span>
           </button>
-          <button class="btn btn-danger btn-sm account-delete" data-test="account-delete" :title="t('common.delete')" :aria-label="t('common.delete')" @click="deleteTarget = a"><Icon name="trash" :size="14" /></button>
+          <button v-if="a.source !== 'cloud_share'" class="btn btn-danger btn-sm account-delete" data-test="account-delete" :title="t('common.delete')" :aria-label="t('common.delete')" @click="deleteTarget = a"><Icon name="trash" :size="14" /></button>
+          <button v-else class="btn btn-ghost btn-sm" data-test="cloud-share-manage" :title="t('accounts.manageCloudShare')" :aria-label="t('accounts.manageCloudShare')" @click="manageCloudShare"><Icon name="cloud" :size="14" /></button>
         </div>
       </article>
       </div>
@@ -923,7 +936,7 @@ onUnmounted(() => {
           <div class="account-detail-head">
             <div class="account-identity">
               <div class="brand-logo account-avatar">{{ (detailTarget.email || "?").charAt(0).toUpperCase() }}</div>
-              <div class="account-name-wrap"><h3 class="modal-title">{{ detailTarget.email || t("common.unknown") }}</h3><div class="account-subline"><span class="badge badge-neutral">{{ t(`accounts.accountType.${detailTarget.account_type}`) }}</span><span class="badge" :class="statusBadge(detailTarget.status)">{{ t(`accounts.status.${detailTarget.status}`) }}</span></div></div>
+              <div class="account-name-wrap"><h3 class="modal-title">{{ detailTarget.email || t("common.unknown") }}</h3><div class="account-subline"><span class="badge badge-neutral">{{ detailTarget.source === "cloud_share" ? t("accounts.cloudShare") : t(`accounts.accountType.${detailTarget.account_type}`) }}</span><span class="badge" :class="statusBadge(detailTarget.status)">{{ t(`accounts.status.${detailTarget.status}`) }}</span></div></div>
             </div>
             <button class="btn btn-ghost btn-sm" data-test="account-detail-close" @click="closeDetails">{{ t("common.close") }}</button>
           </div>
@@ -933,7 +946,8 @@ onUnmounted(() => {
             <section class="detail-section">
               <h4>{{ t("accounts.detailIdentity") }}</h4>
               <div class="detail-grid">
-                <div><span>{{ t("accounts.plan") }}</span><strong>{{ detailTarget.plan_type || "—" }}</strong></div>
+                <div><span>{{ t("accounts.plan") }}</span><strong>{{ detailTarget.source === "cloud_share" ? t("accounts.cloudShare") : (detailTarget.plan_type || "—") }}</strong></div>
+                <div v-if="detailTarget.source === 'cloud_share'"><span>{{ t("accounts.cloudOwner") }}</span><strong>{{ detailTarget.cloud_owner_name || "—" }}</strong></div>
                 <div><span>{{ t("accounts.accountId") }}</span><strong class="mono detail-value">{{ detailTarget.chatgpt_account_id || "—" }}</strong></div>
                 <div><span>{{ t("accounts.expiresAt") }}</span><strong>{{ fmtDate(detailTarget.expires_at) }}</strong></div>
                 <div><span>{{ t("accounts.createdAt") }}</span><strong>{{ fmtDate(detailTarget.created_at) }}</strong></div>
@@ -970,16 +984,18 @@ onUnmounted(() => {
 
             <section class="detail-section">
               <div class="detail-section-head"><h4>{{ t("accounts.detailScheduling") }}</h4><span>{{ t("accounts.runtimeLoad", { active: detailTarget.in_flight ?? 0, waiting: detailTarget.waiting ?? 0 }) }}</span></div>
-              <div class="limit-grid">
+              <div v-if="detailTarget.source !== 'cloud_share'" class="limit-grid">
                 <label class="field"><span class="field-label">{{ t("accounts.maxConcurrency") }}</span><input v-model.number="limitsMaxConcurrency" class="input" type="number" min="1" max="100" /></label>
                 <label class="field"><span class="field-label">{{ t("accounts.queueCapacity") }}</span><input v-model.number="limitsQueueCapacity" class="input" type="number" min="0" max="1000" /></label>
                 <button class="btn btn-ghost" :disabled="limitsSaving" @click="saveAccountLimits"><Icon name="check" :size="14" />{{ t("common.save") }}</button>
               </div>
+              <p v-else class="inline-note"><Icon name="info" :size="15" />{{ t("accounts.cloudLimitsManaged") }}</p>
               <label class="field detail-proxy"><span class="field-label">{{ t("accounts.bindProxy") }}</span><select class="select" :value="detailTarget.proxy_id ?? ''" @change="bindProxy(detailTarget, ($event.target as HTMLSelectElement).value ? Number(($event.target as HTMLSelectElement).value) : null)"><option value="">{{ t("accounts.noProxy") }}</option><option v-for="p in proxies" :key="p.id" :value="p.id">{{ p.name }} ({{ p.type }})</option></select></label>
             </section>
 
             <div class="detail-actions">
-              <button v-if="detailTarget.status !== 'active'" class="btn btn-ghost btn-sm" :disabled="resetting[detailTarget.id]" @click="forceReset(detailTarget)"><Icon name="check" :size="14" />{{ t("accounts.forceReset") }}</button>
+              <button v-if="detailTarget.source === 'cloud_share'" class="btn btn-ghost btn-sm" @click="manageCloudShare"><Icon name="cloud" :size="14" />{{ t("accounts.manageCloudShare") }}</button>
+              <button v-else-if="detailTarget.status !== 'active'" class="btn btn-ghost btn-sm" :disabled="resetting[detailTarget.id]" @click="forceReset(detailTarget)"><Icon name="check" :size="14" />{{ t("accounts.forceReset") }}</button>
               <button v-if="detailTarget.account_type === 'oauth' && detailTarget.status === 'refresh_failed'" class="btn btn-primary btn-sm" @click="reLogin(detailTarget)"><Icon name="refresh" :size="14" />{{ t("accounts.relogin") }}</button>
               <button v-else-if="detailTarget.account_type === 'oauth'" class="btn btn-ghost btn-sm" @click="refreshToken(detailTarget)"><Icon name="refresh" :size="14" />{{ t("common.refresh") }}</button>
             </div>

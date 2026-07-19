@@ -353,6 +353,26 @@ func (s *Store) SetCloudReceivedAccountHealth(userID int64, grantPublicID string
 	return nil
 }
 
+// UpdateCloudReceivedAccountHealth records a connectivity probe without
+// changing the user's local routing preference.
+func (s *Store) UpdateCloudReceivedAccountHealth(userID int64, grantPublicID string, healthy bool, message string) error {
+	status := "needs_attention"
+	if healthy {
+		status = "healthy"
+	}
+	now := time.Now().Unix()
+	result, err := s.db.Exec(`UPDATE cloud_received_account_links SET health_status=?,health_message=?,
+		last_checked_at=?,updated_at=? WHERE user_id=? AND grant_public_id=?`, status, message, now, now,
+		userID, grantPublicID)
+	if err != nil {
+		return err
+	}
+	if count, _ := result.RowsAffected(); count != 1 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *Store) DeleteCloudReceivedAccountLink(userID int64, grantPublicID string) error {
 	_, err := s.db.Exec("DELETE FROM cloud_received_account_links WHERE user_id=? AND grant_public_id=?", userID, grantPublicID)
 	return err
@@ -397,35 +417,105 @@ func (s *Store) ListCloudReceivedAccountLinks(userID int64) ([]CloudReceivedAcco
 }
 
 func (s *Store) ListActiveCloudReceivedAccounts() ([]*Account, error) {
-	rows, err := s.db.Query(`SELECT l.id,l.grant_public_id,l.owner_name,l.group_name,l.concurrency_limit,l.proxy_id,
-		k.base_url,k.guest_key_cipher,l.created_at,l.updated_at FROM cloud_received_account_links l
-		JOIN cloud_received_keys k ON k.user_id=l.user_id AND k.grant_public_id=l.grant_public_id
-		JOIN cloud_session cs ON cs.user_id=l.user_id WHERE l.enabled=1 AND l.remote_status='active'
-		ORDER BY l.updated_at DESC,l.id DESC`)
+	accounts, err := s.ListCloudReceivedAccounts()
+	if err != nil {
+		return nil, err
+	}
+	active := accounts[:0]
+	for _, account := range accounts {
+		if account.Status == AccountActive {
+			active = append(active, account)
+		}
+	}
+	return active, nil
+}
+
+const cloudReceivedAccountSelect = `SELECT l.id,l.user_id,l.grant_public_id,l.owner_name,l.group_name,l.remote_status,
+	l.enabled,l.concurrency_limit,l.proxy_id,l.health_status,l.health_message,l.last_checked_at,
+	k.base_url,k.guest_key_cipher,l.created_at,l.updated_at FROM cloud_received_account_links l
+	JOIN cloud_received_keys k ON k.user_id=l.user_id AND k.grant_public_id=l.grant_public_id
+	JOIN cloud_session cs ON cs.user_id=l.user_id`
+
+func (s *Store) scanCloudReceivedAccount(row interface{ Scan(...any) error }) (*Account, error) {
+	var account Account
+	var id, userID, createdAt, updatedAt, lastCheckedAt int64
+	var grantID, ownerName, groupName, remoteStatus, healthStatus, healthMessage, baseURL, keyCipher string
+	var enabled, concurrency int
+	var proxyID sql.NullInt64
+	if err := row.Scan(&id, &userID, &grantID, &ownerName, &groupName, &remoteStatus, &enabled, &concurrency,
+		&proxyID, &healthStatus, &healthMessage, &lastCheckedAt, &baseURL, &keyCipher, &createdAt, &updatedAt); err != nil {
+		return nil, err
+	}
+	key, err := s.cipher.Decrypt(keyCipher)
+	if err != nil {
+		return nil, err
+	}
+	status := AccountDisabled
+	reason := "cloud_share_disabled"
+	if remoteStatus == "paused" {
+		reason = "cloud_share_paused"
+	} else if remoteStatus != "active" {
+		reason = "share_access_revoked"
+	} else if enabled != 0 {
+		status = AccountActive
+		reason = ""
+	} else if healthStatus == "needs_attention" && healthMessage != "" {
+		reason = healthMessage
+	}
+	name := groupName
+	if name == "" {
+		name = ownerName
+	}
+	account = Account{
+		ID: -id, AccountType: AccountTypeAPIKey, BaseURL: baseURL, APIKey: key, Email: name,
+		PlanType: "cloud_share", Status: status, StatusReason: reason, MaxConcurrency: max(1, concurrency),
+		QueueCapacity: DefaultAccountQueueCapacity, ClientUID: "cloud:" + grantID, CreatedAt: unixToTime(createdAt),
+		UpdatedAt: unixToTime(updatedAt), Source: "cloud_share", CloudUserID: userID, CloudGrantID: grantID,
+		CloudOwnerName: ownerName, CloudGroupName: groupName, CloudLocalEnabled: enabled != 0,
+	}
+	if proxyID.Valid {
+		value := proxyID.Int64
+		account.ProxyID = &value
+	}
+	if lastCheckedAt > 0 && healthStatus == "healthy" {
+		value := unixToTime(lastCheckedAt)
+		account.LastSuccessAt = &value
+	}
+	return &account, nil
+}
+
+func (s *Store) ListCloudReceivedAccounts() ([]*Account, error) {
+	rows, err := s.db.Query(cloudReceivedAccountSelect + ` WHERE l.remote_status IN ('active','paused') ORDER BY l.updated_at DESC,l.id DESC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var accounts []*Account
 	for rows.Next() {
-		var id, createdAt, updatedAt int64
-		var grantID, ownerName, groupName, baseURL, keyCipher string
-		var concurrency int
-		var proxyID *int64
-		if err := rows.Scan(&id, &grantID, &ownerName, &groupName, &concurrency, &proxyID, &baseURL, &keyCipher, &createdAt, &updatedAt); err != nil {
-			return nil, err
-		}
-		key, err := s.cipher.Decrypt(keyCipher)
+		account, err := s.scanCloudReceivedAccount(rows)
 		if err != nil {
 			return nil, err
 		}
-		accounts = append(accounts, &Account{
-			ID: -id, AccountType: AccountTypeAPIKey, BaseURL: baseURL, APIKey: key,
-			Email: ownerName, PlanType: "cloud_share", Status: AccountActive, ProxyID: proxyID,
-			MaxConcurrency: max(1, concurrency), QueueCapacity: DefaultAccountQueueCapacity,
-			ClientUID: "cloud:" + grantID, CreatedAt: unixToTime(createdAt), UpdatedAt: unixToTime(updatedAt),
-		})
-		_ = groupName
+		accounts = append(accounts, account)
 	}
 	return accounts, rows.Err()
+}
+
+func (s *Store) GetCloudReceivedAccount(id int64) (*Account, error) {
+	if id >= 0 {
+		return nil, ErrNotFound
+	}
+	account, err := s.scanCloudReceivedAccount(s.db.QueryRow(cloudReceivedAccountSelect+` WHERE l.id=?`, -id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return account, err
+}
+
+func (s *Store) GetCloudReceivedAccountByGrant(userID int64, grantPublicID string) (*Account, error) {
+	account, err := s.scanCloudReceivedAccount(s.db.QueryRow(cloudReceivedAccountSelect+` WHERE l.user_id=? AND l.grant_public_id=?`, userID, grantPublicID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return account, err
 }

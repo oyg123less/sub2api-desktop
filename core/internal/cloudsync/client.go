@@ -21,7 +21,7 @@ import (
 
 const (
 	maxCloudResponseBytes = 4 * 1024 * 1024
-	amberClientVersion    = "0.4.2"
+	amberClientVersion    = "0.4.3"
 	amberUserAgent        = "Amber/" + amberClientVersion
 )
 

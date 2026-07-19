@@ -142,3 +142,75 @@ func TestCloudReceivedLinkParticipatesInGatewaySchedulingWithoutBecomingALocalAc
 		t.Fatalf("disabled share remained schedulable: %#v, %v", scheduled, err)
 	}
 }
+
+func TestCloudReceivedAccountAlwaysUsesCurrentKeyAndPreservesManagedState(t *testing.T) {
+	st := openCloudTestStore(t)
+	if err := st.SaveCloudSession(CloudSession{
+		UserID: 8, Email: "recipient@example.test", Role: "user", SaltKDF: "kdf", SaltAuth: "auth",
+		WrappedVaultKey: "wrapped", VaultKey: "vault-key", RefreshToken: "refresh",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	grantID := "sgr_rotated"
+	if err := st.SaveCloudReceivedKey(CloudReceivedKey{
+		UserID: 8, GrantPublicID: grantID, KeyVersion: 1, KeyPrefix: "sk-amber-old",
+		BaseURL: "https://old.example.test/v1", GuestKey: "sk-amber-old-secret",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveCloudReceivedAccountLink(CloudReceivedAccountLink{
+		UserID: 8, GrantPublicID: grantID, OwnerName: "Owner", GroupName: "Shared workspace",
+		RemoteStatus: "active", Enabled: true, RPMLimit: 30, ConcurrencyLimit: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveCloudReceivedKey(CloudReceivedKey{
+		UserID: 8, GrantPublicID: grantID, KeyVersion: 2, KeyPrefix: "sk-amber-new",
+		BaseURL: "https://new.example.test/v1", GuestKey: "sk-amber-new-secret",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	accounts, err := st.ListCloudReceivedAccounts()
+	if err != nil || len(accounts) != 1 {
+		t.Fatalf("managed accounts = %#v, err = %v", accounts, err)
+	}
+	managed := accounts[0]
+	if managed.ID >= 0 || managed.Source != "cloud_share" || managed.CloudGrantID != grantID ||
+		managed.CloudOwnerName != "Owner" || managed.CloudGroupName != "Shared workspace" ||
+		managed.APIKey != "sk-amber-new-secret" || managed.BaseURL != "https://new.example.test/v1" ||
+		managed.Status != AccountActive || !managed.CloudLocalEnabled || managed.MaxConcurrency != 3 {
+		t.Fatalf("managed account did not use current share state: %#v", managed)
+	}
+
+	enabled := false
+	if err := st.SetCloudReceivedAccountLink(8, grantID, &enabled, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateCloudReceivedAccountHealth(8, grantID, true, "healthy"); err != nil {
+		t.Fatal(err)
+	}
+	disabled, err := st.GetCloudReceivedAccount(managed.ID)
+	if err != nil || disabled.Status != AccountDisabled || disabled.CloudLocalEnabled || disabled.StatusReason != "cloud_share_disabled" {
+		t.Fatalf("health probe changed disabled routing: %#v, err = %v", disabled, err)
+	}
+
+	enabled = true
+	if err := st.SetCloudReceivedAccountLink(8, grantID, &enabled, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveCloudReceivedAccountLink(CloudReceivedAccountLink{
+		UserID: 8, GrantPublicID: grantID, OwnerName: "Owner", GroupName: "Shared workspace",
+		RemoteStatus: "paused", Enabled: true, RPMLimit: 30, ConcurrencyLimit: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	paused, err := st.GetCloudReceivedAccount(managed.ID)
+	if err != nil || paused.Status != AccountDisabled || paused.StatusReason != "cloud_share_paused" {
+		t.Fatalf("paused share state = %#v, err = %v", paused, err)
+	}
+	active, err := st.ListActiveCloudReceivedAccounts()
+	if err != nil || len(active) != 0 {
+		t.Fatalf("paused share remained schedulable: %#v, err = %v", active, err)
+	}
+}

@@ -76,6 +76,12 @@ type Account struct {
 	ClientUID             string        `json:"client_uid"`
 	SyncVersion           int           `json:"-"`
 	SyncDirty             bool          `json:"-"`
+	Source                string        `json:"source,omitempty"`
+	CloudUserID           int64         `json:"-"`
+	CloudGrantID          string        `json:"cloud_grant_id,omitempty"`
+	CloudOwnerName        string        `json:"cloud_owner_name,omitempty"`
+	CloudGroupName        string        `json:"cloud_group_name,omitempty"`
+	CloudLocalEnabled     bool          `json:"cloud_local_enabled,omitempty"`
 }
 
 // AccountRuntimeState is the lightweight account state used by the control

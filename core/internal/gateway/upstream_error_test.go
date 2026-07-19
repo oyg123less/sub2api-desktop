@@ -38,6 +38,11 @@ func TestClassifyUpstreamHTTPError(t *testing.T) {
 			message: `{"error":{"message":"policy restriction"}}`, wantOutcome: outcomeUpstreamError,
 			wantErrorKind: "upstream_forbidden", wantRetryable: true,
 		},
+		{
+			name: "revoked Amber share is not a ChatGPT login failure", status: http.StatusUnauthorized,
+			message:     `{"error":{"code":"share_access_revoked","message":"The shared access was revoked."}}`,
+			wantOutcome: outcomeAuthFailed, wantErrorKind: "share_access_revoked",
+		},
 	}
 
 	account := &store.Account{AccountType: store.AccountTypeAPIKey}
@@ -48,6 +53,15 @@ func TestClassifyUpstreamHTTPError(t *testing.T) {
 				t.Fatalf("classification = %+v", got)
 			}
 		})
+	}
+}
+
+func TestStructuredShareErrorUsesWorkerMessage(t *testing.T) {
+	got := classifyUpstreamHTTPError(http.StatusUnauthorized, http.Header{},
+		`{"error":{"code":"share_access_revoked","message":"Current Guest Key is no longer active."}}`,
+		&store.Account{AccountType: store.AccountTypeAPIKey}, nil)
+	if got.errMsg != "Current Guest Key is no longer active." || got.terminalEvent != "share_access_revoked" {
+		t.Fatalf("structured share error = %+v", got)
 	}
 }
 

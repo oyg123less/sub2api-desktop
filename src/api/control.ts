@@ -131,6 +131,11 @@ export interface Account {
   codex_usage?: CodexUsage | null;
   created_at: string;
   client_uid: string;
+  source?: "cloud_share";
+  cloud_grant_id?: string;
+  cloud_owner_name?: string;
+  cloud_group_name?: string;
+  cloud_local_enabled?: boolean;
 }
 
 export interface Proxy {

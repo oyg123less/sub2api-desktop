@@ -23,6 +23,7 @@ func TestReceivedShareUsesCatalogDefaultTestModel(t *testing.T) {
 	var receivedStream bool
 	var receivedMaxOutputTokens *int
 	var receivedAccept string
+	var receivedAuthorization string
 	var receivedInput []struct {
 		Type    string `json:"type"`
 		Role    string `json:"role"`
@@ -37,6 +38,7 @@ func TestReceivedShareUsesCatalogDefaultTestModel(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"access_token":"access","access_expires_in":900,"refresh_token":"refresh-next"}`))
 		case "/v1/responses":
+			receivedAuthorization = r.Header.Get("Authorization")
 			var payload struct {
 				Model           string `json:"model"`
 				Stream          bool   `json:"stream"`
@@ -85,13 +87,22 @@ func TestReceivedShareUsesCatalogDefaultTestModel(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := st.SaveCloudReceivedKey(store.CloudReceivedKey{
+		UserID: 1, GrantPublicID: "sgr_test_model", KeyVersion: 2, KeyPrefix: "sk-amber-current",
+		BaseURL: server.URL + "/v1", GuestKey: "sk-amber-current-test-key",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	manager := NewManager(st, &testSettings{value: store.DefaultSettings()}, server.URL, "site-key", server.Client(), nil)
-	result, err := manager.TestReceivedShare(context.Background(), "sgr_test_model")
+	result, err := manager.TestReceivedShare(context.Background(), "sgr_test_model", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !result.OK || receivedModel != openai.DefaultTestModel {
 		t.Fatalf("received share test = %#v, model = %q", result, receivedModel)
+	}
+	if receivedAuthorization != "Bearer sk-amber-current-test-key" {
+		t.Fatalf("received share test used a stale Guest Key: %q", receivedAuthorization)
 	}
 	if !receivedStream || receivedMaxOutputTokens != nil || receivedAccept != "text/event-stream" {
 		t.Fatalf("received share test stream = %v, max_output_tokens = %v, accept = %q", receivedStream, receivedMaxOutputTokens, receivedAccept)
@@ -102,8 +113,43 @@ func TestReceivedShareUsesCatalogDefaultTestModel(t *testing.T) {
 		t.Fatalf("received share test input = %#v", receivedInput)
 	}
 	links, err := st.ListCloudReceivedAccountLinks(1)
-	if err != nil || len(links) != 1 || !links[0].Enabled || links[0].HealthStatus != "healthy" || links[0].LastCheckedAt.IsZero() {
-		t.Fatalf("received share health was not enabled after a successful test: %#v, %v", links, err)
+	if err != nil || len(links) != 1 || links[0].Enabled || links[0].HealthStatus != "healthy" || links[0].LastCheckedAt.IsZero() {
+		t.Fatalf("received share test changed routing or failed to record health: %#v, %v", links, err)
+	}
+}
+
+func TestHydrateReceivedSharesRemovesRevokedLocalCredential(t *testing.T) {
+	st := openTestStore(t, "received-share-revoked")
+	if err := st.SaveCloudIdentity(store.CloudIdentity{
+		UserID: 1, X25519PublicKey: "public", X25519PrivateKey: "private",
+		DevicePublicKey: "device-public", DevicePrivateKey: "device-private", DeviceName: "Test device",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveCloudReceivedKey(store.CloudReceivedKey{
+		UserID: 1, GrantPublicID: "sgr_revoked", KeyVersion: 1, KeyPrefix: "sk-amber-old",
+		BaseURL: "https://cloud.example.test/v1", GuestKey: "sk-amber-old-secret",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveCloudReceivedAccountLink(store.CloudReceivedAccountLink{
+		UserID: 1, GrantPublicID: "sgr_revoked", OwnerName: "Owner", GroupName: "Old share",
+		RemoteStatus: "active", Enabled: true, RPMLimit: 20, ConcurrencyLimit: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(st, &testSettings{value: store.DefaultSettings()}, "https://cloud.example.test", "site-key", http.DefaultClient, nil)
+	response := CloudReceivedSharesResponse{Shares: []CloudReceivedShare{{PublicID: "sgr_revoked", Status: "revoked"}}}
+
+	if err := manager.hydrateReceivedShares(context.Background(), "access", 1, &response); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.LoadCloudReceivedKey(1, "sgr_revoked"); err != store.ErrNotFound {
+		t.Fatalf("revoked Guest Key remained available: %v", err)
+	}
+	links, err := st.ListCloudReceivedAccountLinks(1)
+	if err != nil || len(links) != 0 {
+		t.Fatalf("revoked account link remained: %#v, err=%v", links, err)
 	}
 }
 

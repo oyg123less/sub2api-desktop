@@ -621,12 +621,8 @@ func (m *Manager) hydrateReceivedShares(ctx context.Context, accessToken string,
 	for index := range response.Shares {
 		share := &response.Shares[index]
 		if share.Status != "active" && share.Status != "paused" {
-			_ = m.store.SaveCloudReceivedAccountLink(store.CloudReceivedAccountLink{
-				UserID: userID, GrantPublicID: share.PublicID, OwnerName: share.Owner.DisplayName,
-				GroupName: share.Group.Name, RemoteStatus: share.Status, Enabled: false,
-				RPMLimit: share.RPMLimit, ConcurrencyLimit: share.ConcurrencyLimit,
-				QuotaRequests: share.QuotaRequests, UsedRequests: share.UsedRequests,
-			})
+			_ = m.store.DeleteCloudReceivedAccountLink(userID, share.PublicID)
+			_ = m.store.DeleteCloudReceivedKey(userID, share.PublicID)
 			continue
 		}
 		local, localErr := m.store.LoadCloudReceivedKey(userID, share.PublicID)
@@ -742,7 +738,7 @@ func (m *Manager) ReceivedShareAction(ctx context.Context, shareID, action strin
 
 // testReceivedKey performs one explicit, low-output request through a received
 // Guest Key. It never retries because the upstream may already have started.
-func (m *Manager) testReceivedKey(ctx context.Context, key *store.CloudReceivedKey) (CloudShareConnectionTest, error) {
+func (m *Manager) testReceivedKey(ctx context.Context, key *store.CloudReceivedKey, proxyID *int64, model string) (CloudShareConnectionTest, error) {
 	cloudURL, err := url.Parse(m.client.baseURL)
 	if err != nil {
 		return CloudShareConnectionTest{}, errors.New("Amber Cloud URL is invalid")
@@ -751,8 +747,12 @@ func (m *Manager) testReceivedKey(ctx context.Context, key *store.CloudReceivedK
 	if err != nil || target.Scheme != cloudURL.Scheme || !strings.EqualFold(target.Host, cloudURL.Host) || target.User != nil {
 		return CloudShareConnectionTest{}, errors.New("the shared Base URL is not trusted")
 	}
+	model = strings.TrimSpace(model)
+	if model == "" || len(model) > 128 || strings.ContainsAny(model, "\r\n\t") {
+		model = openai.DefaultTestModel
+	}
 	payload, _ := json.Marshal(map[string]any{
-		"model": openai.DefaultTestModel,
+		"model": model,
 		"input": []map[string]any{{
 			"type": "message",
 			"role": "user",
@@ -771,7 +771,24 @@ func (m *Manager) testReceivedKey(ctx context.Context, key *store.CloudReceivedK
 	request.Header.Set("Authorization", "Bearer "+key.GuestKey)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "text/event-stream")
-	response, err := m.client.do(request)
+	request.Header.Set("User-Agent", amberUserAgent)
+	request.Header.Set("X-Amber-Client-Version", amberClientVersion)
+	var response *http.Response
+	if proxyID == nil {
+		response, err = m.client.do(request)
+	} else {
+		selected, proxyErr := m.store.GetProxy(*proxyID)
+		if proxyErr != nil {
+			return CloudShareConnectionTest{OK: false, Code: "proxy_unavailable", Message: "The selected proxy is unavailable."}, nil
+		}
+		client, _, proxyErr := newConfiguredCloudHTTPClient(m.client.baseURL, store.CloudConnectionSettings{
+			Mode: store.CloudConnectionProxy, ProxyID: proxyID,
+		}, selected)
+		if proxyErr != nil {
+			return CloudShareConnectionTest{OK: false, Code: "proxy_unavailable", Message: "The selected proxy is unavailable."}, nil
+		}
+		response, err = client.Do(request)
+	}
 	if err != nil {
 		return CloudShareConnectionTest{OK: false, Code: "share_test_unreachable", Message: "The shared gateway is unreachable."}, nil
 	}
@@ -796,7 +813,7 @@ func (m *Manager) testReceivedKey(ctx context.Context, key *store.CloudReceivedK
 	return CloudShareConnectionTest{OK: false, Status: response.StatusCode, Code: failure.Error.Code, Message: failure.Error.Message}, nil
 }
 
-func (m *Manager) TestReceivedShare(ctx context.Context, shareID string) (CloudShareConnectionTest, error) {
+func (m *Manager) TestReceivedShare(ctx context.Context, shareID, model string) (CloudShareConnectionTest, error) {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
 	_, userID, vaultKey, err := m.cloudV2Access(ctx)
@@ -811,11 +828,15 @@ func (m *Manager) TestReceivedShare(ctx context.Context, shareID string) (CloudS
 	if err != nil {
 		return CloudShareConnectionTest{}, errors.New("sync and accept this shared access before testing it")
 	}
-	result, testErr := m.testReceivedKey(ctx, key)
+	account, err := m.store.GetCloudReceivedAccountByGrant(userID, shareID)
+	if err != nil {
+		return CloudShareConnectionTest{}, errors.New("sync and accept this shared access before testing it")
+	}
+	result, testErr := m.testReceivedKey(ctx, key, account.ProxyID, model)
 	if testErr != nil {
 		result = CloudShareConnectionTest{OK: false, Code: "share_test_failed", Message: testErr.Error()}
 	}
-	if err := m.store.SetCloudReceivedAccountHealth(userID, shareID, result.OK, result.OK, result.Message); err != nil && !errors.Is(err, store.ErrNotFound) {
+	if err := m.store.UpdateCloudReceivedAccountHealth(userID, shareID, result.OK, result.Message); err != nil && !errors.Is(err, store.ErrNotFound) {
 		return CloudShareConnectionTest{}, err
 	}
 	return result, nil

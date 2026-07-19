@@ -29,8 +29,8 @@ export const requireCurrentClient = createMiddleware<AppEnv>(async (c, next) => 
     ('enforce_client_version','minimum_client_version','latest_client_version','client_release_url')`).all<{ key: string; value: string }>();
   const values = Object.fromEntries(settings.results.map((entry) => [entry.key, entry.value]));
   if (values.enforce_client_version !== "true") return next();
-  const minimumText = values.minimum_client_version || "0.4.2";
-  const minimum = parseVersion(minimumText) || [0, 4, 2];
+  const minimumText = values.minimum_client_version || "0.4.3";
+  const minimum = parseVersion(minimumText) || [0, 4, 3];
   const supplied = parseVersion(requestVersion(c.req.raw.headers));
   if (supplied && compareVersion(supplied, minimum) >= 0) return next();
   const latest = values.latest_client_version || minimumText;
