@@ -1,0 +1,78 @@
+# Amber 官网
+
+Amber 官网是仓库内的独立 Vue 3 + TypeScript + Vite SSG 项目。源码、测试、静态资源和 Cloudflare Pages 配置全部位于 `website/`。
+
+## 页面
+
+- `/` 首页
+- `/download` 下载与 SHA-256
+- `/docs` 使用文档
+- `/changelog` 更新日志
+- `/faq` 常见问题
+- `/security` 安全与隐私
+- `/status` 服务状态页外壳
+
+## 运行环境
+
+必须使用仓库 `AGENTS.md` 指定的 Node.js 24：
+
+```powershell
+$NodeBin = 'C:\Users\Astin\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin'
+$Node = Join-Path $NodeBin 'node.exe'
+$Npm = 'D:\Setup\Nodejs\nodejs\node_modules\npm\bin\npm-cli.js'
+$env:Path = "$NodeBin;$env:Path"
+$env:npm_config_cache = 'D:\Study\other\vet\.npm-cache'
+```
+
+首次安装依赖：
+
+```powershell
+& $Node $Npm ci --no-audit --no-fund
+```
+
+## 开发与验证
+
+```powershell
+# 开发服务器：http://127.0.0.1:4174
+& $Node '.\node_modules\vite\bin\vite.js' --host 127.0.0.1 --port 4174 --strictPort
+
+# TypeScript
+& $Node '.\node_modules\vue-tsc\bin\vue-tsc.js' --noEmit
+
+# Vitest
+& $Node '.\node_modules\vitest\vitest.mjs' run
+
+# 静态生成
+& $Node '.\node_modules\vite-ssg\bin\vite-ssg.js' build
+
+# 构建产物、链接和 Secret 扫描
+& $Node '.\scripts\check-dist.mjs'
+& $Node '.\scripts\check-links.mjs'
+& $Node '.\scripts\check-secrets.mjs'
+
+# Playwright 桌面、窄窗口和手机视口
+& $Node '.\node_modules\@playwright\test\cli.js' test --workers=4
+```
+
+构建产物位于 `website/dist/`。`wrangler.toml` 只声明 Pages 构建目录，不包含生产绑定、域名或凭据。
+
+## 版本数据
+
+稳定版与即将发布版本只在 `src/config/releases.ts` 维护。v0.4.4 Release 正式存在前，不得为它填写下载地址、安装包或 SHA-256。
+
+当前稳定版为 v0.4.3，安装包由 GitHub Releases 直接托管。
+
+## 截图
+
+当前图片为 v0.4.2 模拟数据界面，仅用于说明现有 v0.4.x 操作位置。v0.4.4 功能冻结后需要替换：
+
+- 云账户最终界面
+- 工作区切换
+- 设备定向共享
+- “启动服务并注入”
+
+替换前必须直接检查图片像素中的邮箱、账号 ID、Token、API Key、Guest Key、代理凭据、服务器地址和设备名称。不能只在网页上使用 CSS 遮挡。
+
+## 发布边界
+
+此项目可以本地构建和测试，但本任务不部署生产、不修改 DNS、不发布 GitHub Release，也不调用私有 Worker 或管理 API。

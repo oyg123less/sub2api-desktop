@@ -1,0 +1,38 @@
+{
+  "name": "amber-website",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 4174",
+    "typecheck": "vue-tsc --noEmit",
+    "test": "vitest run",
+    "build": "vue-tsc --noEmit && vite-ssg build",
+    "check:dist": "node scripts/check-dist.mjs",
+    "check:links": "node scripts/check-links.mjs",
+    "check:secrets": "node scripts/check-secrets.mjs",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@unhead/vue": "^2.1.2",
+    "lucide-vue-next": "^0.468.0",
+    "vite-ssg": "^28.3.0",
+    "vue": "^3.5.0",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.10.0",
+    "@playwright/test": "^1.51.0",
+    "@types/node": "^24.0.0",
+    "@vitejs/plugin-vue": "^6.0.0",
+    "@vue/test-utils": "^2.4.6",
+    "jsdom": "^26.0.0",
+    "typescript": "^5.7.0",
+    "vite": "^7.0.0",
+    "vitest": "^3.0.0",
+    "vue-tsc": "^3.0.0"
+  }
+}
