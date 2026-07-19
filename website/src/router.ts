@@ -15,7 +15,7 @@ export const routes: RouteRecordRaw[] = [
     component: () => import("./pages/HomePage.vue"),
     meta: {
       title: "Amber - Windows Codex 桌面网关与多账号调度工具",
-      description: "Amber 是独立开源的 Windows Codex 桌面网关，基于 sub2api 网关能力并借鉴 CCSwitch 使用体验，提供 OpenAI 兼容 API，支持多账号调度、代理配置、加密云同步、受控共享及本地/远程一键注入。",
+      description: "Amber 是独立开源的 Windows Codex 桌面网关，基于 sub2api 网关能力并借鉴 CCSwitch 使用体验，提供 OpenAI 兼容 API，支持多账号调度、代理配置、加密云同步、连接码受控共享及本地/远程一键注入。",
     },
   },
   {
