@@ -141,7 +141,8 @@ devices.post("/devices/:id/challenge", async (c) => {
 devices.get("/relay/connect", async (c) => {
   await requireFeature(c, "owner_relay_enabled");
   if ((c.req.header("upgrade") || "").toLowerCase() !== "websocket") throw new AppError(426, "websocket_required", "A WebSocket upgrade is required.");
-  if (c.req.query("protocol") !== "1") throw new AppError(426, "relay_protocol_mismatch", "Upgrade Amber to a compatible relay protocol.");
+	const protocol = c.req.query("protocol");
+	if (protocol !== "1" && protocol !== "2") throw new AppError(426, "relay_protocol_mismatch", "Upgrade Amber to a compatible relay protocol.");
   const deviceID = parsePublicID(c.req.query("device_id") || "", "invalid_device_id");
   const challenge = c.req.header("x-amber-device-challenge") || "";
   const expiresAt = c.req.header("x-amber-device-challenge-expires") || "";
@@ -182,7 +183,8 @@ devices.get("/relay/connect", async (c) => {
   headers.set("X-Amber-Device-ID", deviceID);
   headers.set("X-Amber-Relay-Session", sessionID);
   headers.set("X-Amber-Device-Primary", device.is_primary ? "1" : "0");
-  headers.set("X-Amber-Device-Capabilities", (JSON.parse(device.capabilities) as string[]).join(","));
+	headers.set("X-Amber-Device-Capabilities", (JSON.parse(device.capabilities) as string[]).join(","));
+	headers.set("X-Amber-Relay-Protocol", protocol);
   headers.delete("Authorization");
   headers.delete("X-Amber-Device-Proof");
   const stub = c.env.OWNER_RELAY.get(c.env.OWNER_RELAY.idFromName(`owner:${c.get("auth").id}`));

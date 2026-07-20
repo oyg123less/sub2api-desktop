@@ -319,6 +319,18 @@ func (c *Control) cloudConnectHostAccounts(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+func (c *Control) cloudConnectHostDevices(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		DeviceIDs []string `json:"device_ids"`
+	}
+	if !decodeCloudRequest(w, r, &request) {
+		return
+	}
+	c.withCloudV2(w, r, 60*time.Second, func(ctx context.Context) (any, error) {
+		return c.cloud.ConfigureConnectHostDevices(ctx, request.DeviceIDs)
+	})
+}
+
 func (c *Control) cloudConnectHostStart(w http.ResponseWriter, r *http.Request) {
 	c.cloudConnectStart(w, r, false)
 }

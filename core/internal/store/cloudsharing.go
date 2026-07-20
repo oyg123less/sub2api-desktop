@@ -43,25 +43,26 @@ type CloudConnectHostState struct {
 }
 
 type CloudReceivedAccountLink struct {
-	ID               int64     `json:"id"`
-	UserID           int64     `json:"-"`
-	GrantPublicID    string    `json:"grant_public_id"`
-	OwnerName        string    `json:"owner_name"`
-	GroupName        string    `json:"group_name"`
-	RemoteStatus     string    `json:"remote_status"`
-	Enabled          bool      `json:"enabled"`
-	RPMLimit         int       `json:"rpm_limit"`
-	ConcurrencyLimit int       `json:"concurrency_limit"`
-	QuotaRequests    int       `json:"quota_requests"`
-	UsedRequests     int       `json:"used_requests"`
-	ProxyID          *int64    `json:"proxy_id,omitempty"`
-	HealthStatus     string    `json:"health_status"`
-	HealthMessage    string    `json:"health_message,omitempty"`
-	LastCheckedAt    time.Time `json:"last_checked_at,omitempty"`
-	BaseURL          string    `json:"base_url"`
-	GuestKey         string    `json:"-"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID               int64              `json:"id"`
+	UserID           int64              `json:"-"`
+	GrantPublicID    string             `json:"grant_public_id"`
+	OwnerName        string             `json:"owner_name"`
+	GroupName        string             `json:"group_name"`
+	RemoteStatus     string             `json:"remote_status"`
+	Enabled          bool               `json:"enabled"`
+	RPMLimit         int                `json:"rpm_limit"`
+	ConcurrencyLimit int                `json:"concurrency_limit"`
+	QuotaRequests    int                `json:"quota_requests"`
+	UsedRequests     int                `json:"used_requests"`
+	ProxyID          *int64             `json:"proxy_id,omitempty"`
+	NetworkMode      AccountNetworkMode `json:"network_mode"`
+	HealthStatus     string             `json:"health_status"`
+	HealthMessage    string             `json:"health_message,omitempty"`
+	LastCheckedAt    time.Time          `json:"last_checked_at,omitempty"`
+	BaseURL          string             `json:"base_url"`
+	GuestKey         string             `json:"-"`
+	CreatedAt        time.Time          `json:"created_at"`
+	UpdatedAt        time.Time          `json:"updated_at"`
 }
 
 type CloudConnectClaimAttempt struct {
@@ -293,14 +294,15 @@ func (s *Store) SaveCloudReceivedAccountLink(link CloudReceivedAccountLink) erro
 	}
 	_, err := s.db.Exec(`INSERT INTO cloud_received_account_links
 		(user_id,grant_public_id,owner_name,group_name,remote_status,enabled,rpm_limit,concurrency_limit,
-		 quota_requests,used_requests,proxy_id,health_status,health_message,last_checked_at,created_at,updated_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		 quota_requests,used_requests,proxy_id,network_mode,health_status,health_message,last_checked_at,created_at,updated_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(user_id,grant_public_id) DO UPDATE SET owner_name=excluded.owner_name,
 		group_name=excluded.group_name,remote_status=excluded.remote_status,rpm_limit=excluded.rpm_limit,
 		concurrency_limit=excluded.concurrency_limit,quota_requests=excluded.quota_requests,
 		used_requests=excluded.used_requests,updated_at=excluded.updated_at`, link.UserID, link.GrantPublicID,
 		link.OwnerName, link.GroupName, link.RemoteStatus, boolInt(link.Enabled), max(1, link.RPMLimit),
 		max(1, link.ConcurrencyLimit), max(0, link.QuotaRequests), max(0, link.UsedRequests), link.ProxyID,
+		string(ResolveAccountNetworkMode(link.NetworkMode, link.ProxyID)),
 		healthStatus, link.HealthMessage, lastCheckedAt, created.Unix(), now.Unix())
 	return err
 }
@@ -321,11 +323,32 @@ func (s *Store) SetCloudReceivedAccountLink(userID int64, grantPublicID string, 
 		values = append(values, boolInt(*enabled))
 	}
 	if setProxy {
-		updates += ",proxy_id=?"
-		values = append(values, proxyID)
+		updates += ",proxy_id=?,network_mode=?"
+		values = append(values, proxyID, string(ResolveAccountNetworkMode("", proxyID)))
 	}
 	values = append(values, userID, grantPublicID)
 	result, err := s.db.Exec("UPDATE cloud_received_account_links SET "+updates+" WHERE user_id=? AND grant_public_id=?", values...)
+	if err != nil {
+		return err
+	}
+	if count, _ := result.RowsAffected(); count != 1 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) SetCloudReceivedAccountNetwork(userID int64, grantPublicID string, mode AccountNetworkMode, proxyID *int64) error {
+	mode = ResolveAccountNetworkMode(mode, proxyID)
+	if err := ValidateAccountNetwork(mode, proxyID); err != nil {
+		return err
+	}
+	if proxyID != nil {
+		if _, err := s.GetProxy(*proxyID); err != nil {
+			return fmt.Errorf("selected proxy: %w", err)
+		}
+	}
+	result, err := s.db.Exec(`UPDATE cloud_received_account_links SET network_mode=?,proxy_id=?,updated_at=?
+		WHERE user_id=? AND grant_public_id=?`, string(mode), proxyID, time.Now().Unix(), userID, grantPublicID)
 	if err != nil {
 		return err
 	}
@@ -380,7 +403,7 @@ func (s *Store) DeleteCloudReceivedAccountLink(userID int64, grantPublicID strin
 
 func (s *Store) ListCloudReceivedAccountLinks(userID int64) ([]CloudReceivedAccountLink, error) {
 	rows, err := s.db.Query(`SELECT l.id,l.user_id,l.grant_public_id,l.owner_name,l.group_name,l.remote_status,
-		l.enabled,l.rpm_limit,l.concurrency_limit,l.quota_requests,l.used_requests,l.proxy_id,
+		l.enabled,l.rpm_limit,l.concurrency_limit,l.quota_requests,l.used_requests,l.proxy_id,l.network_mode,
 		l.health_status,l.health_message,l.last_checked_at,
 		k.base_url,k.guest_key_cipher,l.created_at,l.updated_at FROM cloud_received_account_links l
 		JOIN cloud_received_keys k ON k.user_id=l.user_id AND k.grant_public_id=l.grant_public_id
@@ -397,7 +420,7 @@ func (s *Store) ListCloudReceivedAccountLinks(userID int64) ([]CloudReceivedAcco
 		var createdAt, updatedAt, lastCheckedAt int64
 		if err := rows.Scan(&link.ID, &link.UserID, &link.GrantPublicID, &link.OwnerName, &link.GroupName,
 			&link.RemoteStatus, &enabled, &link.RPMLimit, &link.ConcurrencyLimit, &link.QuotaRequests,
-			&link.UsedRequests, &link.ProxyID, &link.HealthStatus, &link.HealthMessage, &lastCheckedAt,
+			&link.UsedRequests, &link.ProxyID, &link.NetworkMode, &link.HealthStatus, &link.HealthMessage, &lastCheckedAt,
 			&link.BaseURL, &keyCipher, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
@@ -431,7 +454,7 @@ func (s *Store) ListActiveCloudReceivedAccounts() ([]*Account, error) {
 }
 
 const cloudReceivedAccountSelect = `SELECT l.id,l.user_id,l.grant_public_id,l.owner_name,l.group_name,l.remote_status,
-	l.enabled,l.concurrency_limit,l.proxy_id,l.health_status,l.health_message,l.last_checked_at,
+	l.enabled,l.concurrency_limit,l.proxy_id,l.network_mode,l.health_status,l.health_message,l.last_checked_at,
 	k.base_url,k.guest_key_cipher,l.created_at,l.updated_at FROM cloud_received_account_links l
 	JOIN cloud_received_keys k ON k.user_id=l.user_id AND k.grant_public_id=l.grant_public_id
 	JOIN cloud_session cs ON cs.user_id=l.user_id`
@@ -439,11 +462,11 @@ const cloudReceivedAccountSelect = `SELECT l.id,l.user_id,l.grant_public_id,l.ow
 func (s *Store) scanCloudReceivedAccount(row interface{ Scan(...any) error }) (*Account, error) {
 	var account Account
 	var id, userID, createdAt, updatedAt, lastCheckedAt int64
-	var grantID, ownerName, groupName, remoteStatus, healthStatus, healthMessage, baseURL, keyCipher string
+	var grantID, ownerName, groupName, remoteStatus, networkMode, healthStatus, healthMessage, baseURL, keyCipher string
 	var enabled, concurrency int
 	var proxyID sql.NullInt64
 	if err := row.Scan(&id, &userID, &grantID, &ownerName, &groupName, &remoteStatus, &enabled, &concurrency,
-		&proxyID, &healthStatus, &healthMessage, &lastCheckedAt, &baseURL, &keyCipher, &createdAt, &updatedAt); err != nil {
+		&proxyID, &networkMode, &healthStatus, &healthMessage, &lastCheckedAt, &baseURL, &keyCipher, &createdAt, &updatedAt); err != nil {
 		return nil, err
 	}
 	key, err := s.cipher.Decrypt(keyCipher)
@@ -477,6 +500,7 @@ func (s *Store) scanCloudReceivedAccount(row interface{ Scan(...any) error }) (*
 		value := proxyID.Int64
 		account.ProxyID = &value
 	}
+	account.NetworkMode = ResolveAccountNetworkMode(AccountNetworkMode(networkMode), account.ProxyID)
 	if lastCheckedAt > 0 && healthStatus == "healthy" {
 		value := unixToTime(lastCheckedAt)
 		account.LastSuccessAt = &value

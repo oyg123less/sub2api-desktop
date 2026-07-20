@@ -1,19 +1,13 @@
 import type {
   Account,
   CloudDevice,
-  CloudFriend,
-  CloudFriendRequest,
   CloudProfile,
   CloudConnectHost,
   CloudReceivedShare,
-  CloudShareGroup,
 } from "../../api/control";
 
 export interface CloudWorkspaceSnapshot {
   profile: CloudProfile;
-  friends: CloudFriend[];
-  friendRequests: CloudFriendRequest[];
-  shareGroups: CloudShareGroup[];
   receivedShares: CloudReceivedShare[];
   devices: CloudDevice[];
   accounts: Account[];

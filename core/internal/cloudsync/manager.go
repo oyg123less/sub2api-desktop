@@ -70,6 +70,7 @@ type Status struct {
 	ConsecutiveFailures int                   `json:"consecutive_failures"`
 	NextRetryAt         *time.Time            `json:"next_retry_at,omitempty"`
 	Conflicts           []store.CloudConflict `json:"conflicts"`
+	Workspace           store.WorkspaceMeta   `json:"workspace"`
 }
 
 type pendingRegistration struct {
@@ -91,11 +92,12 @@ type Manager struct {
 	logger       *slog.Logger
 	httpOverride *http.Client
 
-	opMu         sync.Mutex
-	mu           sync.RWMutex
-	relayMu      sync.Mutex
-	relayCloser  interface{ Close() error }
-	relayHandler RelayHandler
+	opMu           sync.Mutex
+	mu             sync.RWMutex
+	relayMu        sync.Mutex
+	relayCloser    interface{ Close() error }
+	relayHandler   RelayHandler
+	relayInventory func() []RelayInventoryAccount
 
 	session             *store.CloudSession
 	vaultKey            []byte
@@ -136,6 +138,15 @@ func NewManager(st *store.Store, settings SettingsAccess, baseURL, siteKey strin
 		manager.lastErrorCode = "cloud_proxy_missing"
 		manager.lastErrorStage = "local"
 	}
+	if len(manager.client.endpoints()) > 1 {
+		ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+		if endpoint, probeErr := manager.selectHealthyEndpoint(ctx); probeErr != nil {
+			manager.logger.Warn("Amber Cloud endpoint health selection failed", "error", probeErr)
+		} else {
+			manager.logger.Info("Amber Cloud endpoint selected", "endpoint", endpoint, "fallback", manager.client.usingFallback())
+		}
+		cancel()
+	}
 	session, err := st.LoadCloudSession()
 	if errors.Is(err, store.ErrNotFound) {
 		return manager
@@ -143,6 +154,12 @@ func NewManager(st *store.Store, settings SettingsAccess, baseURL, siteKey strin
 	if err != nil {
 		manager.lastError = "saved cloud session could not be loaded"
 		manager.logger.Warn("load cloud session failed", "error_type", fmt.Sprintf("%T", err))
+		return manager
+	}
+	if err := st.AssertCloudOwner(session.UserID); err != nil {
+		manager.lastError = "saved cloud session does not belong to this workspace"
+		manager.lastErrorCode = "cloud_workspace_owner_mismatch"
+		manager.logger.Warn("reject mismatched cloud session", "error_type", fmt.Sprintf("%T", err))
 		return manager
 	}
 	vaultKey, err := decodeBytes(session.VaultKey, keySize)
@@ -238,6 +255,7 @@ func (m *Manager) Status() Status {
 	m.mu.RUnlock()
 	status.PendingItems, _ = m.store.PendingCloudCount()
 	status.Conflicts, _ = m.store.ListCloudConflicts(50)
+	status.Workspace, _ = m.store.WorkspaceMeta()
 	return status
 }
 
@@ -281,7 +299,7 @@ func (m *Manager) Register(ctx context.Context, input RegisterInput) error {
 	return nil
 }
 
-func (m *Manager) VerifyEmail(ctx context.Context, email, code string) error {
+func (m *Manager) VerifyEmail(ctx context.Context, email, code string, confirmWorkspace bool) error {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
 	email = strings.ToLower(strings.TrimSpace(email))
@@ -301,7 +319,7 @@ func (m *Manager) VerifyEmail(ctx context.Context, email, code string) error {
 		return err
 	}
 	vaultKey := append([]byte(nil), pending.material.VaultKey...)
-	if err := m.installSession(login, vaultKey); err != nil {
+	if err := m.installSession(login, vaultKey, confirmWorkspace); err != nil {
 		wipe(vaultKey)
 		return err
 	}
@@ -346,7 +364,7 @@ func (m *Manager) CancelRegistration() error {
 	return deleteErr
 }
 
-func (m *Manager) Login(ctx context.Context, email, password string) error {
+func (m *Manager) Login(ctx context.Context, email, password string, confirmWorkspace bool) error {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
 	if !m.Configured() {
@@ -381,7 +399,7 @@ func (m *Manager) Login(ctx context.Context, email, password string) error {
 		return err
 	}
 	defer wipe(vaultKey)
-	if err := m.installSession(login, vaultKey); err != nil {
+	if err := m.installSession(login, vaultKey, confirmWorkspace); err != nil {
 		return err
 	}
 	if err := m.store.DeleteCloudPendingRegistration(); err != nil {
@@ -403,13 +421,10 @@ func (m *Manager) Logout(ctx context.Context) error {
 	m.mu.RLock()
 	session := m.session
 	m.mu.RUnlock()
+	m.closeRelaySession()
 	var remoteErr error
 	if session != nil && m.Configured() {
 		remoteErr = m.client.logout(ctx, session.RefreshToken)
-	}
-	if remoteErr != nil {
-		m.setError(remoteErr)
-		return remoteErr
 	}
 	if err := m.store.DeleteCloudSession(); err != nil {
 		return err
@@ -420,9 +435,19 @@ func (m *Manager) Logout(ctx context.Context) error {
 	m.session = nil
 	m.accessToken = ""
 	m.accessExpires = time.Time{}
-	m.lastError = ""
+	if remoteErr != nil {
+		m.lastError = "Signed out locally; the remote session could not be revoked."
+		m.lastErrorCode = "cloud_remote_logout_failed"
+		m.lastErrorStage = "network"
+	} else {
+		m.lastError = ""
+		m.lastErrorCode = ""
+		m.lastErrorStage = ""
+	}
 	m.mu.Unlock()
-	m.closeRelaySession()
+	if remoteErr != nil {
+		m.logger.Warn("remote cloud logout failed after local session cleanup", "error_type", fmt.Sprintf("%T", remoteErr))
+	}
 	return nil
 }
 
@@ -479,7 +504,7 @@ func (m *Manager) ChangePassword(ctx context.Context, currentPassword, newPasswo
 		m.setError(err)
 		return err
 	}
-	if err := m.installSession(login, vaultKey); err != nil {
+	if err := m.installSession(login, vaultKey, true); err != nil {
 		return err
 	}
 	m.clearError()
@@ -764,9 +789,13 @@ func (m *Manager) Sync(ctx context.Context) (syncErr error) {
 	}
 	accessToken := m.accessToken
 	cursor := m.session.SyncCursor
+	userID := m.session.UserID
 	vaultKey := append([]byte(nil), m.vaultKey...)
 	m.mu.RUnlock()
 	defer wipe(vaultKey)
+	if err := m.store.AssertCloudOwner(userID); err != nil {
+		return workspaceCloudError(err)
+	}
 
 	pulledItems := false
 	for page := 0; page < cloudPullMaxPages; page++ {
@@ -1061,9 +1090,12 @@ func (m *Manager) invalidateCloudSession(reason error) {
 	m.mu.Unlock()
 }
 
-func (m *Manager) installSession(login loginResponse, vaultKey []byte) error {
+func (m *Manager) installSession(login loginResponse, vaultKey []byte, confirmWorkspace bool) error {
 	if login.AccessToken == "" || login.RefreshToken == "" || login.User.ID <= 0 || login.User.Email == "" || len(vaultKey) != keySize {
 		return errors.New("Amber Cloud returned an invalid login session")
+	}
+	if err := m.store.BindCloudUser(login.User.ID, login.User.Email, confirmWorkspace); err != nil {
+		return workspaceCloudError(err)
 	}
 	session := &store.CloudSession{
 		UserID: login.User.ID, Email: login.User.Email, Role: login.User.Role,
@@ -1082,6 +1114,24 @@ func (m *Manager) installSession(login loginResponse, vaultKey []byte) error {
 	m.lastError = ""
 	m.mu.Unlock()
 	return nil
+}
+
+func workspaceCloudError(err error) error {
+	var ownership *store.WorkspaceOwnershipError
+	if !errors.As(err, &ownership) {
+		return err
+	}
+	details := map[string]any{
+		"workspace_id":            ownership.Meta.WorkspaceID,
+		"workspace_state":         ownership.Meta.State,
+		"bound_cloud_user_id":     ownership.Meta.BoundCloudUserID,
+		"suggested_cloud_user_id": ownership.Meta.SuggestedCloudUserID,
+		"account_count":           ownership.Meta.AccountCount,
+		"proxy_count":             ownership.Meta.ProxyCount,
+		"quarantined_items":       ownership.Meta.QuarantinedItems,
+		"recovery_reason":         ownership.Meta.RecoveryReason,
+	}
+	return &CloudError{Status: http.StatusConflict, Code: ownership.Code, Message: ownership.Error(), Stage: "workspace", Details: details}
 }
 
 func (m *Manager) collectDirty(vaultKey []byte) ([]remoteVaultItem, error) {
@@ -1122,7 +1172,7 @@ func (m *Manager) collectDirty(vaultKey []byte) ([]remoteVaultItem, error) {
 			ChatGPTAccountID: account.ChatGPTAccountID, PlanType: account.PlanType, AccessToken: account.AccessToken,
 			RefreshToken: account.RefreshToken, IDToken: account.IDToken, ExpiresAt: account.ExpiresAt,
 			Status: account.Status, StatusReason: account.StatusReason, MaxConcurrency: account.MaxConcurrency,
-			QueueCapacity: &account.QueueCapacity, ProxyUID: proxyUID, CreatedAt: account.CreatedAt,
+			QueueCapacity: &account.QueueCapacity, ProxyUID: proxyUID, NetworkMode: account.NetworkMode, CreatedAt: account.CreatedAt,
 		})
 		if err != nil {
 			return nil, err
@@ -1294,7 +1344,7 @@ func (m *Manager) applyRemotePayload(item remoteVaultItem, envelope vaultEnvelop
 			ChatGPTAccountID: payload.ChatGPTAccountID, PlanType: payload.PlanType, AccessToken: payload.AccessToken,
 			RefreshToken: payload.RefreshToken, IDToken: payload.IDToken, ExpiresAt: payload.ExpiresAt,
 			Status: payload.Status, StatusReason: payload.StatusReason, MaxConcurrency: maxConcurrency,
-			QueueCapacity: queueCapacity, CreatedAt: payload.CreatedAt, ClientUID: item.ClientUID,
+			QueueCapacity: queueCapacity, NetworkMode: accountPayloadNetworkMode(payload), CreatedAt: payload.CreatedAt, ClientUID: item.ClientUID,
 		}, payload.ProxyUID, item.Version, envelope.UpdatedAt)
 	case store.CloudKindCodexRemote:
 		payload, err := decodePayload[codexRemotePayload](envelope)

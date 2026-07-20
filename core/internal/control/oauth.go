@@ -140,8 +140,16 @@ func (c *oauthCoordinator) finish(state, _ string, acc *store.Account, errMsg st
 }
 
 func newAuthHTTPClient(proxy *store.Proxy) *http.Client {
+	mode := store.AccountNetworkDirect
+	if proxy != nil {
+		mode = store.AccountNetworkProxy
+	}
+	return newAuthHTTPClientForMode(proxy, mode)
+}
+
+func newAuthHTTPClientForMode(proxy *store.Proxy, mode store.AccountNetworkMode) *http.Client {
 	client, err := apptransport.NewClient(apptransport.Options{
-		Proxy: proxy, Purpose: apptransport.PurposeOAuth, FingerprintProfile: "standard", Timeout: 60 * time.Second,
+		Proxy: proxy, NetworkMode: mode, Purpose: apptransport.PurposeOAuth, FingerprintProfile: "standard", Timeout: 60 * time.Second,
 	})
 	if err != nil || client == nil {
 		return &http.Client{Timeout: 60 * time.Second}

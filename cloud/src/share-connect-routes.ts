@@ -22,6 +22,10 @@ interface EndpointRow {
   connection_code: string;
   status: "active" | "paused" | "deleted";
   group_status: "active" | "paused" | "deleted";
+	default_host_device_id: number | null;
+	route_policy: "legacy_owner" | "fixed_device" | "primary_backup";
+	host_device_public_id: string | null;
+	host_device_name: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -72,9 +76,11 @@ async function unusedConnectionCode(c: Context<AppEnv>): Promise<string> {
 }
 
 async function ownedEndpoint(c: Context<AppEnv>, required = true): Promise<EndpointRow | null> {
-  const row = await c.env.DB.prepare(`SELECT e.id,e.public_id,e.owner_id,e.group_id,e.connection_code,e.status,e.created_at,e.updated_at,
-    g.public_id AS group_public_id,g.status AS group_status FROM share_connect_endpoints e
-    JOIN share_groups g ON g.id=e.group_id WHERE e.owner_id=? AND e.status<>'deleted'`)
+	const row = await c.env.DB.prepare(`SELECT e.id,e.public_id,e.owner_id,e.group_id,e.connection_code,e.status,e.created_at,e.updated_at,
+		e.default_host_device_id,e.route_policy,d.public_id AS host_device_public_id,d.name AS host_device_name,
+		g.public_id AS group_public_id,g.status AS group_status FROM share_connect_endpoints e
+		JOIN share_groups g ON g.id=e.group_id LEFT JOIN share_devices d ON d.id=e.default_host_device_id
+		WHERE e.owner_id=? AND e.status<>'deleted'`)
     .bind(c.get("auth").id).first<EndpointRow>();
   if (!row && required) throw new AppError(409, "connect_host_not_configured", "Select the accounts to share before starting sharing.");
   return row ?? null;
@@ -91,29 +97,35 @@ async function activeWindow(c: Context<AppEnv>, endpointID: number): Promise<Win
 
 async function hostPayload(c: Context<AppEnv>, endpoint: EndpointRow | null) {
   if (!endpoint) return { configured: false, accounts: [], recipients: [] };
-  const [window, accounts, recipients] = await Promise.all([
+	const [window, accounts, recipients, devices] = await Promise.all([
     activeWindow(c, endpoint.id),
     c.env.DB.prepare(`SELECT public_id,account_uid,account_type,relay_mode,priority,weight,enabled,created_at,updated_at
       FROM share_group_accounts WHERE group_id=? ORDER BY priority,id`).bind(endpoint.group_id).all(),
-    c.env.DB.prepare(`SELECT r.public_id,r.status,r.rpm_limit,r.concurrency_limit,r.quota_requests,r.used_requests,
+		c.env.DB.prepare(`SELECT r.public_id,r.status,r.rpm_limit,r.concurrency_limit,r.quota_requests,r.used_requests,
       r.expires_at,r.created_at,r.accepted_at,r.updated_at,p.display_name,p.friend_code,k.key_prefix
       FROM share_group_recipients r JOIN friend_profiles p ON p.user_id=r.recipient_id
       LEFT JOIN share_access_keys k ON k.recipient_grant_id=r.id AND k.status='active'
-      WHERE r.group_id=? AND r.status IN ('active','paused') ORDER BY r.updated_at DESC,r.id DESC`).bind(endpoint.group_id).all(),
-  ]);
+			WHERE r.group_id=? AND r.status IN ('active','paused') ORDER BY r.updated_at DESC,r.id DESC`).bind(endpoint.group_id).all(),
+		c.env.DB.prepare(`SELECT d.public_id,d.name,ed.priority,ed.enabled,d.last_seen_at
+			FROM share_endpoint_devices ed JOIN share_devices d ON d.id=ed.device_id
+			WHERE ed.endpoint_id=? AND d.revoked=0 ORDER BY ed.priority,d.id`).bind(endpoint.id).all(),
+	]);
   return {
     configured: true,
-    endpoint: {
-      public_id: endpoint.public_id, connection_code: endpoint.connection_code, status: endpoint.status,
-      group_status: endpoint.group_status, base_url: `${publicOrigin(c)}/v1`, created_at: endpoint.created_at, updated_at: endpoint.updated_at,
-    },
+		endpoint: {
+			public_id: endpoint.public_id, connection_code: endpoint.connection_code, status: endpoint.status,
+			group_status: endpoint.group_status, base_url: `${publicOrigin(c)}/v1`, route_policy: endpoint.route_policy,
+			host_device: endpoint.host_device_public_id ? { public_id: endpoint.host_device_public_id, name: endpoint.host_device_name || "Amber device" } : null,
+			created_at: endpoint.created_at, updated_at: endpoint.updated_at,
+		},
     window: window ? {
       public_id: window.public_id, password_version: window.password_version, max_claims: window.max_claims,
       claimed_count: window.claimed_count, expires_at: window.expires_at, created_at: window.created_at,
     } : null,
-    accounts: accounts.results,
-    recipients: recipients.results,
-  };
+		accounts: accounts.results,
+		recipients: recipients.results,
+		devices: devices.results,
+	};
 }
 
 async function requireConnectFeature(c: Context<AppEnv>) {
@@ -129,7 +141,13 @@ routes.get("/connect/host", async (c) => {
 routes.put("/connect/host/accounts", async (c) => {
   await requireConnectFeature(c);
   requireJSONSize(c, 256 * 1024);
-  const body = await readJSON<Record<string, unknown>>(c, 256 * 1024);
+	const body = await readJSON<Record<string, unknown>>(c, 256 * 1024);
+	const requestedHostID = typeof body.host_device_id === "string" ? parsePublicID(body.host_device_id, "invalid_device_id") : "";
+	const hostDevice = requestedHostID
+		? await c.env.DB.prepare("SELECT id,public_id,name FROM share_devices WHERE public_id=? AND user_id=? AND revoked=0")
+			.bind(requestedHostID, c.get("auth").id).first<{ id: number; public_id: string; name: string }>()
+		: null;
+	if (requestedHostID && !hostDevice) throw new AppError(404, "device_not_found", "The sharing device was not found.");
   const rawAccounts = Array.isArray(body.accounts) ? body.accounts : [];
   if (rawAccounts.length < 1 || rawAccounts.length > 20) throw new AppError(400, "invalid_share_accounts", "Select between 1 and 20 accounts.");
   const accounts: AccountInput[] = [];
@@ -153,10 +171,15 @@ routes.put("/connect/host/accounts", async (c) => {
       .bind(groupPublicID, c.get("auth").id, now, now).first<{ id: number }>();
     if (!result) throw new AppError(500, "connect_host_create_failed", "The sharing entry could not be created.");
     groupID = result.id;
-    await c.env.DB.prepare(`INSERT INTO share_connect_endpoints
-      (public_id,owner_id,group_id,connection_code,status,created_at,updated_at) VALUES(?,?,?,?, 'paused',?,?)`)
-      .bind(endpointPublicID, c.get("auth").id, groupID, code, now, now).run();
-  }
+		await c.env.DB.prepare(`INSERT INTO share_connect_endpoints
+			(public_id,owner_id,group_id,connection_code,status,default_host_device_id,route_policy,created_at,updated_at)
+			VALUES(?,?,?,?, 'paused',?,?,?,?)`)
+			.bind(endpointPublicID, c.get("auth").id, groupID, code, hostDevice?.id ?? null,
+				hostDevice ? "fixed_device" : "legacy_owner", now, now).run();
+	} else if (hostDevice) {
+		await c.env.DB.prepare(`UPDATE share_connect_endpoints SET default_host_device_id=?,route_policy='fixed_device',updated_at=? WHERE id=?`)
+			.bind(hostDevice.id, now, existing.id).run();
+	}
   const statements: D1PreparedStatement[] = [
     c.env.DB.prepare("DELETE FROM share_group_accounts WHERE group_id=?").bind(groupID),
   ];
@@ -166,11 +189,62 @@ routes.put("/connect/host/accounts", async (c) => {
       VALUES(?,?,?,?,?,?,?,1,?,?,?)`).bind(account.public_id, groupID, account.account_uid, account.account_type,
         account.relay_mode, account.priority, account.weight, account.token_cipher, now, now));
   }
-  await c.env.DB.batch(statements);
+	await c.env.DB.batch(statements);
+	if (hostDevice) {
+		const endpoint = await ownedEndpoint(c);
+		await c.env.DB.batch([
+			c.env.DB.prepare(`INSERT INTO share_endpoint_devices(endpoint_id,device_id,priority,enabled,created_at,updated_at)
+				VALUES(?,?,0,1,?,?) ON CONFLICT(endpoint_id,device_id) DO UPDATE SET priority=0,enabled=1,updated_at=excluded.updated_at`)
+				.bind(endpoint!.id, hostDevice.id, now, now),
+			c.env.DB.prepare(`INSERT INTO share_group_account_hosts(group_account_id,device_id,priority,enabled,created_at,updated_at)
+				SELECT id,?,0,1,?,? FROM share_group_accounts WHERE group_id=? AND relay_mode='owner_device'
+				ON CONFLICT(group_account_id,device_id) DO UPDATE SET priority=0,enabled=1,updated_at=excluded.updated_at`)
+				.bind(hostDevice.id, now, now, groupID),
+		]);
+	}
   const endpoint = await ownedEndpoint(c);
   await userEventStatement(c, c.get("auth").id, "connect.accounts_updated", "connect_endpoint", endpoint!.public_id).run();
   await writeShareAudit(c, groupID, "share_connect.accounts", "share_connect_endpoint", endpoint!.public_id, { count: accounts.length });
   return c.json(await hostPayload(c, endpoint));
+});
+
+routes.put("/connect/host/devices", async (c) => {
+	await requireConnectFeature(c);
+	const endpoint = await ownedEndpoint(c);
+	const body = await readJSON<Record<string, unknown>>(c);
+	const rawIDs = Array.isArray(body.device_ids) ? body.device_ids : [];
+	const deviceIDs = [...new Set(rawIDs.map((value) => typeof value === "string" ? parsePublicID(value, "invalid_device_id") : ""))];
+	if (deviceIDs.length < 1 || deviceIDs.length > 3 || deviceIDs.some((value) => !value)) {
+		throw new AppError(400, "invalid_share_devices", "Select one primary device and up to two backup devices.");
+	}
+	const placeholders = deviceIDs.map(() => "?").join(",");
+	const devices = await c.env.DB.prepare(`SELECT id,public_id FROM share_devices
+		WHERE user_id=? AND revoked=0 AND public_id IN (${placeholders})`).bind(c.get("auth").id, ...deviceIDs)
+		.all<{ id: number; public_id: string }>();
+	if (devices.results.length !== deviceIDs.length) throw new AppError(404, "device_not_found", "A selected sharing device was not found.");
+	const byPublicID = new Map(devices.results.map((device) => [device.public_id, device.id]));
+	const now = new Date().toISOString();
+	const statements: D1PreparedStatement[] = [
+		c.env.DB.prepare("DELETE FROM share_endpoint_devices WHERE endpoint_id=?").bind(endpoint!.id),
+		c.env.DB.prepare(`DELETE FROM share_group_account_hosts WHERE group_account_id IN
+			(SELECT id FROM share_group_accounts WHERE group_id=? AND relay_mode='owner_device')`).bind(endpoint!.group_id),
+	];
+	deviceIDs.forEach((publicID, index) => {
+		const deviceID = byPublicID.get(publicID)!;
+		statements.push(
+			c.env.DB.prepare(`INSERT INTO share_endpoint_devices(endpoint_id,device_id,priority,enabled,created_at,updated_at)
+				VALUES(?,?,?,1,?,?)`).bind(endpoint!.id, deviceID, index, now, now),
+			c.env.DB.prepare(`INSERT INTO share_group_account_hosts(group_account_id,device_id,priority,enabled,created_at,updated_at)
+				SELECT id,?,?,1,?,? FROM share_group_accounts WHERE group_id=? AND relay_mode='owner_device'`)
+				.bind(deviceID, index, now, now, endpoint!.group_id),
+		);
+	});
+	statements.push(c.env.DB.prepare(`UPDATE share_connect_endpoints SET default_host_device_id=?,route_policy=?,updated_at=? WHERE id=?`)
+		.bind(byPublicID.get(deviceIDs[0]!)!, deviceIDs.length > 1 ? "primary_backup" : "fixed_device", now, endpoint!.id));
+	await c.env.DB.batch(statements);
+	await writeShareAudit(c, endpoint!.group_id, "share_connect.devices", "share_connect_endpoint", endpoint!.public_id,
+		{ device_ids: deviceIDs });
+	return c.json(await hostPayload(c, await ownedEndpoint(c)));
 });
 
 async function openWindow(c: Context<AppEnv>, operation: string) {

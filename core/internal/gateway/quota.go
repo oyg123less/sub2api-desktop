@@ -85,11 +85,11 @@ func (e *Engine) refreshAccountUsage(ctx context.Context, acc *store.Account) er
 		}
 	}
 	cfg := e.settings()
-	client, err := newHTTPClient(proxy, cfg.CompatProfile, 20*time.Second)
+	client, err := newHTTPClient(proxy, acc.NetworkMode, cfg.CompatProfile, 20*time.Second)
 	if err != nil {
 		return fmt.Errorf("build quota client: %w", err)
 	}
-	authClient, err := newHTTPClient(proxy, "standard", 20*time.Second)
+	authClient, err := newHTTPClient(proxy, acc.NetworkMode, "standard", 20*time.Second)
 	if err != nil {
 		return fmt.Errorf("build quota auth client: %w", err)
 	}

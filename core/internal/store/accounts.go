@@ -22,6 +22,7 @@ func (s *Store) scanAccount(row interface {
 		createdAt   int64
 		updatedAt   int64
 		proxyID     sql.NullInt64
+		networkMode string
 		status      string
 		usageJSON   string
 		lastSuccess int64
@@ -30,7 +31,7 @@ func (s *Store) scanAccount(row interface {
 	)
 	if err := row.Scan(&a.ID, &a.AccountType, &a.BaseURL, &apiKeyEnc, &a.Email, &a.ChatGPTAccountID, &a.PlanType,
 		&accessEnc, &refreshEnc, &idTokenEnc, &expiresAt, &status, &a.StatusReason,
-		&rateUntil, &proxyID, &lastUsed, &createdAt, &updatedAt, &usageJSON,
+		&rateUntil, &proxyID, &networkMode, &lastUsed, &createdAt, &updatedAt, &usageJSON,
 		&a.CredentialFingerprint, &lastSuccess, &a.ConsecutiveFailures, &nextRetry,
 		&a.MaxConcurrency, &a.QueueCapacity, &a.ClientUID, &a.SyncVersion, &syncDirty); err != nil {
 		return nil, err
@@ -66,6 +67,7 @@ func (s *Store) scanAccount(row interface {
 		v := proxyID.Int64
 		a.ProxyID = &v
 	}
+	a.NetworkMode = ResolveAccountNetworkMode(AccountNetworkMode(networkMode), a.ProxyID)
 	if rateUntil != 0 {
 		t := unixToTime(rateUntil)
 		a.RateLimitedUntil = &t
@@ -85,7 +87,7 @@ func (s *Store) scanAccount(row interface {
 	return &a, nil
 }
 
-const accountCols = `id, account_type, base_url, api_key, email, chatgpt_account_id, plan_type, access_token, refresh_token, id_token, expires_at, status, status_reason, rate_limited_until, proxy_id, last_used_at, created_at, updated_at, usage_snapshot, credential_fingerprint, last_success_at, consecutive_failures, next_retry_at, max_concurrency, queue_capacity, client_uid, sync_version, sync_dirty`
+const accountCols = `id, account_type, base_url, api_key, email, chatgpt_account_id, plan_type, access_token, refresh_token, id_token, expires_at, status, status_reason, rate_limited_until, proxy_id, network_mode, last_used_at, created_at, updated_at, usage_snapshot, credential_fingerprint, last_success_at, consecutive_failures, next_retry_at, max_concurrency, queue_capacity, client_uid, sync_version, sync_dirty`
 
 // CreateAccount inserts a new account (tokens encrypted).
 func (s *Store) CreateAccount(a *Account) (*Account, error) {
@@ -112,14 +114,18 @@ func (s *Store) CreateAccount(a *Account) (*Account, error) {
 	if a.Status == "" {
 		a.Status = AccountActive
 	}
+	a.NetworkMode = ResolveAccountNetworkMode(a.NetworkMode, a.ProxyID)
+	if err := ValidateAccountNetwork(a.NetworkMode, a.ProxyID); err != nil {
+		return nil, err
+	}
 	if a.CredentialFingerprint == "" {
 		a.CredentialFingerprint = AccountCredentialFingerprint(a.AccountType, a.AccessToken, a.RefreshToken, a.BaseURL, a.APIKey)
 	}
 	res, err := s.db.Exec(`INSERT INTO accounts
-		(account_type, base_url, api_key, email, chatgpt_account_id, plan_type, access_token, refresh_token, id_token, expires_at, status, status_reason, rate_limited_until, proxy_id, last_used_at, created_at, updated_at, usage_snapshot, credential_fingerprint, last_success_at, consecutive_failures, next_retry_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		(account_type, base_url, api_key, email, chatgpt_account_id, plan_type, access_token, refresh_token, id_token, expires_at, status, status_reason, rate_limited_until, proxy_id, network_mode, last_used_at, created_at, updated_at, usage_snapshot, credential_fingerprint, last_success_at, consecutive_failures, next_retry_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		string(a.AccountType), a.BaseURL, apiKeyEnc, a.Email, a.ChatGPTAccountID, a.PlanType, accessEnc, refreshEnc, idTokenEnc,
-		timeToUnix(a.ExpiresAt), string(a.Status), a.StatusReason, int64(0), a.ProxyID, int64(0),
+		timeToUnix(a.ExpiresAt), string(a.Status), a.StatusReason, int64(0), a.ProxyID, string(a.NetworkMode), int64(0),
 		now.Unix(), now.Unix(), "", a.CredentialFingerprint, timeToUnixPtr(a.LastSuccessAt), a.ConsecutiveFailures, timeToUnixPtr(a.NextRetryAt))
 	if err != nil {
 		return nil, err
@@ -399,7 +405,9 @@ func (s *Store) SetAccountCodexUsage(id int64, u *CodexUsage) error {
 
 // SetAccountProxy binds (or clears) a proxy for an account.
 func (s *Store) SetAccountProxy(id int64, proxyID *int64) error {
-	_, err := s.db.Exec(`UPDATE accounts SET proxy_id=?, updated_at=? WHERE id=?`, proxyID, time.Now().Unix(), id)
+	mode := ResolveAccountNetworkMode("", proxyID)
+	_, err := s.db.Exec(`UPDATE accounts SET proxy_id=?,network_mode=?,updated_at=? WHERE id=?`,
+		proxyID, string(mode), time.Now().Unix(), id)
 	return err
 }
 

@@ -28,28 +28,40 @@ type relayChallenge struct {
 }
 
 type relayMessage struct {
-	Protocol        int               `json:"protocol"`
-	Type            string            `json:"type"`
-	RequestID       string            `json:"request_id,omitempty"`
-	GroupID         string            `json:"group_id,omitempty"`
-	AccountUID      string            `json:"account_uid,omitempty"`
-	Endpoint        string            `json:"endpoint,omitempty"`
-	Model           string            `json:"model,omitempty"`
-	Accept          string            `json:"accept,omitempty"`
-	Body            string            `json:"body,omitempty"`
-	Status          int               `json:"status,omitempty"`
-	Headers         map[string]string `json:"headers,omitempty"`
-	Data            string            `json:"data,omitempty"`
-	ErrorCode       string            `json:"error_code,omitempty"`
-	Message         string            `json:"message,omitempty"`
-	UpstreamStarted bool              `json:"upstream_started,omitempty"`
+	Protocol        int                     `json:"protocol"`
+	Type            string                  `json:"type"`
+	RequestID       string                  `json:"request_id,omitempty"`
+	AttemptID       string                  `json:"attempt_id,omitempty"`
+	GroupID         string                  `json:"group_id,omitempty"`
+	AccountUID      string                  `json:"account_uid,omitempty"`
+	Endpoint        string                  `json:"endpoint,omitempty"`
+	Model           string                  `json:"model,omitempty"`
+	Accept          string                  `json:"accept,omitempty"`
+	Body            string                  `json:"body,omitempty"`
+	Status          int                     `json:"status,omitempty"`
+	Headers         map[string]string       `json:"headers,omitempty"`
+	Data            string                  `json:"data,omitempty"`
+	ErrorCode       string                  `json:"error_code,omitempty"`
+	Message         string                  `json:"message,omitempty"`
+	UpstreamStarted bool                    `json:"upstream_started,omitempty"`
+	Accounts        []RelayInventoryAccount `json:"accounts,omitempty"`
+}
+
+type RelayInventoryAccount struct {
+	AccountUID     string `json:"account_uid"`
+	Enabled        bool   `json:"enabled"`
+	Healthy        bool   `json:"healthy"`
+	ProxyReady     bool   `json:"proxy_ready"`
+	ActiveRequests int    `json:"active_requests"`
+	MaxConcurrency int    `json:"max_concurrency"`
 }
 
 type relaySession struct {
-	conn    *websocket.Conn
-	writeMu sync.Mutex
-	mu      sync.Mutex
-	cancels map[string]context.CancelFunc
+	conn     *websocket.Conn
+	protocol int
+	writeMu  sync.Mutex
+	mu       sync.Mutex
+	cancels  map[string]context.CancelFunc
 }
 
 func (c *cloudClient) relayChallenge(ctx context.Context, accessToken, deviceID string) (relayChallenge, error) {
@@ -62,6 +74,23 @@ func (m *Manager) SetRelayHandler(handler RelayHandler) {
 	m.relayMu.Lock()
 	m.relayHandler = handler
 	m.relayMu.Unlock()
+}
+
+func (m *Manager) SetRelayInventoryProvider(provider func() []RelayInventoryAccount) {
+	m.relayMu.Lock()
+	m.relayInventory = provider
+	m.relayMu.Unlock()
+}
+
+func (m *Manager) relayInventoryMessage() relayMessage {
+	m.relayMu.Lock()
+	provider := m.relayInventory
+	m.relayMu.Unlock()
+	var accounts []RelayInventoryAccount
+	if provider != nil {
+		accounts = provider()
+	}
+	return relayMessage{Protocol: 2, Type: "inventory", Accounts: accounts}
 }
 
 func (m *Manager) closeRelaySession() {
@@ -145,7 +174,8 @@ func (m *Manager) connectRelay(ctx context.Context, identity store.CloudIdentity
 	if err != nil {
 		return err
 	}
-	base, err := url.Parse(m.client.baseURL)
+	endpoint := m.client.endpoint()
+	base, err := url.Parse(endpoint)
 	if err != nil {
 		return err
 	}
@@ -157,9 +187,9 @@ func (m *Manager) connectRelay(ctx context.Context, identity store.CloudIdentity
 	base.Path = "/v1/relay/connect"
 	query := base.Query()
 	query.Set("device_id", identity.DevicePublicID)
-	query.Set("protocol", "1")
+	query.Set("protocol", "2")
 	base.RawQuery = query.Encode()
-	config, err := websocket.NewConfig(base.String(), m.client.baseURL)
+	config, err := websocket.NewConfig(base.String(), endpoint)
 	if err != nil {
 		return err
 	}
@@ -175,7 +205,7 @@ func (m *Manager) connectRelay(ctx context.Context, identity store.CloudIdentity
 	if err != nil {
 		return err
 	}
-	session := &relaySession{conn: conn, cancels: make(map[string]context.CancelFunc)}
+	session := &relaySession{conn: conn, protocol: 2, cancels: make(map[string]context.CancelFunc)}
 	m.relayMu.Lock()
 	if m.relayCloser != nil {
 		_ = m.relayCloser.Close()
@@ -191,7 +221,10 @@ func (m *Manager) connectRelay(ctx context.Context, identity store.CloudIdentity
 		}
 		m.relayMu.Unlock()
 	}()
-	if err := session.send(relayMessage{Protocol: 1, Type: "hello"}); err != nil {
+	if err := session.send(relayMessage{Protocol: 2, Type: "hello"}); err != nil {
+		return err
+	}
+	if err := session.send(m.relayInventoryMessage()); err != nil {
 		return err
 	}
 	done := make(chan struct{})
@@ -204,7 +237,7 @@ func (m *Manager) connectRelay(ctx context.Context, identity store.CloudIdentity
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if session.send(relayMessage{Protocol: 1, Type: "heartbeat"}) != nil {
+				if session.send(relayMessage{Protocol: 2, Type: "heartbeat"}) != nil || session.send(m.relayInventoryMessage()) != nil {
 					_ = conn.Close()
 					return
 				}
@@ -221,14 +254,14 @@ func (m *Manager) connectRelay(ctx context.Context, identity store.CloudIdentity
 			return errors.New("owner relay message is too large")
 		}
 		var message relayMessage
-		if err := json.Unmarshal([]byte(raw), &message); err != nil || message.Protocol != 1 {
+		if err := json.Unmarshal([]byte(raw), &message); err != nil || (message.Protocol != 1 && message.Protocol != 2) {
 			continue
 		}
 		switch message.Type {
 		case "relay_request":
 			go m.handleRelayRequest(ctx, session, message)
 		case "cancel_request":
-			session.cancel(message.RequestID)
+			session.cancel(message.RequestID, message.AttemptID)
 		case "hello_ack", "heartbeat_ack", "chunk_ack":
 			// Control acknowledgements do not require an Agent response.
 		}
@@ -246,25 +279,33 @@ func (s *relaySession) send(message relayMessage) error {
 	return websocket.JSON.Send(s.conn, message)
 }
 
-func (s *relaySession) register(requestID string, cancel context.CancelFunc) bool {
+func relayAttemptKey(requestID, attemptID string) string {
+	if attemptID != "" {
+		return attemptID
+	}
+	return requestID
+}
+
+func (s *relaySession) register(requestID, attemptID string, cancel context.CancelFunc) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if requestID == "" || s.cancels[requestID] != nil {
+	key := relayAttemptKey(requestID, attemptID)
+	if requestID == "" || key == "" || s.cancels[key] != nil {
 		return false
 	}
-	s.cancels[requestID] = cancel
+	s.cancels[key] = cancel
 	return true
 }
 
-func (s *relaySession) unregister(requestID string) {
+func (s *relaySession) unregister(requestID, attemptID string) {
 	s.mu.Lock()
-	delete(s.cancels, requestID)
+	delete(s.cancels, relayAttemptKey(requestID, attemptID))
 	s.mu.Unlock()
 }
 
-func (s *relaySession) cancel(requestID string) {
+func (s *relaySession) cancel(requestID, attemptID string) {
 	s.mu.Lock()
-	cancel := s.cancels[requestID]
+	cancel := s.cancels[relayAttemptKey(requestID, attemptID)]
 	s.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -286,29 +327,29 @@ func (s *relaySession) cancelAll() {
 
 func (m *Manager) handleRelayRequest(parent context.Context, session *relaySession, message relayMessage) {
 	ctx, cancel := context.WithTimeout(parent, 30*time.Minute)
-	if !session.register(message.RequestID, cancel) {
+	if !session.register(message.RequestID, message.AttemptID, cancel) {
 		cancel()
-		_ = session.send(relayMessage{Protocol: 1, Type: "relay_error", RequestID: message.RequestID, Status: 400, ErrorCode: "invalid_relay_request", Message: "The relay request is invalid."})
+		_ = session.send(relayMessage{Protocol: session.protocol, Type: "relay_error", RequestID: message.RequestID, AttemptID: message.AttemptID, Status: 400, ErrorCode: "invalid_relay_request", Message: "The relay request is invalid."})
 		return
 	}
-	defer func() { cancel(); session.unregister(message.RequestID) }()
+	defer func() { cancel(); session.unregister(message.RequestID, message.AttemptID) }()
 	if message.AccountUID == "" || (message.Endpoint != "responses" && message.Endpoint != "chat/completions") {
-		_ = session.send(relayMessage{Protocol: 1, Type: "relay_error", RequestID: message.RequestID, Status: 400, ErrorCode: "invalid_relay_request", Message: "The relay request is invalid."})
+		_ = session.send(relayMessage{Protocol: session.protocol, Type: "relay_error", RequestID: message.RequestID, AttemptID: message.AttemptID, Status: 400, ErrorCode: "invalid_relay_request", Message: "The relay request is invalid."})
 		return
 	}
 	body, err := decodeRawURL(message.Body, 0)
 	if err != nil || len(body) > 4*1024*1024 {
-		_ = session.send(relayMessage{Protocol: 1, Type: "relay_error", RequestID: message.RequestID, Status: 413, ErrorCode: "request_too_large", Message: "The relay request body is invalid."})
+		_ = session.send(relayMessage{Protocol: session.protocol, Type: "relay_error", RequestID: message.RequestID, AttemptID: message.AttemptID, Status: 413, ErrorCode: "request_too_large", Message: "The relay request body is invalid."})
 		return
 	}
 	m.relayMu.Lock()
 	handler := m.relayHandler
 	m.relayMu.Unlock()
 	if handler == nil {
-		_ = session.send(relayMessage{Protocol: 1, Type: "relay_error", RequestID: message.RequestID, Status: 503, ErrorCode: "owner_relay_unavailable", Message: "The local relay is unavailable."})
+		_ = session.send(relayMessage{Protocol: session.protocol, Type: "relay_error", RequestID: message.RequestID, AttemptID: message.AttemptID, Status: 503, ErrorCode: "owner_relay_unavailable", Message: "The local relay is unavailable."})
 		return
 	}
-	if err := session.send(relayMessage{Protocol: 1, Type: "relay_accepted", RequestID: message.RequestID}); err != nil {
+	if err := session.send(relayMessage{Protocol: session.protocol, Type: "relay_accepted", RequestID: message.RequestID, AttemptID: message.AttemptID}); err != nil {
 		return
 	}
 	path := "/v1/" + message.Endpoint
@@ -319,16 +360,16 @@ func (m *Manager) handleRelayRequest(parent context.Context, session *relaySessi
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", message.Accept)
 	request.Header.Set("X-Request-ID", message.RequestID)
-	writer := &relayResponseWriter{session: session, requestID: message.RequestID, header: make(http.Header)}
+	writer := &relayResponseWriter{session: session, requestID: message.RequestID, attemptID: message.AttemptID, header: make(http.Header)}
 	var started sync.Once
 	handler(ctx, writer, request, message.AccountUID, func() {
 		started.Do(func() {
 			writer.upstreamStarted = true
-			_ = session.send(relayMessage{Protocol: 1, Type: "upstream_started", RequestID: message.RequestID})
+			_ = session.send(relayMessage{Protocol: session.protocol, Type: "upstream_started", RequestID: message.RequestID, AttemptID: message.AttemptID})
 		})
 	})
 	if ctx.Err() != nil && !writer.wroteHeader {
-		_ = session.send(relayMessage{Protocol: 1, Type: "relay_error", RequestID: message.RequestID, Status: 504,
+		_ = session.send(relayMessage{Protocol: session.protocol, Type: "relay_error", RequestID: message.RequestID, AttemptID: message.AttemptID, Status: 504,
 			ErrorCode: "relay_timeout", Message: "The local relay request timed out.", UpstreamStarted: writer.upstreamStarted})
 		return
 	}
@@ -338,6 +379,7 @@ func (m *Manager) handleRelayRequest(parent context.Context, session *relaySessi
 type relayResponseWriter struct {
 	session         *relaySession
 	requestID       string
+	attemptID       string
 	header          http.Header
 	status          int
 	wroteHeader     bool
@@ -359,7 +401,7 @@ func (w *relayResponseWriter) WriteHeader(status int) {
 			headers[strings.ToLower(name)] = value
 		}
 	}
-	if err := w.session.send(relayMessage{Protocol: 1, Type: "response_start", RequestID: w.requestID, Status: status, Headers: headers}); err != nil {
+	if err := w.session.send(relayMessage{Protocol: w.session.protocol, Type: "response_start", RequestID: w.requestID, AttemptID: w.attemptID, Status: status, Headers: headers}); err != nil {
 		w.failed = true
 	}
 }
@@ -376,7 +418,7 @@ func (w *relayResponseWriter) Write(data []byte) (int, error) {
 		if end > len(data) {
 			end = len(data)
 		}
-		if err := w.session.send(relayMessage{Protocol: 1, Type: "response_chunk", RequestID: w.requestID, Data: rawURL(data[offset:end])}); err != nil {
+		if err := w.session.send(relayMessage{Protocol: w.session.protocol, Type: "response_chunk", RequestID: w.requestID, AttemptID: w.attemptID, Data: rawURL(data[offset:end])}); err != nil {
 			w.failed = true
 			return offset, err
 		}
@@ -398,6 +440,6 @@ func (w *relayResponseWriter) finish() {
 		w.WriteHeader(http.StatusOK)
 	}
 	if !w.failed {
-		_ = w.session.send(relayMessage{Protocol: 1, Type: "response_end", RequestID: w.requestID})
+		_ = w.session.send(relayMessage{Protocol: w.session.protocol, Type: "response_end", RequestID: w.requestID, AttemptID: w.attemptID})
 	}
 }

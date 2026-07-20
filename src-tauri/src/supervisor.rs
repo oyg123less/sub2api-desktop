@@ -11,7 +11,7 @@ use tauri_plugin_shell::{
     ShellExt,
 };
 
-use crate::{resolve_data_dir, AppState};
+use crate::{workspace, AppState};
 
 const RESTART_DELAYS: [u64; 5] = [1, 2, 5, 15, 30];
 const RESTART_WINDOW: Duration = Duration::from_secs(10 * 60);
@@ -220,17 +220,27 @@ pub fn spawn(app: &AppHandle, phase: BackendPhase) {
         backend.last_error = None;
     });
 
-    let data_dir = resolve_data_dir(app);
+    let active_workspace = match workspace::active(app) {
+        Ok(value) => value,
+        Err(error) => {
+            *state.supervisor.active_run.lock().unwrap() = 0;
+            fail(app, format!("failed to resolve active workspace: {error}"));
+            return;
+        }
+    };
+    let data_dir = active_workspace.data_dir;
     let _ = std::fs::create_dir_all(&data_dir);
     let mut sidecar_args = vec![
         "--data-dir".to_string(),
         data_dir.to_string_lossy().to_string(),
         "--control-port".to_string(),
         "0".to_string(),
+        "--workspace-id".to_string(),
+        active_workspace.id,
     ];
     let cloud_url = option_env!("AMBER_CLOUD_API_URL")
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or("https://amber-cloud-api.484486528.workers.dev");
+        .unwrap_or("https://api.amberapp.asia");
     let turnstile_site_key = option_env!("AMBER_TURNSTILE_SITE_KEY")
         .filter(|value| !value.trim().is_empty())
         .unwrap_or("0x4AAAAAAD2nL5YiyV2OjkNf");

@@ -1,10 +1,15 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"sub2api-desktop/core/internal/codexcfg"
 	"sub2api-desktop/core/internal/openai"
@@ -86,17 +91,102 @@ func (c *Control) codexApply(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	cfg := c.settings.Get()
+	if strings.TrimSpace(cfg.LocalAPIKey) == "" {
+		writeControlError(w, http.StatusServiceUnavailable, "gateway_api_key_missing", "Configure a local API key before connecting Codex.", false, nil)
+		return
+	}
+	if !c.server.Running() {
+		if err := c.server.Start(); err != nil {
+			writeControlError(w, http.StatusConflict, "gateway_port_conflict", err.Error(), false,
+				map[string]any{"port": c.server.Port()})
+			return
+		}
+	}
+	if err := c.verifyCodexGateway(r.Context(), cfg.LocalAPIKey, c.codexModel()); err != nil {
+		var verification *codexGatewayVerificationError
+		if errors.As(err, &verification) {
+			writeControlError(w, verification.status, verification.code, verification.message, verification.retryable,
+				map[string]any{"port": c.server.Port(), "base_url": c.codexBaseURL()})
+			return
+		}
+		writeControlError(w, http.StatusBadGateway, "gateway_health_check_failed", err.Error(), true, nil)
+		return
+	}
 	mgr, err := codexcfg.New("")
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	cfg := c.settings.Get()
 	if err := mgr.Apply(c.codexBaseURL(), cfg.LocalAPIKey, c.codexModel()); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		writeControlError(w, http.StatusInternalServerError, "codex_config_write_failed", err.Error(), false, nil)
+		return
+	}
+	applied, err := mgr.Status(c.codexBaseURL(), cfg.LocalAPIKey)
+	if err != nil || !applied.Applied || applied.Stale || strings.TrimSpace(applied.Model) != c.codexModel() {
+		writeControlError(w, http.StatusInternalServerError, "codex_config_verification_failed", "Codex configuration was written but could not be verified.", false, nil)
 		return
 	}
 	c.codexStatus(w, r)
+}
+
+type codexGatewayVerificationError struct {
+	status    int
+	code      string
+	message   string
+	retryable bool
+}
+
+func (e *codexGatewayVerificationError) Error() string { return e.message }
+
+func (c *Control) verifyCodexGateway(parent context.Context, apiKey, model string) error {
+	ctx, cancel := context.WithTimeout(parent, 8*time.Second)
+	defer cancel()
+	client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 5 * time.Second}
+	healthURL := fmt.Sprintf("http://127.0.0.1:%d/health", c.server.Port())
+	healthRequest, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+	healthResponse, err := client.Do(healthRequest)
+	if err != nil {
+		return &codexGatewayVerificationError{status: http.StatusBadGateway, code: "gateway_health_check_failed", message: "Amber gateway did not become ready.", retryable: true}
+	}
+	defer healthResponse.Body.Close()
+	if healthResponse.StatusCode != http.StatusOK {
+		return &codexGatewayVerificationError{status: http.StatusBadGateway, code: "gateway_health_check_failed", message: "The gateway health check returned an unexpected status.", retryable: true}
+	}
+	var health struct {
+		Service    string `json:"service"`
+		InstanceID string `json:"instance_id"`
+	}
+	if err := json.NewDecoder(io.LimitReader(healthResponse.Body, 64*1024)).Decode(&health); err != nil || health.Service != "amber-gateway" {
+		return &codexGatewayVerificationError{status: http.StatusConflict, code: "gateway_port_conflict", message: "The configured port is occupied by a service that is not Amber."}
+	}
+	if identity, ok := c.server.(interface{ InstanceID() string }); ok && identity.InstanceID() != "" && health.InstanceID != identity.InstanceID() {
+		return &codexGatewayVerificationError{status: http.StatusConflict, code: "gateway_port_conflict", message: "The configured port belongs to another Amber instance."}
+	}
+	modelsRequest, _ := http.NewRequestWithContext(ctx, http.MethodGet, c.codexBaseURL()+"/models", nil)
+	modelsRequest.Header.Set("Authorization", "Bearer "+apiKey)
+	modelsResponse, err := client.Do(modelsRequest)
+	if err != nil {
+		return &codexGatewayVerificationError{status: http.StatusBadGateway, code: "gateway_health_check_failed", message: "Amber gateway model verification failed.", retryable: true}
+	}
+	defer modelsResponse.Body.Close()
+	if modelsResponse.StatusCode != http.StatusOK {
+		return &codexGatewayVerificationError{status: http.StatusBadGateway, code: "gateway_health_check_failed", message: "The local API key could not access the Amber model catalog."}
+	}
+	var catalog struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(modelsResponse.Body, 2*1024*1024)).Decode(&catalog); err != nil || len(catalog.Data) == 0 {
+		return &codexGatewayVerificationError{status: http.StatusBadGateway, code: "gateway_health_check_failed", message: "Amber returned an invalid model catalog.", retryable: true}
+	}
+	for _, item := range catalog.Data {
+		if item.ID == model {
+			return nil
+		}
+	}
+	return &codexGatewayVerificationError{status: http.StatusBadRequest, code: "codex_model_unavailable", message: "The selected Codex model is not available in the local gateway catalog."}
 }
 
 func (c *Control) codexRestore(w http.ResponseWriter, r *http.Request) {

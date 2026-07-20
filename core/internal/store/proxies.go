@@ -142,7 +142,10 @@ func (s *Store) DeleteProxy(id int64) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`UPDATE accounts SET proxy_id=NULL WHERE proxy_id=?`, id); err != nil {
+	if _, err := tx.Exec(`UPDATE accounts SET proxy_id=NULL,network_mode='direct' WHERE proxy_id=?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE cloud_received_account_links SET proxy_id=NULL,network_mode='direct' WHERE proxy_id=?`, id); err != nil {
 		return err
 	}
 	result, err := tx.Exec(`DELETE FROM proxies WHERE id=?`, id)

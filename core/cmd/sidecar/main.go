@@ -34,13 +34,14 @@ import (
 )
 
 // version is overridable at build time via -ldflags.
-var version = "0.4.3-dev"
+var version = "0.4.4-dev"
 
 func main() {
 	var (
 		dataDir      = flag.String("data-dir", defaultDataDir(), "data directory for database and keys")
 		controlPort  = flag.Int("control-port", 0, "control API port (0 = random free port)")
 		controlToken = flag.String("control-token", "", "control API token (generated if empty)")
+		workspaceID  = flag.String("workspace-id", "", "active Amber workspace id")
 		showVersion  = flag.Bool("version", false, "print version and exit")
 		cloudURL     = flag.String("cloud-url", os.Getenv("AMBER_CLOUD_API_URL"), "Amber Cloud API URL")
 		turnstileKey = flag.String("turnstile-site-key", os.Getenv("AMBER_TURNSTILE_SITE_KEY"), "public Turnstile site key")
@@ -55,13 +56,13 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
-	if err := run(*dataDir, *controlPort, *controlToken, *cloudURL, *turnstileKey, logger); err != nil {
+	if err := run(*dataDir, *workspaceID, *controlPort, *controlToken, *cloudURL, *turnstileKey, logger); err != nil {
 		logger.Error("sidecar exited with error", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(dataDir string, controlPort int, controlToken, cloudURL, turnstileSiteKey string, logger *slog.Logger) error {
+func run(dataDir, workspaceID string, controlPort int, controlToken, cloudURL, turnstileSiteKey string, logger *slog.Logger) error {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
 	}
@@ -75,6 +76,12 @@ func run(dataDir string, controlPort int, controlToken, cloudURL, turnstileSiteK
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer st.Close()
+	if workspaceID == "" {
+		workspaceID = filepath.Base(filepath.Clean(dataDir))
+	}
+	if err := st.InitializeWorkspace(workspaceID); err != nil {
+		return fmt.Errorf("initialize workspace: %w", err)
+	}
 	// Opening SQLite alone does not exercise encrypted columns. Force a full
 	// credential read before the readiness handshake so data-dir migration can
 	// detect a copied database paired with the wrong key and roll back.
@@ -105,6 +112,27 @@ func run(dataDir string, controlPort int, controlToken, cloudURL, turnstileSiteK
 	cloudManager.SetAppliedHook(remoteCodex.ReloadSaved)
 	cloudManager.SetRelayHandler(func(ctx context.Context, writer http.ResponseWriter, request *http.Request, accountUID string, upstreamStarted func()) {
 		engine.RelayAccount(writer, request.WithContext(ctx), accountUID, upstreamStarted)
+	})
+	cloudManager.SetRelayInventoryProvider(func() []cloudsync.RelayInventoryAccount {
+		accounts, err := st.ListAccounts()
+		if err != nil {
+			return nil
+		}
+		inventory := make([]cloudsync.RelayInventoryAccount, 0, len(accounts))
+		for _, account := range accounts {
+			proxyReady := true
+			if account.ProxyID != nil {
+				_, proxyErr := st.GetProxy(*account.ProxyID)
+				proxyReady = proxyErr == nil
+			}
+			active, _ := engine.AccountRuntime(account.ID)
+			inventory = append(inventory, cloudsync.RelayInventoryAccount{
+				AccountUID: account.ClientUID, Enabled: account.Status != store.AccountDisabled,
+				Healthy: account.Status == store.AccountActive, ProxyReady: proxyReady,
+				ActiveRequests: active, MaxConcurrency: account.MaxConcurrency,
+			})
+		}
+		return inventory
 	})
 	defer cloudManager.Close()
 	diagnosticService := diagnostics.New(st, holder.Get, apiManager, dataDir, version)

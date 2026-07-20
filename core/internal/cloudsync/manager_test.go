@@ -245,7 +245,7 @@ func TestPendingRegistrationRestoresAfterManagerRestart(t *testing.T) {
 	if status := restored.Status(); !status.PendingVerification || status.Email != email {
 		t.Fatalf("pending registration was not restored: %+v", status)
 	}
-	if err := restored.VerifyEmail(context.Background(), email, "123456"); err != nil {
+	if err := restored.VerifyEmail(context.Background(), email, "123456", true); err != nil {
 		t.Fatal(err)
 	}
 	if status := restored.Status(); !status.Authenticated || status.PendingVerification {
@@ -306,7 +306,7 @@ func TestSyncPullsMultipleRemotePagesInOneRun(t *testing.T) {
 	if err := manager.Register(ctx, RegisterInput{Email: "pages@example.test", Password: "correct horse battery staple", TurnstileToken: "test"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.VerifyEmail(ctx, "pages@example.test", "123456"); err != nil {
+	if err := manager.VerifyEmail(ctx, "pages@example.test", "123456", true); err != nil {
 		t.Fatal(err)
 	}
 	manager.mu.RLock()
@@ -347,7 +347,7 @@ func TestSyncPersistsCursorCheckpointBeforeLaterPageFailure(t *testing.T) {
 	if err := manager.Register(ctx, RegisterInput{Email: "checkpoint@example.test", Password: "correct horse battery staple", TurnstileToken: "test"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.VerifyEmail(ctx, "checkpoint@example.test", "123456"); err != nil {
+	if err := manager.VerifyEmail(ctx, "checkpoint@example.test", "123456", true); err != nil {
 		t.Fatal(err)
 	}
 	manager.client.retryDelays = []time.Duration{0, 0}
@@ -390,7 +390,7 @@ func TestSyncResumesPersistedOutboxAfterResponseLoss(t *testing.T) {
 	if err := manager.Register(ctx, RegisterInput{Email: "loss@example.test", Password: "correct horse battery staple", TurnstileToken: "test"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.VerifyEmail(ctx, "loss@example.test", "123456"); err != nil {
+	if err := manager.VerifyEmail(ctx, "loss@example.test", "123456", true); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.CreateAccount(&store.Account{
@@ -457,7 +457,7 @@ func TestSyncSplitsOversizedPersistedOutbox(t *testing.T) {
 	if err := manager.Register(ctx, RegisterInput{Email: "large@example.test", Password: "correct horse battery staple", TurnstileToken: "test"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.VerifyEmail(ctx, "large@example.test", "123456"); err != nil {
+	if err := manager.VerifyEmail(ctx, "large@example.test", "123456", true); err != nil {
 		t.Fatal(err)
 	}
 	for index := 0; index < 8; index++ {
@@ -547,7 +547,7 @@ func TestSyncCopiesEncryptedDataBetweenTwoInstallations(t *testing.T) {
 	if err := managerA.Register(ctx, RegisterInput{Email: "sync@example.test", Password: "correct horse battery staple", TurnstileToken: "test"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := managerA.VerifyEmail(ctx, "sync@example.test", "123456"); err != nil {
+	if err := managerA.VerifyEmail(ctx, "sync@example.test", "123456", true); err != nil {
 		t.Fatal(err)
 	}
 	proxy, err := storeA.CreateProxy(&store.Proxy{Name: "edge", Type: store.ProxyHTTP, Host: "127.0.0.1", Port: 7890, Username: "proxy-user", Password: "proxy-secret"})
@@ -579,7 +579,7 @@ func TestSyncCopiesEncryptedDataBetweenTwoInstallations(t *testing.T) {
 		}
 	}
 
-	if err := managerB.Login(ctx, "sync@example.test", "correct horse battery staple"); err != nil {
+	if err := managerB.Login(ctx, "sync@example.test", "correct horse battery staple", true); err != nil {
 		t.Fatal(err)
 	}
 	if err := managerB.Sync(ctx); err != nil {

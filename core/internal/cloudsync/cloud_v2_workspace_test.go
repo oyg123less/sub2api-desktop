@@ -263,10 +263,10 @@ func TestLoadWorkspaceRunsIndependentCloudReadsConcurrently(t *testing.T) {
 	if workspace.Profile.DisplayName != "Owner" {
 		t.Fatalf("unexpected profile: %#v", workspace.Profile)
 	}
-	if maximum.Load() < 4 {
+	if maximum.Load() < 2 {
 		t.Fatalf("workspace reads were serialized; maximum concurrency=%d", maximum.Load())
 	}
-	if elapsed := time.Since(started); elapsed >= 450*time.Millisecond {
+	if elapsed := time.Since(started); elapsed >= 350*time.Millisecond {
 		t.Fatalf("parallel workspace load took %s", elapsed)
 	}
 }

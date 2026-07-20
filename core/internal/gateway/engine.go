@@ -292,12 +292,12 @@ func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq
 		e.logForward(acc, meta, http.StatusBadGateway, 0, 0, time.Since(start), message, "proxy_unavailable", "proxy_resolution_failed")
 		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadGateway, errMsg: message, retryable: true}
 	}
-	client, err := newHTTPClient(proxy, cfg.CompatProfile, 10*time.Minute)
+	client, err := newHTTPClient(proxy, acc.NetworkMode, cfg.CompatProfile, 10*time.Minute)
 	if err != nil {
 		e.logForward(acc, meta, http.StatusInternalServerError, 0, 0, time.Since(start), err.Error(), "upstream_network_error", "client_setup_failed")
 		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: err.Error(), retryable: true}
 	}
-	authClient, _ := newHTTPClient(proxy, "standard", 60*time.Second)
+	authClient, _ := newHTTPClient(proxy, acc.NetworkMode, "standard", 60*time.Second)
 
 	token, err := e.accounts.ValidAccessToken(ctx, authClient, acc)
 	if err != nil {
@@ -394,7 +394,7 @@ func (e *Engine) forceRefreshAccount(ctx context.Context, acc *store.Account, cf
 	if err != nil {
 		return nil, err
 	}
-	client, err := newHTTPClient(proxy, "standard", 60*time.Second)
+	client, err := newHTTPClient(proxy, acc.NetworkMode, "standard", 60*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -405,8 +405,16 @@ func (e *Engine) forceRefreshAccount(ctx context.Context, acc *store.Account, cf
 }
 
 func (e *Engine) proxyForAccount(acc *store.Account) (*store.Proxy, error) {
-	if acc == nil || acc.ProxyID == nil {
+	if acc == nil {
 		return nil, nil
+	}
+	mode := store.ResolveAccountNetworkMode(acc.NetworkMode, acc.ProxyID)
+	acc.NetworkMode = mode
+	if mode != store.AccountNetworkProxy {
+		return nil, nil
+	}
+	if acc.ProxyID == nil {
+		return nil, fmt.Errorf("%w", errBoundProxyUnavailable)
 	}
 	proxy, err := e.store.GetProxy(*acc.ProxyID)
 	if err != nil {

@@ -29,7 +29,7 @@ func TestOpenInitializesVersionedSchema(t *testing.T) {
 	if got := st.MigrationBackup(); got != "" {
 		t.Fatalf("new database unexpectedly created backup %q", got)
 	}
-	for _, column := range []string{"credential_fingerprint", "last_success_at", "consecutive_failures", "next_retry_at", "max_concurrency", "queue_capacity"} {
+	for _, column := range []string{"credential_fingerprint", "last_success_at", "consecutive_failures", "next_retry_at", "max_concurrency", "queue_capacity", "network_mode"} {
 		if !testColumnExists(t, st.db, "accounts", column) {
 			t.Fatalf("accounts.%s missing", column)
 		}
@@ -40,6 +40,9 @@ func TestOpenInitializesVersionedSchema(t *testing.T) {
 	}
 	if account.MaxConcurrency != DefaultAccountMaxConcurrency || account.QueueCapacity != DefaultAccountQueueCapacity {
 		t.Fatalf("schema 10 defaults are incorrect: %+v", account)
+	}
+	if account.NetworkMode != AccountNetworkDirect {
+		t.Fatalf("new account network mode = %q, want direct", account.NetworkMode)
 	}
 	for _, column := range []string{"request_id", "requested_model", "resolved_model", "error_kind", "attempt_count", "terminal_event", "cached_tokens", "reasoning_tokens", "estimated"} {
 		if !testColumnExists(t, st.db, "request_logs", column) {

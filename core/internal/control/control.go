@@ -63,10 +63,10 @@ type CloudController interface {
 	ProbeNetwork(context.Context) cloudsync.NetworkProbe
 	ReloadNetworkSettings() error
 	Register(context.Context, cloudsync.RegisterInput) error
-	VerifyEmail(context.Context, string, string) error
+	VerifyEmail(context.Context, string, string, bool) error
 	ResendVerification(context.Context, string) error
 	CancelRegistration() error
-	Login(context.Context, string, string) error
+	Login(context.Context, string, string, bool) error
 	Logout(context.Context) error
 	Sync(context.Context) error
 	ChangePassword(context.Context, string, string) error
@@ -101,6 +101,7 @@ type CloudController interface {
 	SetRelayEnabled(context.Context, bool) error
 	GetConnectHost(context.Context) (cloudsync.CloudDocument, error)
 	ConfigureConnectHostAccounts(context.Context, []cloudsync.ShareGroupAccountSelection) (cloudsync.CloudDocument, error)
+	ConfigureConnectHostDevices(context.Context, []string) (cloudsync.CloudDocument, error)
 	StartConnectHost(context.Context, cloudsync.ConnectHostStartInput, bool) (cloudsync.CloudDocument, error)
 	ConnectHostAction(context.Context, string) (cloudsync.CloudDocument, error)
 	ConnectRecipientRequest(context.Context, string, string, any) (cloudsync.CloudDocument, error)
@@ -259,6 +260,7 @@ func (c *Control) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /control/cloud/connect/host", h(c.cloudConnectHost))
 	mux.HandleFunc("GET /control/cloud/connect/events", h(c.cloudConnectEvents))
 	mux.HandleFunc("PUT /control/cloud/connect/host/accounts", h(c.cloudConnectHostAccounts))
+	mux.HandleFunc("PUT /control/cloud/connect/host/devices", h(c.cloudConnectHostDevices))
 	mux.HandleFunc("POST /control/cloud/connect/host/start", h(c.cloudConnectHostStart))
 	mux.HandleFunc("POST /control/cloud/connect/host/rotate-password", h(c.cloudConnectHostRotatePassword))
 	mux.HandleFunc("POST /control/cloud/connect/host/{action}", h(c.cloudConnectHostAction))
@@ -976,7 +978,7 @@ func (c *Control) refreshAccount(w http.ResponseWriter, r *http.Request) {
 	if acc.ProxyID != nil {
 		proxy, _ = c.store.GetProxy(*acc.ProxyID)
 	}
-	client := newAuthHTTPClient(proxy)
+	client := newAuthHTTPClientForMode(proxy, acc.NetworkMode)
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 	if err := c.mgr.Refresh(ctx, client, id); err != nil {
@@ -992,10 +994,16 @@ func (c *Control) bindProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		ProxyID *int64 `json:"proxy_id"`
+		ProxyID     *int64                   `json:"proxy_id"`
+		NetworkMode store.AccountNetworkMode `json:"network_mode"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	body.NetworkMode = store.ResolveAccountNetworkMode(body.NetworkMode, body.ProxyID)
+	if err := store.ValidateAccountNetwork(body.NetworkMode, body.ProxyID); err != nil {
+		writeControlError(w, http.StatusBadRequest, "invalid_account_network", err.Error(), false, nil)
 		return
 	}
 	if id < 0 {
@@ -1006,15 +1014,21 @@ func (c *Control) bindProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
-		if _, err := c.cloud.UpdateConnectReceived(ctx, account.CloudGrantID, cloudsync.ConnectReceivedUpdate{ProxyID: body.ProxyID, SetProxy: true}); err != nil {
+		if _, err := c.cloud.UpdateConnectReceived(ctx, account.CloudGrantID, cloudsync.ConnectReceivedUpdate{
+			ProxyID: body.ProxyID, NetworkMode: body.NetworkMode, SetNetwork: true,
+		}); err != nil {
 			writeCloudControlError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
-	if err := c.store.SetAccountProxy(id, body.ProxyID); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+	if err := c.store.SetAccountNetwork(id, body.NetworkMode, body.ProxyID); err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, store.ErrNotFound) {
+			status = http.StatusNotFound
+		}
+		writeControlError(w, status, "account_network_update_failed", err.Error(), false, nil)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})

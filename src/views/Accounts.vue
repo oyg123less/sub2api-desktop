@@ -725,10 +725,18 @@ async function refreshToken(a: Account) {
   }
 }
 
-async function bindProxy(a: Account, proxyId: number | null) {
-  try {
-    await api.bindProxy(a.id, proxyId);
-    await load();
+function accountNetworkValue(account: Account) {
+  const mode = account.network_mode || (account.proxy_id ? "proxy" : "direct");
+  return mode === "proxy" && account.proxy_id ? `proxy:${account.proxy_id}` : mode;
+}
+
+async function bindNetwork(a: Account, value: string) {
+  const isProxy = value.startsWith("proxy:");
+  const proxyId = isProxy ? Number(value.slice("proxy:".length)) : null;
+  const mode: Account["network_mode"] = isProxy ? "proxy" : value === "system" ? "system" : "direct";
+	try {
+		await api.bindProxy(a.id, proxyId, mode);
+		await load();
   } catch (e) {
     app.toast((e as Error).message, "error");
   }
@@ -990,7 +998,15 @@ onUnmounted(() => {
                 <button class="btn btn-ghost" :disabled="limitsSaving" @click="saveAccountLimits"><Icon name="check" :size="14" />{{ t("common.save") }}</button>
               </div>
               <p v-else class="inline-note"><Icon name="info" :size="15" />{{ t("accounts.cloudLimitsManaged") }}</p>
-              <label class="field detail-proxy"><span class="field-label">{{ t("accounts.bindProxy") }}</span><select class="select" :value="detailTarget.proxy_id ?? ''" @change="bindProxy(detailTarget, ($event.target as HTMLSelectElement).value ? Number(($event.target as HTMLSelectElement).value) : null)"><option value="">{{ t("accounts.noProxy") }}</option><option v-for="p in proxies" :key="p.id" :value="p.id">{{ p.name }} ({{ p.type }})</option></select></label>
+              <label class="field detail-proxy">
+                <span class="field-label">{{ t("accounts.networkRoute") }}</span>
+                <select class="select" :value="accountNetworkValue(detailTarget)" @change="bindNetwork(detailTarget, ($event.target as HTMLSelectElement).value)">
+                  <option value="direct">{{ t("accounts.networkDirect") }}</option>
+                  <option value="system">{{ t("accounts.networkSystem") }}</option>
+                  <option v-for="p in proxies" :key="p.id" :value="`proxy:${p.id}`">{{ t("accounts.networkProxy", { name: p.name, type: p.type.toUpperCase() }) }}</option>
+                </select>
+                <small class="field-help">{{ t("accounts.networkRouteHint") }}</small>
+              </label>
             </section>
 
             <div class="detail-actions">
@@ -1168,6 +1184,7 @@ onUnmounted(() => {
                 <select v-model="importProxyMode" class="select" data-test="import-proxy-mode" :disabled="importing">
                   <option value="preserve">{{ t("accounts.importProxyPreserve") }}</option>
                   <option value="direct">{{ t("accounts.importProxyDirect") }}</option>
+                  <option value="system">{{ t("accounts.importProxySystem") }}</option>
                   <option value="override">{{ t("accounts.importProxyOverride") }}</option>
                 </select>
               </label>

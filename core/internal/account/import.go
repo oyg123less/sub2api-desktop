@@ -20,19 +20,22 @@ import (
 )
 
 type ImportEntry struct {
-	AccountType      string `json:"account_type"`
-	BaseURL          string `json:"base_url"`
-	APIKey           string `json:"api_key"`
-	Email            string `json:"email"`
-	AccessToken      string `json:"access_token"`
-	RefreshToken     string `json:"refresh_token"`
-	IDToken          string `json:"id_token"`
-	ChatGPTAccountID string `json:"chatgpt_account_id"`
-	PlanType         string `json:"plan_type"`
-	ExpiresAt        string `json:"expires_at"`
-	ProxyID          *int64 `json:"proxy_id,omitempty"`
-	ProxySpecified   bool   `json:"-"`
-	ProxyError       string `json:"-"`
+	AccountType      string                   `json:"account_type"`
+	BaseURL          string                   `json:"base_url"`
+	APIKey           string                   `json:"api_key"`
+	Email            string                   `json:"email"`
+	AccessToken      string                   `json:"access_token"`
+	RefreshToken     string                   `json:"refresh_token"`
+	IDToken          string                   `json:"id_token"`
+	ChatGPTAccountID string                   `json:"chatgpt_account_id"`
+	PlanType         string                   `json:"plan_type"`
+	ExpiresAt        string                   `json:"expires_at"`
+	ProxyID          *int64                   `json:"proxy_id,omitempty"`
+	ProxySpecified   bool                     `json:"-"`
+	ProxyError       string                   `json:"-"`
+	NetworkMode      store.AccountNetworkMode `json:"network_mode,omitempty"`
+	NetworkSpecified bool                     `json:"-"`
+	NetworkError     string                   `json:"-"`
 }
 
 type ImportProxyMode string
@@ -40,6 +43,7 @@ type ImportProxyMode string
 const (
 	ImportProxyPreserve ImportProxyMode = "preserve"
 	ImportProxyDirect   ImportProxyMode = "direct"
+	ImportProxySystem   ImportProxyMode = "system"
 	ImportProxyOverride ImportProxyMode = "override"
 )
 
@@ -68,24 +72,25 @@ type ImportPreviewSummary struct {
 }
 
 type ImportPreviewRow struct {
-	Index                  int           `json:"index"`
-	Action                 ImportAction  `json:"action"`
-	AccountType            string        `json:"account_type"`
-	MatchedAccountID       int64         `json:"matched_account_id,omitempty"`
-	EmailMasked            string        `json:"email_masked,omitempty"`
-	ChatGPTAccountIDMasked string        `json:"chatgpt_account_id_masked,omitempty"`
-	HasAccessToken         bool          `json:"has_access_token"`
-	HasRefreshToken        bool          `json:"has_refresh_token"`
-	HasIDToken             bool          `json:"has_id_token"`
-	HasAPIKey              bool          `json:"has_api_key"`
-	IdentityLevel          IdentityLevel `json:"identity_level"`
-	IdentityVerified       bool          `json:"identity_verified"`
-	Warnings               []string      `json:"warnings"`
-	WarningCodes           []string      `json:"warning_codes"`
-	ErrorCode              string        `json:"error_code,omitempty"`
-	ErrorMessage           string        `json:"error_message,omitempty"`
-	ProxyID                *int64        `json:"proxy_id,omitempty"`
-	ProxySpecified         bool          `json:"proxy_specified"`
+	Index                  int                      `json:"index"`
+	Action                 ImportAction             `json:"action"`
+	AccountType            string                   `json:"account_type"`
+	MatchedAccountID       int64                    `json:"matched_account_id,omitempty"`
+	EmailMasked            string                   `json:"email_masked,omitempty"`
+	ChatGPTAccountIDMasked string                   `json:"chatgpt_account_id_masked,omitempty"`
+	HasAccessToken         bool                     `json:"has_access_token"`
+	HasRefreshToken        bool                     `json:"has_refresh_token"`
+	HasIDToken             bool                     `json:"has_id_token"`
+	HasAPIKey              bool                     `json:"has_api_key"`
+	IdentityLevel          IdentityLevel            `json:"identity_level"`
+	IdentityVerified       bool                     `json:"identity_verified"`
+	Warnings               []string                 `json:"warnings"`
+	WarningCodes           []string                 `json:"warning_codes"`
+	ErrorCode              string                   `json:"error_code,omitempty"`
+	ErrorMessage           string                   `json:"error_message,omitempty"`
+	ProxyID                *int64                   `json:"proxy_id,omitempty"`
+	ProxySpecified         bool                     `json:"proxy_specified"`
+	NetworkMode            store.AccountNetworkMode `json:"network_mode"`
 }
 
 type ImportPreview struct {
@@ -187,6 +192,7 @@ func (m *Manager) buildImportPreview(ctx context.Context, raw []byte, options Im
 			Warnings: append([]string(nil), parsedEntry.Warnings...),
 		}
 		row.ProxyID, row.ProxySpecified = entry.ProxyID, entry.ProxySpecified
+		row.NetworkMode = store.ResolveAccountNetworkMode(entry.NetworkMode, entry.ProxyID)
 		if parsedEntry.Err != nil {
 			row.Action, row.ErrorCode, row.ErrorMessage = ImportError, "import_invalid_row", parsedEntry.Err.Error()
 			preview.addRow(row)
@@ -194,6 +200,16 @@ func (m *Manager) buildImportPreview(ctx context.Context, raw []byte, options Im
 		}
 		if entry.ProxyError != "" {
 			row.Action, row.ErrorCode, row.ErrorMessage = ImportError, "import_invalid_proxy", entry.ProxyError
+			preview.addRow(row)
+			continue
+		}
+		if entry.NetworkError != "" {
+			row.Action, row.ErrorCode, row.ErrorMessage = ImportError, "import_invalid_network_mode", entry.NetworkError
+			preview.addRow(row)
+			continue
+		}
+		if err := store.ValidateAccountNetwork(row.NetworkMode, entry.ProxyID); err != nil {
+			row.Action, row.ErrorCode, row.ErrorMessage = ImportError, "import_invalid_network_mode", err.Error()
 			preview.addRow(row)
 			continue
 		}
@@ -303,6 +319,7 @@ func (m *Manager) buildImportPreview(ctx context.Context, raw []byte, options Im
 			AccessToken: entry.AccessToken, RefreshToken: entry.RefreshToken, IDToken: entry.IDToken,
 			ExpiresAt: parseExpiry(entry.ExpiresAt), IdentityVerified: row.IdentityVerified,
 			ProxyID: entry.ProxyID, ProxySpecified: entry.ProxySpecified,
+			NetworkMode: row.NetworkMode, NetworkSpecified: entry.NetworkSpecified || entry.ProxySpecified,
 		}
 		if matched != nil {
 			mutation.ExistingID = matched.ID
@@ -490,6 +507,8 @@ func normalizeImportOptions(options ImportOptions) (ImportOptions, error) {
 		options.ProxyID = nil
 	case ImportProxyDirect:
 		options.ProxyID = nil
+	case ImportProxySystem:
+		options.ProxyID = nil
 	case ImportProxyOverride:
 		if options.ProxyID == nil || *options.ProxyID <= 0 {
 			return options, &ImportServiceError{Code: "import_invalid_proxy", Message: "a valid proxy is required for proxy override"}
@@ -505,9 +524,18 @@ func applyImportProxyOptions(entry *ImportEntry, options ImportOptions) {
 	case ImportProxyDirect:
 		entry.ProxyID = nil
 		entry.ProxySpecified = true
+		entry.NetworkMode = store.AccountNetworkDirect
+		entry.NetworkSpecified = true
+	case ImportProxySystem:
+		entry.ProxyID = nil
+		entry.ProxySpecified = true
+		entry.NetworkMode = store.AccountNetworkSystem
+		entry.NetworkSpecified = true
 	case ImportProxyOverride:
 		entry.ProxyID = options.ProxyID
 		entry.ProxySpecified = true
+		entry.NetworkMode = store.AccountNetworkProxy
+		entry.NetworkSpecified = true
 	}
 }
 

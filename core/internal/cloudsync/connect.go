@@ -30,9 +30,11 @@ type ConnectClaimInput struct {
 }
 
 type ConnectReceivedUpdate struct {
-	Enabled  *bool  `json:"enabled"`
-	ProxyID  *int64 `json:"proxy_id"`
-	SetProxy bool   `json:"set_proxy"`
+	Enabled     *bool                    `json:"enabled"`
+	ProxyID     *int64                   `json:"proxy_id"`
+	SetProxy    bool                     `json:"set_proxy"`
+	NetworkMode store.AccountNetworkMode `json:"network_mode"`
+	SetNetwork  bool                     `json:"set_network"`
 }
 
 type CloudUserEvent struct {
@@ -157,7 +159,8 @@ func (m *Manager) GetConnectHost(ctx context.Context) (CloudDocument, error) {
 func (m *Manager) ConfigureConnectHostAccounts(ctx context.Context, selections []ShareGroupAccountSelection) (CloudDocument, error) {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
-	if _, err := m.ensureProfileLocked(ctx, ""); err != nil {
+	device, err := m.ensureDeviceLocked(ctx)
+	if err != nil {
 		return nil, err
 	}
 	accessToken, _, vaultKey, err := m.cloudV2Access(ctx)
@@ -171,7 +174,34 @@ func (m *Manager) ConfigureConnectHostAccounts(ctx context.Context, selections [
 	if err != nil {
 		return nil, err
 	}
+	body["host_device_id"] = device.PublicID
 	return m.client.document(ctx, http.MethodPut, "/v1/connect/host/accounts", accessToken, body, nil)
+}
+
+func (m *Manager) ConfigureConnectHostDevices(ctx context.Context, deviceIDs []string) (CloudDocument, error) {
+	if len(deviceIDs) < 1 || len(deviceIDs) > 3 {
+		return nil, errors.New("select one primary device and up to two backup devices")
+	}
+	seen := make(map[string]bool, len(deviceIDs))
+	for index, deviceID := range deviceIDs {
+		deviceID = strings.TrimSpace(deviceID)
+		if deviceID == "" || seen[deviceID] {
+			return nil, errors.New("each sharing device can be selected only once")
+		}
+		seen[deviceID] = true
+		deviceIDs[index] = deviceID
+	}
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	accessToken, _, vaultKey, err := m.cloudV2Access(ctx)
+	if len(vaultKey) > 0 {
+		wipe(vaultKey)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return m.client.document(ctx, http.MethodPut, "/v1/connect/host/devices", accessToken,
+		map[string]any{"device_ids": deviceIDs}, nil)
 }
 
 func (m *Manager) StartConnectHost(ctx context.Context, input ConnectHostStartInput, rotate bool) (CloudDocument, error) {
@@ -376,11 +406,13 @@ func (m *Manager) ClaimConnectAndUse(ctx context.Context, input ConnectClaimInpu
 func (m *Manager) saveReceivedLink(userID int64, share CloudReceivedShare, defaultEnabled bool) error {
 	enabled := defaultEnabled
 	var proxyID *int64
+	networkMode := store.AccountNetworkDirect
 	if links, err := m.store.ListCloudReceivedAccountLinks(userID); err == nil {
 		for _, link := range links {
 			if link.GrantPublicID == share.PublicID {
 				enabled = link.Enabled
 				proxyID = link.ProxyID
+				networkMode = link.NetworkMode
 				break
 			}
 		}
@@ -389,7 +421,7 @@ func (m *Manager) saveReceivedLink(userID int64, share CloudReceivedShare, defau
 		UserID: userID, GrantPublicID: share.PublicID, OwnerName: share.Owner.DisplayName,
 		GroupName: share.Group.Name, RemoteStatus: share.Status, Enabled: enabled,
 		RPMLimit: share.RPMLimit, ConcurrencyLimit: share.ConcurrencyLimit, QuotaRequests: share.QuotaRequests,
-		UsedRequests: share.UsedRequests, ProxyID: proxyID,
+		UsedRequests: share.UsedRequests, ProxyID: proxyID, NetworkMode: networkMode,
 	})
 }
 
@@ -403,8 +435,23 @@ func (m *Manager) UpdateConnectReceived(ctx context.Context, grantID string, upd
 	if err != nil {
 		return store.CloudReceivedAccountLink{}, err
 	}
-	if err := m.store.SetCloudReceivedAccountLink(userID, strings.TrimSpace(grantID), update.Enabled, update.ProxyID, update.SetProxy); err != nil {
-		return store.CloudReceivedAccountLink{}, err
+	grantID = strings.TrimSpace(grantID)
+	if update.SetNetwork {
+		if err := m.store.SetCloudReceivedAccountNetwork(userID, grantID, update.NetworkMode, update.ProxyID); err != nil {
+			return store.CloudReceivedAccountLink{}, err
+		}
+	} else if update.SetProxy {
+		if err := m.store.SetCloudReceivedAccountLink(userID, grantID, nil, update.ProxyID, true); err != nil {
+			return store.CloudReceivedAccountLink{}, err
+		}
+	}
+	if update.Enabled != nil {
+		if err := m.store.SetCloudReceivedAccountLink(userID, grantID, update.Enabled, nil, false); err != nil {
+			return store.CloudReceivedAccountLink{}, err
+		}
+	}
+	if update.Enabled == nil && !update.SetNetwork && !update.SetProxy {
+		return store.CloudReceivedAccountLink{}, errors.New("no received share changes")
 	}
 	links, err := m.store.ListCloudReceivedAccountLinks(userID)
 	if err != nil {

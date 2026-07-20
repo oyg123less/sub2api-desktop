@@ -61,12 +61,18 @@ type CloudConflict struct {
 
 type CloudOutboxBatch struct {
 	ID             int64
+	OwnerUserID    int64
 	IdempotencyKey string
 	PayloadJSON    []byte
 	CreatedAt      time.Time
 }
 
 func (s *Store) SaveCloudSession(session CloudSession) error {
+	// Store-level callers cannot bypass workspace ownership. The interactive
+	// manager performs the confirmation check before reaching this method.
+	if err := s.BindCloudUser(session.UserID, session.Email, true); err != nil {
+		return err
+	}
 	vaultCipher, err := s.cipher.Encrypt(session.VaultKey)
 	if err != nil {
 		return err
@@ -178,13 +184,28 @@ func (s *Store) SaveCloudOutboxBatch(idempotencyKey string, payload []byte) erro
 	if idempotencyKey == "" || len(payload) == 0 {
 		return errors.New("invalid cloud outbox batch")
 	}
-	_, err := s.db.Exec(`INSERT INTO cloud_sync_outbox(idempotency_key,payload_json,created_at) VALUES(?,?,?)`,
-		idempotencyKey, string(payload), time.Now().Unix())
+	owner, err := s.boundCloudUserID()
+	if err != nil {
+		return err
+	}
+	if owner <= 0 {
+		return &WorkspaceOwnershipError{Code: "cloud_workspace_owner_mismatch"}
+	}
+	_, err = s.db.Exec(`INSERT INTO cloud_sync_outbox(owner_user_id,quarantined,idempotency_key,payload_json,created_at)
+		VALUES(?,0,?,?,?)`, owner, idempotencyKey, string(payload), time.Now().Unix())
 	return err
 }
 
 func (s *Store) ListCloudOutboxBatches() ([]CloudOutboxBatch, error) {
-	rows, err := s.db.Query(`SELECT id,idempotency_key,payload_json,created_at FROM cloud_sync_outbox ORDER BY id`)
+	owner, err := s.boundCloudUserID()
+	if err != nil {
+		return nil, err
+	}
+	if owner <= 0 {
+		return nil, nil
+	}
+	rows, err := s.db.Query(`SELECT id,owner_user_id,idempotency_key,payload_json,created_at
+		FROM cloud_sync_outbox WHERE owner_user_id=? AND quarantined=0 ORDER BY id`, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +215,7 @@ func (s *Store) ListCloudOutboxBatches() ([]CloudOutboxBatch, error) {
 		var item CloudOutboxBatch
 		var payload string
 		var createdAt int64
-		if err := rows.Scan(&item.ID, &item.IdempotencyKey, &payload, &createdAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.OwnerUserID, &item.IdempotencyKey, &payload, &createdAt); err != nil {
 			return nil, err
 		}
 		item.PayloadJSON = []byte(payload)
@@ -205,7 +226,11 @@ func (s *Store) ListCloudOutboxBatches() ([]CloudOutboxBatch, error) {
 }
 
 func (s *Store) DeleteCloudOutboxBatch(idempotencyKey string) error {
-	_, err := s.db.Exec(`DELETE FROM cloud_sync_outbox WHERE idempotency_key=?`, idempotencyKey)
+	owner, err := s.boundCloudUserID()
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`DELETE FROM cloud_sync_outbox WHERE owner_user_id=? AND quarantined=0 AND idempotency_key=?`, owner, idempotencyKey)
 	return err
 }
 
@@ -228,10 +253,27 @@ func (s *Store) cloudApplying() (bool, error) {
 }
 
 func (s *Store) CloudTombstones() ([]CloudTombstone, error) {
-	rows, err := s.db.Query(`SELECT kind,client_uid,sync_version,updated_at FROM cloud_sync_tombstones ORDER BY updated_at,kind,client_uid`)
+	owner, err := s.boundCloudUserID()
 	if err != nil {
 		return nil, err
 	}
+	if owner <= 0 {
+		rows, err := s.db.Query(`SELECT kind,client_uid,sync_version,updated_at FROM cloud_sync_tombstones
+			WHERE owner_user_id=0 AND quarantined=1 ORDER BY updated_at,kind,client_uid`)
+		if err != nil {
+			return nil, err
+		}
+		return scanCloudTombstones(rows)
+	}
+	rows, err := s.db.Query(`SELECT kind,client_uid,sync_version,updated_at FROM cloud_sync_tombstones
+		WHERE owner_user_id=? AND quarantined=0 ORDER BY updated_at,kind,client_uid`, owner)
+	if err != nil {
+		return nil, err
+	}
+	return scanCloudTombstones(rows)
+}
+
+func scanCloudTombstones(rows *sql.Rows) ([]CloudTombstone, error) {
 	defer rows.Close()
 	var result []CloudTombstone
 	for rows.Next() {
@@ -305,7 +347,11 @@ func (s *Store) RebaseCloudItem(kind, clientUID string, version int) error {
 }
 
 func (s *Store) MarkCloudTombstoneSynced(kind, clientUID string) error {
-	_, err := s.db.Exec(`DELETE FROM cloud_sync_tombstones WHERE kind=? AND client_uid=?`, kind, clientUID)
+	owner, err := s.boundCloudUserID()
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`DELETE FROM cloud_sync_tombstones WHERE owner_user_id=? AND quarantined=0 AND kind=? AND client_uid=?`, owner, kind, clientUID)
 	return err
 }
 
@@ -356,7 +402,12 @@ func (s *Store) AcknowledgeCloudItem(kind, clientUID string, baseVersion, remote
 }
 
 func (s *Store) RebaseCloudTombstone(kind, clientUID string, version int) error {
-	_, err := s.db.Exec(`UPDATE cloud_sync_tombstones SET sync_version=? WHERE kind=? AND client_uid=?`, version, kind, clientUID)
+	owner, err := s.boundCloudUserID()
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`UPDATE cloud_sync_tombstones SET sync_version=?
+		WHERE owner_user_id=? AND quarantined=0 AND kind=? AND client_uid=?`, version, owner, kind, clientUID)
 	return err
 }
 
@@ -367,7 +418,7 @@ func (s *Store) PendingCloudCount() (int, error) {
 		(SELECT COUNT(*) FROM proxies WHERE sync_dirty=1)+
 		(SELECT COUNT(*) FROM codex_remote_targets WHERE sync_dirty=1)+
 		(SELECT COUNT(*) FROM cloud_sync_settings WHERE sync_dirty=1)+
-		(SELECT COUNT(*) FROM cloud_sync_tombstones)`).Scan(&count)
+		(SELECT COUNT(*) FROM cloud_sync_tombstones WHERE quarantined=0)`).Scan(&count)
 	return count, err
 }
 
@@ -397,8 +448,16 @@ func (s *Store) CloudItemMeta(kind, clientUID string) (CloudItemMeta, error) {
 }
 
 func (s *Store) AddCloudConflict(kind, clientUID, resolution, details string) error {
-	_, err := s.db.Exec(`INSERT INTO cloud_sync_conflicts(kind,client_uid,resolution,details,created_at) VALUES(?,?,?,?,?)`,
-		kind, clientUID, resolution, details, time.Now().Unix())
+	owner, err := s.boundCloudUserID()
+	if err != nil {
+		return err
+	}
+	quarantined := 0
+	if owner <= 0 {
+		quarantined = 1
+	}
+	_, err = s.db.Exec(`INSERT INTO cloud_sync_conflicts(owner_user_id,quarantined,kind,client_uid,resolution,details,created_at)
+		VALUES(?,?,?,?,?,?,?)`, owner, quarantined, kind, clientUID, resolution, details, time.Now().Unix())
 	return err
 }
 
@@ -406,10 +465,27 @@ func (s *Store) ListCloudConflicts(limit int) ([]CloudConflict, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 100
 	}
-	rows, err := s.db.Query(`SELECT id,kind,client_uid,resolution,details,created_at FROM cloud_sync_conflicts ORDER BY created_at DESC,id DESC LIMIT ?`, limit)
+	owner, err := s.boundCloudUserID()
 	if err != nil {
 		return nil, err
 	}
+	if owner <= 0 {
+		rows, err := s.db.Query(`SELECT id,kind,client_uid,resolution,details,created_at FROM cloud_sync_conflicts
+			WHERE owner_user_id=0 AND quarantined=1 ORDER BY created_at DESC,id DESC LIMIT ?`, limit)
+		if err != nil {
+			return nil, err
+		}
+		return s.scanCloudConflicts(rows)
+	}
+	rows, err := s.db.Query(`SELECT id,kind,client_uid,resolution,details,created_at FROM cloud_sync_conflicts
+		WHERE owner_user_id=? AND quarantined=0 ORDER BY created_at DESC,id DESC LIMIT ?`, owner, limit)
+	if err != nil {
+		return nil, err
+	}
+	return s.scanCloudConflicts(rows)
+}
+
+func (s *Store) scanCloudConflicts(rows *sql.Rows) ([]CloudConflict, error) {
 	defer rows.Close()
 	var result []CloudConflict
 	for rows.Next() {
@@ -513,14 +589,19 @@ func (s *Store) ApplyCloudAccount(account *Account, proxyUID string, version int
 	if err != nil {
 		return err
 	}
-	var proxyID any
+	var proxyID *int64
 	if proxyUID != "" {
 		proxy, proxyErr := s.GetProxyByClientUID(proxyUID)
 		if proxyErr == nil {
-			proxyID = proxy.ID
+			value := proxy.ID
+			proxyID = &value
 		} else if !errors.Is(proxyErr, ErrNotFound) {
 			return proxyErr
 		}
+	}
+	account.NetworkMode = ResolveAccountNetworkMode(account.NetworkMode, proxyID)
+	if err := ValidateAccountNetwork(account.NetworkMode, proxyID); err != nil {
+		return err
 	}
 	if updatedAt.IsZero() {
 		updatedAt = time.Now()
@@ -532,18 +613,18 @@ func (s *Store) ApplyCloudAccount(account *Account, proxyUID string, version int
 	fingerprint := AccountCredentialFingerprint(account.AccountType, account.AccessToken, account.RefreshToken, account.BaseURL, account.APIKey)
 	_, err = s.db.Exec(`INSERT INTO accounts
 		(account_type,base_url,api_key,email,chatgpt_account_id,plan_type,access_token,refresh_token,id_token,expires_at,
-		status,status_reason,rate_limited_until,proxy_id,last_used_at,created_at,updated_at,usage_snapshot,credential_fingerprint,
+		status,status_reason,rate_limited_until,proxy_id,network_mode,last_used_at,created_at,updated_at,usage_snapshot,credential_fingerprint,
 		last_success_at,consecutive_failures,next_retry_at,max_concurrency,queue_capacity,client_uid,sync_version,sync_dirty)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0,?,0,?,?, '',?,0,0,0,?,?,?,?,0)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,0,?,?, '',?,0,0,0,?,?,?,?,0)
 		ON CONFLICT(client_uid) DO UPDATE SET account_type=excluded.account_type,base_url=excluded.base_url,api_key=excluded.api_key,
 		email=excluded.email,chatgpt_account_id=excluded.chatgpt_account_id,plan_type=excluded.plan_type,
 		access_token=excluded.access_token,refresh_token=excluded.refresh_token,id_token=excluded.id_token,expires_at=excluded.expires_at,
-		status=excluded.status,status_reason=excluded.status_reason,proxy_id=excluded.proxy_id,
+		status=excluded.status,status_reason=excluded.status_reason,proxy_id=excluded.proxy_id,network_mode=excluded.network_mode,
 		max_concurrency=excluded.max_concurrency,queue_capacity=excluded.queue_capacity,updated_at=excluded.updated_at,
 		credential_fingerprint=excluded.credential_fingerprint,sync_version=excluded.sync_version,sync_dirty=0`,
 		string(account.AccountType), account.BaseURL, apiKeyCipher, account.Email, account.ChatGPTAccountID, account.PlanType,
 		accessCipher, refreshCipher, idCipher, timeToUnix(account.ExpiresAt), string(account.Status), account.StatusReason,
-		proxyID, createdAt.Unix(), updatedAt.Unix(), fingerprint, account.MaxConcurrency, account.QueueCapacity, account.ClientUID, version)
+		proxyID, string(account.NetworkMode), createdAt.Unix(), updatedAt.Unix(), fingerprint, account.MaxConcurrency, account.QueueCapacity, account.ClientUID, version)
 	return err
 }
 

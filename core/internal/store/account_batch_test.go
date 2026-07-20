@@ -86,13 +86,19 @@ func TestSetAllAccountsProxyAndSummary(t *testing.T) {
 	}
 	for _, id := range []int64{first.ID, second.ID} {
 		account, err := st.GetAccount(id)
-		if err != nil || account.ProxyID == nil || *account.ProxyID != proxy.ID || !account.SyncDirty {
+		if err != nil || account.ProxyID == nil || *account.ProxyID != proxy.ID || account.NetworkMode != AccountNetworkProxy || !account.SyncDirty {
 			t.Fatalf("account %d was not bound and marked dirty: %#v err=%v", id, account, err)
 		}
 	}
 	cleared, err := st.SetAllAccountsProxy(nil)
 	if err != nil || cleared.Updated != 2 {
 		t.Fatalf("clear result=%#v err=%v", cleared, err)
+	}
+	for _, id := range []int64{first.ID, second.ID} {
+		account, err := st.GetAccount(id)
+		if err != nil || account.ProxyID != nil || account.NetworkMode != AccountNetworkDirect {
+			t.Fatalf("account %d did not return to direct mode: %#v err=%v", id, account, err)
+		}
 	}
 	summary, err = st.AccountProxySummary()
 	if err != nil || summary.Unbound != 2 || summary.Bound != 0 || summary.Mixed || summary.Bindings == nil {

@@ -8,9 +8,18 @@ type AccountStatus string
 // AccountType identifies how an upstream account authenticates.
 type AccountType string
 
+// AccountNetworkMode controls how an account reaches its upstream service.
+type AccountNetworkMode string
+
 const (
 	AccountTypeOAuth  AccountType = "oauth"
 	AccountTypeAPIKey AccountType = "api_key"
+)
+
+const (
+	AccountNetworkDirect AccountNetworkMode = "direct"
+	AccountNetworkSystem AccountNetworkMode = "system"
+	AccountNetworkProxy  AccountNetworkMode = "proxy"
 )
 
 const (
@@ -46,42 +55,43 @@ type CodexUsage struct {
 // Account is a single OAuth or API-key upstream account. Credential fields are
 // stored encrypted at rest and decrypted only in memory.
 type Account struct {
-	ID                    int64         `json:"id"`
-	AccountType           AccountType   `json:"account_type"`
-	BaseURL               string        `json:"base_url"`
-	APIKey                string        `json:"-"`
-	Email                 string        `json:"email"`
-	ChatGPTAccountID      string        `json:"chatgpt_account_id"`
-	PlanType              string        `json:"plan_type"`
-	AccessToken           string        `json:"-"`
-	RefreshToken          string        `json:"-"`
-	IDToken               string        `json:"-"`
-	ExpiresAt             time.Time     `json:"expires_at"`
-	Status                AccountStatus `json:"status"`
-	StatusReason          string        `json:"status_reason,omitempty"`
-	RateLimitedUntil      *time.Time    `json:"rate_limited_until,omitempty"`
-	ProxyID               *int64        `json:"proxy_id,omitempty"`
-	LastUsedAt            *time.Time    `json:"last_used_at,omitempty"`
-	CodexUsage            *CodexUsage   `json:"codex_usage,omitempty"`
-	CredentialFingerprint string        `json:"-"`
-	LastSuccessAt         *time.Time    `json:"last_success_at,omitempty"`
-	ConsecutiveFailures   int           `json:"consecutive_failures"`
-	NextRetryAt           *time.Time    `json:"next_retry_at,omitempty"`
-	MaxConcurrency        int           `json:"max_concurrency"`
-	QueueCapacity         int           `json:"queue_capacity"`
-	InFlight              int           `json:"in_flight"`
-	Waiting               int           `json:"waiting"`
-	CreatedAt             time.Time     `json:"created_at"`
-	UpdatedAt             time.Time     `json:"updated_at"`
-	ClientUID             string        `json:"client_uid"`
-	SyncVersion           int           `json:"-"`
-	SyncDirty             bool          `json:"-"`
-	Source                string        `json:"source,omitempty"`
-	CloudUserID           int64         `json:"-"`
-	CloudGrantID          string        `json:"cloud_grant_id,omitempty"`
-	CloudOwnerName        string        `json:"cloud_owner_name,omitempty"`
-	CloudGroupName        string        `json:"cloud_group_name,omitempty"`
-	CloudLocalEnabled     bool          `json:"cloud_local_enabled,omitempty"`
+	ID                    int64              `json:"id"`
+	AccountType           AccountType        `json:"account_type"`
+	BaseURL               string             `json:"base_url"`
+	APIKey                string             `json:"-"`
+	Email                 string             `json:"email"`
+	ChatGPTAccountID      string             `json:"chatgpt_account_id"`
+	PlanType              string             `json:"plan_type"`
+	AccessToken           string             `json:"-"`
+	RefreshToken          string             `json:"-"`
+	IDToken               string             `json:"-"`
+	ExpiresAt             time.Time          `json:"expires_at"`
+	Status                AccountStatus      `json:"status"`
+	StatusReason          string             `json:"status_reason,omitempty"`
+	RateLimitedUntil      *time.Time         `json:"rate_limited_until,omitempty"`
+	ProxyID               *int64             `json:"proxy_id,omitempty"`
+	NetworkMode           AccountNetworkMode `json:"network_mode"`
+	LastUsedAt            *time.Time         `json:"last_used_at,omitempty"`
+	CodexUsage            *CodexUsage        `json:"codex_usage,omitempty"`
+	CredentialFingerprint string             `json:"-"`
+	LastSuccessAt         *time.Time         `json:"last_success_at,omitempty"`
+	ConsecutiveFailures   int                `json:"consecutive_failures"`
+	NextRetryAt           *time.Time         `json:"next_retry_at,omitempty"`
+	MaxConcurrency        int                `json:"max_concurrency"`
+	QueueCapacity         int                `json:"queue_capacity"`
+	InFlight              int                `json:"in_flight"`
+	Waiting               int                `json:"waiting"`
+	CreatedAt             time.Time          `json:"created_at"`
+	UpdatedAt             time.Time          `json:"updated_at"`
+	ClientUID             string             `json:"client_uid"`
+	SyncVersion           int                `json:"-"`
+	SyncDirty             bool               `json:"-"`
+	Source                string             `json:"source,omitempty"`
+	CloudUserID           int64              `json:"-"`
+	CloudGrantID          string             `json:"cloud_grant_id,omitempty"`
+	CloudOwnerName        string             `json:"cloud_owner_name,omitempty"`
+	CloudGroupName        string             `json:"cloud_group_name,omitempty"`
+	CloudLocalEnabled     bool               `json:"cloud_local_enabled,omitempty"`
 }
 
 // AccountRuntimeState is the lightweight account state used by the control

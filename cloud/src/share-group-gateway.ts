@@ -192,6 +192,17 @@ async function directResponse(c: Context<AppEnv>, grant: AccessGrant, account: G
 }
 
 async function relayResponse(c: Context<AppEnv>, grant: AccessGrant, account: GroupAccount, body: ArrayBuffer, requestID: string): Promise<Response> {
+	const [route, hosts] = await Promise.all([
+		c.env.DB.prepare("SELECT route_policy FROM share_connect_endpoints WHERE group_id=? AND status<>'deleted'")
+			.bind(grant.group_id).first<{ route_policy: string }>(),
+		c.env.DB.prepare(`SELECT d.public_id FROM share_group_account_hosts h JOIN share_devices d ON d.id=h.device_id
+			WHERE h.group_account_id=? AND h.enabled=1 AND d.revoked=0 ORDER BY h.priority,d.id`)
+			.bind(account.id).all<{ public_id: string }>(),
+	]);
+	const deviceIDs = hosts.results.map((item) => item.public_id);
+	if (route && route.route_policy !== "legacy_owner" && !deviceIDs.length) {
+		return errorResponse(c, 503, "share_account_not_on_host", "The shared account is not assigned to an available device.");
+	}
   const stub = c.env.OWNER_RELAY.get(c.env.OWNER_RELAY.idFromName(`owner:${grant.owner_id}`));
   return stub.fetch("https://relay.internal/request", {
     method: "POST",
@@ -200,6 +211,8 @@ async function relayResponse(c: Context<AppEnv>, grant: AccessGrant, account: Gr
       request_id: requestID,
       group_id: grant.group_public_id,
       account_uid: account.account_uid,
+		host_device_id: deviceIDs[0] || undefined,
+		fallback_device_ids: deviceIDs.slice(1),
       endpoint: c.req.path.endsWith("/chat/completions") ? "chat/completions" : "responses",
       model: requestModel(body),
       accept: c.req.header("accept") || "text/event-stream, application/json",
@@ -274,7 +287,7 @@ export async function forwardGroupShare(c: Context<AppEnv>, guestKey: string): P
     try {
       const clone = response.clone();
       const error = await clone.json<{ error?: { code?: string } }>();
-      retryable = error.error?.code === "owner_device_offline" || error.error?.code === "owner_relay_busy";
+		retryable = ["owner_device_offline", "owner_relay_busy", "share_host_device_offline", "share_account_not_on_host", "relay_no_eligible_device"].includes(error.error?.code || "");
     } catch { retryable = false; }
     if (!retryable) break;
   }

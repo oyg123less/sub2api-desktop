@@ -104,8 +104,9 @@ func (c *Control) cloudRegister(w http.ResponseWriter, r *http.Request) {
 
 func (c *Control) cloudVerifyEmail(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		Email string `json:"email"`
-		Code  string `json:"code"`
+		Email            string `json:"email"`
+		Code             string `json:"code"`
+		ConfirmWorkspace bool   `json:"confirm_workspace"`
 	}
 	if c.cloud == nil || !decodeCloudRequest(w, r, &request) {
 		if c.cloud == nil {
@@ -115,7 +116,7 @@ func (c *Control) cloudVerifyEmail(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
-	if err := c.cloud.VerifyEmail(ctx, request.Email, request.Code); err != nil {
+	if err := c.cloud.VerifyEmail(ctx, request.Email, request.Code, request.ConfirmWorkspace); err != nil {
 		writeCloudControlError(w, err)
 		return
 	}
@@ -155,8 +156,9 @@ func (c *Control) cloudCancelRegistration(w http.ResponseWriter, _ *http.Request
 
 func (c *Control) cloudLogin(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email            string `json:"email"`
+		Password         string `json:"password"`
+		ConfirmWorkspace bool   `json:"confirm_workspace"`
 	}
 	if c.cloud == nil || !decodeCloudRequest(w, r, &request) {
 		if c.cloud == nil {
@@ -166,7 +168,7 @@ func (c *Control) cloudLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
-	if err := c.cloud.Login(ctx, request.Email, request.Password); err != nil {
+	if err := c.cloud.Login(ctx, request.Email, request.Password, request.ConfirmWorkspace); err != nil {
 		writeCloudControlError(w, err)
 		return
 	}
@@ -529,7 +531,7 @@ func writeCloudControlError(w http.ResponseWriter, err error) {
 		if status < 400 || status > 599 {
 			status = http.StatusBadGateway
 		}
-		var details map[string]any
+		details := cloudErr.Details
 		if cloudErr.Code == "client_upgrade_required" {
 			details = map[string]any{
 				"minimum_version": cloudErr.MinimumVersion,

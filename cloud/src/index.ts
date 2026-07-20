@@ -31,7 +31,7 @@ app.use("*", async (c, next) => {
   await next();
 });
 
-app.get("/health", (c) => c.json({ ok: true, service: "amber-cloud", version: "0.4.3" }));
+app.get("/health", (c) => c.json({ ok: true, service: "amber-cloud", version: "0.4.4" }));
 app.route("/v1/auth", authRoutes);
 app.use("/v1/*", requireCurrentClient);
 app.route("/v1/vault", vaultRoutes);

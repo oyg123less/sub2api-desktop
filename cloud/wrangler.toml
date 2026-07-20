@@ -3,6 +3,9 @@ main = "src/index.ts"
 compatibility_date = "2026-07-15"
 workers_dev = true
 preview_urls = false
+routes = [
+  { pattern = "api.amberapp.asia", custom_domain = true }
+]
 
 [vars]
 ENVIRONMENT = "production"

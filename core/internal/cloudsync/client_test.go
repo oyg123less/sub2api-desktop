@@ -51,8 +51,8 @@ func TestCloudClientRetriesSafeReads(t *testing.T) {
 
 func TestCloudClientSendsVersionAndPreservesUpgradeDetails(t *testing.T) {
 	client, err := newCloudClient("https://cloud.example", &http.Client{Transport: cloudRoundTripFunc(func(request *http.Request) (*http.Response, error) {
-		if request.Header.Get("User-Agent") != "Amber/0.4.3" || request.Header.Get("X-Amber-Client-Version") != "0.4.3" {
-			t.Fatalf("missing v0.4.3 client headers: %#v", request.Header)
+		if request.Header.Get("User-Agent") != "Amber/0.4.4" || request.Header.Get("X-Amber-Client-Version") != "0.4.4" {
+			t.Fatalf("missing v0.4.4 client headers: %#v", request.Header)
 		}
 		return cloudJSONResponse(http.StatusUpgradeRequired, `{"error":{"code":"client_upgrade_required","message":"Update required","minimum_version":"0.4.3","latest_version":"0.4.3","update_url":"https://example.test/releases/latest"}}`), nil
 	})})
@@ -64,6 +64,37 @@ func TestCloudClientSendsVersionAndPreservesUpgradeDetails(t *testing.T) {
 	if !errors.As(err, &cloudErr) || cloudErr.Status != http.StatusUpgradeRequired || cloudErr.Code != "client_upgrade_required" ||
 		cloudErr.MinimumVersion != "0.4.3" || cloudErr.LatestVersion != "0.4.3" || cloudErr.UpdateURL == "" {
 		t.Fatalf("upgrade error metadata lost: %#v", err)
+	}
+}
+
+func TestCloudClientFailsOverSafeRequestToSecondaryEndpoint(t *testing.T) {
+	primaryCalls := 0
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		primaryCalls++
+		http.Error(w, "temporarily unavailable", http.StatusBadGateway)
+	}))
+	defer primary.Close()
+	fallbackCalls := 0
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackCalls++
+		if r.URL.Path != "/v1/vault" {
+			t.Fatalf("fallback path = %q", r.URL.Path)
+		}
+		_, _ = io.WriteString(w, `{"items":[],"cursor":"fallback-cursor"}`)
+	}))
+	defer fallback.Close()
+
+	client, err := newCloudClient(primary.URL+","+fallback.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.retryDelays = []time.Duration{0, 0}
+	response, err := client.pull(context.Background(), "access", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if primaryCalls != 1 || fallbackCalls != 1 || response.Cursor != "fallback-cursor" || !client.usingFallback() {
+		t.Fatalf("primary=%d fallback=%d response=%+v endpoint=%s", primaryCalls, fallbackCalls, response, client.endpoint())
 	}
 }
 
