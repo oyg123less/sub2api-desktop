@@ -85,7 +85,7 @@ function closeMobileToc() {
         <CircleAlert :size="20" aria-hidden="true" />
         <div>
           <strong>截图版本说明</strong>
-          <p>本页产品图均为 {{ currentVersion }} 完全虚构的脱敏演示数据，不包含真实账号、凭据、代理、设备或 SSH 身份信息。</p>
+          <p>本页产品图均来自 {{ currentVersion }} 真实界面。账号、连接码、用户 ID、本机路径、API Key、用量和费用等敏感信息已在图片像素中替换为不可用演示值。</p>
         </div>
       </div>
 
@@ -125,8 +125,8 @@ function closeMobileToc() {
 
         <ImageViewer
           src="/screenshots/v044/accounts-v044.png"
-          alt="Amber 账号列表与导入入口"
-          caption="账号列表提供测试、启停、详情和批量操作。点击图片可查看大图。"
+          alt="Amber v0.4.4 账号列表与导入入口真实界面"
+          caption="真实 v0.4.4 界面，账号身份、用量与费用已替换为演示值。点击图片可查看大图。"
         />
 
         <h3>选择合适的导入方式</h3>
@@ -156,8 +156,8 @@ function closeMobileToc() {
 
         <ImageViewer
           src="/screenshots/v044/network-v044.png"
-          alt="Amber v0.4.4 代理与网络出口演示界面"
-          caption="“应用到全部账号”是一次性写入现有账号，不是以后导入账号自动继承的全局规则。"
+          alt="Amber v0.4.4 代理与网络出口真实界面"
+          caption="真实 v0.4.4 界面，代理信息已替换为演示值。“应用到全部账号”是一次性写入现有账号。"
         />
 
         <ul class="doc-checklist">
@@ -175,8 +175,8 @@ function closeMobileToc() {
 
         <ImageViewer
           src="/screenshots/v044/dashboard-v044.png"
-          alt="Amber v0.4.4 仪表盘与本地网关状态演示界面"
-          caption="脱敏演示界面。使用前以应用内实际端口和本地 API Key 为准。"
+          alt="Amber v0.4.4 仪表盘与本地网关状态真实界面"
+          caption="真实 v0.4.4 界面，API Key 与运营数据已替换为演示值。使用时以应用内实际值为准。"
         />
 
         <h3>先验证模型列表</h3>
@@ -197,6 +197,12 @@ function closeMobileToc() {
         <p class="section-index">05</p>
         <h2>本地 Codex 接入</h2>
         <p class="section-lede">{{ currentVersion }} 提供“启动服务并注入”：Amber 会先启动本地网关，验证健康状态、API Key 和模型列表，再写入并回读 Codex 配置。</p>
+
+        <ImageViewer
+          src="/screenshots/v044/codex-injection-v044.png"
+          alt="Amber v0.4.4 本机 Codex 一键接入真实界面"
+          caption="真实 v0.4.4 本机接入界面，本机路径与备份时间已替换为演示值。"
+        />
 
         <ol class="doc-steps compact">
           <li><strong>选择“启动服务并注入”</strong><p>Amber 会启动本地服务；启动失败、端口冲突或健康检查异常时不会写入配置。</p></li>
@@ -243,12 +249,6 @@ done</code></pre>
           <span>本机 Amber</span><b aria-hidden="true">→</b>
           <span>本机代理与账号</span>
         </div>
-
-        <ImageViewer
-          src="/screenshots/v044/codex-injection-v044.png"
-          alt="Amber v0.4.4 Codex 远程注入与反向隧道演示界面"
-          caption="反向隧道依赖本机 Amber、SSH 连接和本地服务持续在线；远程服务器不需要安装 Amber。"
-        />
 
         <h3>远端准备条件</h3>
         <ul>
@@ -297,8 +297,8 @@ done</code></pre>
 
         <ImageViewer
           src="/screenshots/v044/cloud-sharing-v044.png"
-          alt="Amber v0.4.4 云账户、加密同步与受控共享演示界面"
-          caption="连接码共享会为接收者建立独立授权；请勿在截图、日志或工单中暴露邮箱、验证码和密钥。"
+          alt="Amber v0.4.4 云账户、加密同步与受控共享真实界面"
+          caption="真实 v0.4.4 界面，账户、连接码与用户标识已替换为演示值；连接后会为接收者建立独立授权。"
         />
 
         <div class="sharing-columns">

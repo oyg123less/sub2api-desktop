@@ -8,6 +8,10 @@ playwright-report/
 # Vite
 .vite/
 
+# Python helpers
+__pycache__/
+*.py[cod]
+
 # Tauri / Rust
 src-tauri/target/
 src-tauri/gen/

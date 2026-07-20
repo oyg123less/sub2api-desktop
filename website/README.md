@@ -53,8 +53,6 @@ $env:npm_config_cache = 'D:\Study\other\vet\.npm-cache'
 # Playwright 桌面、窄窗口和手机视口
 & $Node '.\node_modules\@playwright\test\cli.js' test --workers=4
 
-# 重新生成完全虚构的 v0.4.4 官网演示图
-& $Node '.\scripts\generate-demo-assets.mjs'
 ```
 
 构建产物位于 `website/dist/`。`wrangler.toml` 只声明 Pages 构建目录，不包含生产绑定、域名或凭据。
@@ -67,9 +65,9 @@ $env:npm_config_cache = 'D:\Study\other\vet\.npm-cache'
 
 ## 截图
 
-首页和产品演示使用 `public/screenshots/v044/` 中的完全虚构演示界面，所有画面均明确标注“演示数据 · v0.4.4”，不包含真实账号、代理、设备或 SSH 身份信息。这些位图由 `scripts/generate-demo-assets.mjs` 确定性生成。
+首页、产品演示和文档页使用 `public/screenshots/v044/` 中的 Amber v0.4.4 真实界面。原始截图不进入 `public/` 或 Git；只提交经过不可逆像素替换的输出文件。
 
-文档页同样使用 `public/screenshots/v044/` 中的脱敏演示界面；正文和应用内实际界面是 v0.4.4 行为的依据。
+`scripts/sanitize-product-assets.py` 负责遮盖账号身份、连接码、用户 ID、本机路径、API Key、用量和费用，并生成桌面、移动端及 Open Graph 素材。脚本需要 Pillow，原始截图路径通过命令行参数传入，不属于常规构建流程。
 
 替换前必须直接检查图片像素中的邮箱、账号 ID、Token、API Key、Guest Key、代理凭据、服务器地址和设备名称。不能只在网页上使用 CSS 遮挡。
 

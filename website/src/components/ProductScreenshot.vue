@@ -14,8 +14,8 @@ withDefaults(
   }>(),
   {
     caption: "",
-    width: 2880,
-    height: 1800,
+    width: 1920,
+    height: 1200,
     loading: "lazy",
     fetchPriority: "auto",
   },

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 const roots = ["."];
-const textExtensions = new Set([".css", ".html", ".js", ".json", ".md", ".mjs", ".svg", ".toml", ".ts", ".txt", ".vue", ".xml"]);
+const textExtensions = new Set([".css", ".html", ".js", ".json", ".md", ".mjs", ".py", ".svg", ".toml", ".ts", ".txt", ".vue", ".xml"]);
 const patterns = [
   [/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g, "private key"],
   [/\bghp_[A-Za-z0-9]{30,}\b/g, "GitHub classic token"],

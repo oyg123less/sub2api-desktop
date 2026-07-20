@@ -77,7 +77,10 @@ onBeforeUnmount(() => document.body.classList.remove("modal-open"));
       <button ref="closeButton" class="lightbox-close" type="button" aria-label="关闭图片预览" title="关闭图片预览" @click="closeImage">
         <X :size="22" aria-hidden="true" />
       </button>
-      <img :src="src" :alt="alt" />
+      <picture>
+        <source v-if="mobileSrc" media="(max-width: 640px)" :srcset="mobileSrc" />
+        <img :src="src" :alt="alt" />
+      </picture>
       <p v-if="caption">{{ caption }}</p>
     </div>
   </Teleport>

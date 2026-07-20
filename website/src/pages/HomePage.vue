@@ -65,9 +65,9 @@ const scenarioIcons: Component[] = [UsersRound, Server, ShieldCheck];
         <ProductScreenshot
           src="/screenshots/v044/hero-cover-v044.png"
           mobile-src="/screenshots/v044/hero-cover-v044-mobile.png"
-          alt="Amber v0.4.4 本地 Codex 网关产品封面"
-          :width="2880"
-          :height="900"
+          alt="Amber v0.4.4 仪表盘真实界面封面"
+          :width="1920"
+          :height="600"
           loading="eager"
           fetch-priority="high"
         />
@@ -118,7 +118,7 @@ const scenarioIcons: Component[] = [UsersRound, Server, ShieldCheck];
         eyebrow="产品演示"
         heading-id="showcase-title"
         title="四个视图，看清 Amber 如何工作"
-        description="切换账号、网络、共享和 Codex 接入。所有画面均使用完全虚构的演示数据。"
+        description="切换账号、网络、共享和 Codex 接入。以下均为 Amber v0.4.4 真实界面，敏感信息已做不可逆脱敏。"
       />
       <ProductShowcase />
     </div>
@@ -174,7 +174,7 @@ const scenarioIcons: Component[] = [UsersRound, Server, ShieldCheck];
         <ProductScreenshot
           src="/screenshots/v044/network-v044.png"
           mobile-src="/screenshots/v044/network-v044-compact.png"
-          alt="Amber 三种网络出口模式的脱敏演示界面"
+          alt="Amber v0.4.4 代理与网络出口真实界面"
         />
       </RevealOnScroll>
     </div>
@@ -186,7 +186,7 @@ const scenarioIcons: Component[] = [UsersRound, Server, ShieldCheck];
         <ProductScreenshot
           src="/screenshots/v044/cloud-sharing-v044.png"
           mobile-src="/screenshots/v044/cloud-sharing-v044-compact.png"
-          alt="Amber 连接码受控共享和设备路由的脱敏演示界面"
+          alt="Amber v0.4.4 连接码受控共享真实界面"
         />
       </RevealOnScroll>
 

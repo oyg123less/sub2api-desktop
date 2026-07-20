@@ -7,7 +7,8 @@ describe("ImageViewer", () => {
     const wrapper = mount(ImageViewer, {
       attachTo: document.body,
       props: {
-        src: "/screenshots/dashboard.png",
+        src: "/screenshots/v044/dashboard-v044.png",
+        mobileSrc: "/screenshots/v044/hero-cover-v044-mobile.png",
         alt: "Amber 仪表盘",
         caption: "演示界面",
       },
@@ -22,6 +23,7 @@ describe("ImageViewer", () => {
     expect(dialog).not.toBeNull();
     expect(close).toBe(document.activeElement);
     expect(document.body.classList.contains("modal-open")).toBe(true);
+    expect(document.querySelector(".lightbox source")?.getAttribute("srcset")).toBe("/screenshots/v044/hero-cover-v044-mobile.png");
 
     dialog?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await wrapper.vm.$nextTick();

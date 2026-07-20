@@ -50,8 +50,8 @@ export const showcaseItems: ShowcaseItem[] = [
     points: ["额度感知与优先级调度", "批量测试、启停和队列状态", "统计与费用保持可追踪"],
     image: "/screenshots/v044/accounts-v044.png",
     mobileImage: "/screenshots/v044/accounts-v044-compact.png",
-    alt: "Amber v0.4.4 账号调度演示界面",
-    caption: "完全虚构的演示数据，不包含真实账号、凭据或费用信息。",
+    alt: "Amber v0.4.4 账号调度真实界面",
+    caption: "真实 v0.4.4 界面；账号身份、用量与费用已替换为演示值。",
     docsLink: "/docs#accounts",
   },
   {
@@ -62,8 +62,8 @@ export const showcaseItems: ShowcaseItem[] = [
     points: ["direct / system / proxy 明确分离", "代理测试与账号测试分步执行", "云连接可以选择独立网络出口"],
     image: "/screenshots/v044/network-v044.png",
     mobileImage: "/screenshots/v044/network-v044-compact.png",
-    alt: "Amber v0.4.4 代理与网络模式演示界面",
-    caption: "示例节点仅用于展示模式选择，不包含真实代理地址。",
+    alt: "Amber v0.4.4 代理与网络模式真实界面",
+    caption: "真实 v0.4.4 界面；代理名称、地址与绑定数量已替换为演示值。",
     docsLink: "/docs#proxies",
   },
   {
@@ -74,8 +74,8 @@ export const showcaseItems: ShowcaseItem[] = [
     points: ["无需先建立好友关系", "主设备与备用设备路由明确", "每位接收者独立额度与授权"],
     image: "/screenshots/v044/cloud-sharing-v044.png",
     mobileImage: "/screenshots/v044/cloud-sharing-v044-compact.png",
-    alt: "Amber v0.4.4 云账户与连接码共享演示界面",
-    caption: "连接码、临时密码和设备名称均为不可用的演示占位信息。",
+    alt: "Amber v0.4.4 云账户与连接码共享真实界面",
+    caption: "真实 v0.4.4 界面；账户、连接码与用户标识已替换为演示值。",
     docsLink: "/docs#sharing",
   },
   {
@@ -86,8 +86,8 @@ export const showcaseItems: ShowcaseItem[] = [
     points: ["本机启动服务并注入", "SSH 指纹确认后建立反向隧道", "失败时保留明确诊断阶段"],
     image: "/screenshots/v044/codex-injection-v044.png",
     mobileImage: "/screenshots/v044/codex-injection-v044-compact.png",
-    alt: "Amber v0.4.4 本地与远程 Codex 接入演示界面",
-    caption: "远程目标使用抽象演示标签，不包含主机、用户名、端口或指纹。",
+    alt: "Amber v0.4.4 本机 Codex 接入真实界面",
+    caption: "真实 v0.4.4 本机接入界面；本机路径与备份时间已替换为演示值。",
     docsLink: "/docs#codex-local",
   },
 ];
