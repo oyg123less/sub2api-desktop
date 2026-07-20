@@ -35,7 +35,7 @@ for (const route of routes) {
   if (document.querySelectorAll("h1").length !== 1) errors.push(`${route}: expected exactly one h1`);
 }
 
-for (const publicFile of ["robots.txt", "sitemap.xml", "_headers", "app-icon.png"]) {
+for (const publicFile of ["robots.txt", "sitemap.xml", "_headers", "amber-mark.svg", "og-cover-v044.png"]) {
   if (!fs.existsSync(path.join(dist, publicFile))) errors.push(`Missing public build artifact: ${publicFile}`);
 }
 

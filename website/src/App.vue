@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useHead } from "@unhead/vue";
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { RouterView, useRoute } from "vue-router";
 import SiteFooter from "./components/SiteFooter.vue";
 import SiteHeader from "./components/SiteHeader.vue";
@@ -10,6 +10,7 @@ const canonicalUrl = computed(() => `https://amberapp.asia${route.path === "/" ?
 const routeAnnouncement = ref("");
 
 useHead({
+  htmlAttrs: { lang: "zh-CN" },
   title: computed(() => route.meta.title),
   meta: [
     { name: "description", content: computed(() => route.meta.description) },
@@ -19,11 +20,11 @@ useHead({
     { name: "twitter:title", content: computed(() => route.meta.title) },
     { name: "twitter:description", content: computed(() => route.meta.description) },
   ],
-  link: [{ rel: "canonical", href: canonicalUrl }],
-});
-
-onMounted(() => {
-  document.documentElement.classList.add("js");
+  link: [
+    { rel: "canonical", href: canonicalUrl },
+    { rel: "alternate", hreflang: "zh-CN", href: canonicalUrl },
+    { rel: "alternate", hreflang: "x-default", href: canonicalUrl },
+  ],
 });
 
 watch(

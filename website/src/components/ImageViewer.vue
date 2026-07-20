@@ -4,8 +4,14 @@ import { nextTick, onBeforeUnmount, ref } from "vue";
 
 const props = defineProps<{
   src: string;
+  mobileSrc?: string;
   alt: string;
   caption?: string;
+  width?: number;
+  height?: number;
+  loading?: "eager" | "lazy";
+  fetchPriority?: "high" | "low" | "auto";
+  variant?: "default" | "product";
 }>();
 
 const open = ref(false);
@@ -38,9 +44,20 @@ onBeforeUnmount(() => document.body.classList.remove("modal-open"));
 </script>
 
 <template>
-  <figure class="image-viewer">
-    <button type="button" class="image-button" :aria-label="`放大查看：${alt}`" @click="showImage">
-      <img :src="src" :alt="alt" loading="lazy" decoding="async" />
+  <figure class="image-viewer" :class="{ 'image-viewer-product': props.variant === 'product' }">
+    <button type="button" class="image-button" :aria-label="`放大查看：${alt}`" :title="`放大查看：${alt}`" @click="showImage">
+      <picture>
+        <source v-if="mobileSrc" media="(max-width: 640px)" :srcset="mobileSrc" />
+        <img
+          :src="src"
+          :alt="alt"
+          :width="width"
+          :height="height"
+          :loading="loading ?? 'lazy'"
+          :fetchpriority="fetchPriority ?? 'auto'"
+          decoding="async"
+        />
+      </picture>
       <span class="image-expand" aria-hidden="true"><Expand :size="18" /></span>
     </button>
     <figcaption v-if="caption">{{ caption }}</figcaption>
@@ -57,7 +74,7 @@ onBeforeUnmount(() => document.body.classList.remove("modal-open"));
       @keydown="onDialogKeydown"
       @click.self="closeImage"
     >
-      <button ref="closeButton" class="lightbox-close" type="button" aria-label="关闭图片预览" @click="closeImage">
+      <button ref="closeButton" class="lightbox-close" type="button" aria-label="关闭图片预览" title="关闭图片预览" @click="closeImage">
         <X :size="22" aria-hidden="true" />
       </button>
       <img :src="src" :alt="alt" />

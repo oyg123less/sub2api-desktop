@@ -13,7 +13,7 @@ describe("ImageViewer", () => {
       },
     });
 
-    const trigger = wrapper.get("button");
+    const trigger = wrapper.get<HTMLButtonElement>(".image-button");
     trigger.element.focus();
     await trigger.trigger("click");
 

@@ -52,67 +52,10 @@ const history = [
   <PageIntro
     eyebrow="版本记录"
     title="Amber 更新日志"
-    description="查看当前稳定版、后续版本计划和近期版本演进。只有已经发布的版本才提供下载入口。"
+    description="先查看当前稳定版的已发布能力，再沿时间线回顾近期演进。尚未发布的计划单独列在页面末尾。"
   />
 
-  <section class="section" aria-labelledby="upcoming-heading">
-    <div class="container release-layout">
-      <div class="release-heading">
-        <div>
-          <span class="status-pill upcoming">
-            <CircleDashed :size="14" aria-hidden="true" />
-            即将发布
-          </span>
-          <h2 id="upcoming-heading">v{{ upcomingRelease.version }}</h2>
-        </div>
-        <div class="release-meta">
-          <CalendarClock :size="18" aria-hidden="true" />
-          <span>发布日期待定</span>
-        </div>
-      </div>
-
-      <div class="callout warning upcoming-note">
-        <TriangleAlert :size="21" aria-hidden="true" />
-        <div>
-          <strong>此版本仍在规划与开发中</strong>
-          <p>目前没有安装包、校验值或 Release 页面，以下内容可能随实现与验证结果调整。</p>
-        </div>
-      </div>
-
-      <div class="planned-list" :aria-label="`v${upcomingRelease.version} 计划内容`">
-        <article>
-          <CheckCircle2 :size="20" aria-hidden="true" />
-          <div>
-            <h3>可靠性维护</h3>
-            <p>继续改进同步、共享、网络诊断与本地网关的稳定性，并根据实际反馈修复问题。</p>
-          </div>
-        </article>
-        <article>
-          <CheckCircle2 :size="20" aria-hidden="true" />
-          <div>
-            <h3>使用体验</h3>
-            <p>继续减少高频操作步骤，改善状态反馈、错误说明与窄窗口下的可用性。</p>
-          </div>
-        </article>
-        <article>
-          <CheckCircle2 :size="20" aria-hidden="true" />
-          <div>
-            <h3>兼容性验证</h3>
-            <p>在保持数据和接口兼容的前提下推进后续改进，具体内容以完成验证后的发布说明为准。</p>
-          </div>
-        </article>
-        <article>
-          <CheckCircle2 :size="20" aria-hidden="true" />
-          <div>
-            <h3>文档与诊断</h3>
-            <p>根据用户实际问题持续补全文档、诊断路径和可操作的恢复建议。</p>
-          </div>
-        </article>
-      </div>
-    </div>
-  </section>
-
-  <section class="section section-muted" aria-labelledby="stable-heading">
+  <section class="section section-muted stable-release-section" aria-labelledby="stable-heading">
     <div class="container release-layout">
       <div class="release-heading">
         <div>
@@ -211,12 +154,82 @@ const history = [
       </ol>
     </div>
   </section>
+
+  <section class="section-compact section-muted future-release-section" aria-labelledby="upcoming-heading">
+    <div class="container release-layout">
+      <div class="release-heading">
+        <div>
+          <span class="status-pill upcoming">
+            <CircleDashed :size="14" aria-hidden="true" />
+            规划中
+          </span>
+          <h2 id="upcoming-heading">后续 v{{ upcomingRelease.version }}</h2>
+        </div>
+        <div class="release-meta">
+          <CalendarClock :size="18" aria-hidden="true" />
+          <span>发布日期待定</span>
+        </div>
+      </div>
+
+      <div class="callout warning upcoming-note">
+        <TriangleAlert :size="21" aria-hidden="true" />
+        <div>
+          <strong>以下内容尚未发布</strong>
+          <p>目前没有安装包、校验值或 Release 页面，计划可能随实现与验证结果调整。</p>
+        </div>
+      </div>
+
+      <div class="planned-list" :aria-label="`v${upcomingRelease.version} 计划内容`">
+        <article>
+          <CheckCircle2 :size="20" aria-hidden="true" />
+          <div>
+            <h3>可靠性维护</h3>
+            <p>继续改进同步、共享、网络诊断与本地网关的稳定性，并根据实际反馈修复问题。</p>
+          </div>
+        </article>
+        <article>
+          <CheckCircle2 :size="20" aria-hidden="true" />
+          <div>
+            <h3>使用体验</h3>
+            <p>继续减少高频操作步骤，改善状态反馈、错误说明与窄窗口下的可用性。</p>
+          </div>
+        </article>
+        <article>
+          <CheckCircle2 :size="20" aria-hidden="true" />
+          <div>
+            <h3>兼容性验证</h3>
+            <p>在保持数据和接口兼容的前提下推进后续改进，具体内容以完成验证后的发布说明为准。</p>
+          </div>
+        </article>
+        <article>
+          <CheckCircle2 :size="20" aria-hidden="true" />
+          <div>
+            <h3>文档与诊断</h3>
+            <p>根据用户实际问题持续补全文档、诊断路径和可操作的恢复建议。</p>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
 </template>
 
 <style scoped>
 .release-layout {
   display: grid;
   gap: 30px;
+}
+
+.stable-release-section .release-heading {
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--border-strong);
+}
+
+.future-release-section .release-layout {
+  gap: 24px;
+}
+
+.future-release-section .release-heading h2 {
+  font-size: 28px;
 }
 
 .release-heading {
@@ -349,18 +362,46 @@ const history = [
 }
 
 .history-list {
+  position: relative;
   margin: 0;
-  padding: 0;
+  padding: 0 0 0 28px;
   list-style: none;
-  border-top: 1px solid var(--border);
+}
+
+.history-list::before {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 5px;
+  width: 1px;
+  background: var(--border-strong);
+  content: "";
 }
 
 .history-list li {
+  position: relative;
   display: grid;
   grid-template-columns: 92px minmax(0, 1fr);
   gap: 24px;
-  padding-block: 19px;
+  padding-block: 17px;
   border-bottom: 1px solid var(--border);
+}
+
+.history-list li::before {
+  position: absolute;
+  top: 24px;
+  left: -27px;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--surface);
+  border-radius: 50%;
+  background: var(--amber);
+  box-shadow: 0 0 0 1px var(--border-strong);
+  content: "";
+}
+
+.history-list li:last-child {
+  border-bottom: 0;
 }
 
 .history-version {

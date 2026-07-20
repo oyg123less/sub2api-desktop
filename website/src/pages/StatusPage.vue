@@ -172,12 +172,24 @@ const services = [
 }
 
 .service-row {
+  position: relative;
   display: grid;
   grid-template-columns: 44px minmax(0, 1fr) minmax(180px, auto);
   gap: 18px;
   align-items: center;
   padding-block: 22px;
   border-bottom: 1px solid var(--border);
+  transition:
+    box-shadow 200ms var(--ease-out),
+    transform 200ms var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .service-row:hover {
+    z-index: 1;
+    box-shadow: var(--shadow-xs);
+    transform: translateY(-2px);
+  }
 }
 
 .service-icon {
@@ -304,6 +316,15 @@ const services = [
 
   .events-layout .button {
     width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .service-row,
+  .service-row:hover {
+    box-shadow: none;
+    transform: none;
+    transition: none;
   }
 }
 </style>

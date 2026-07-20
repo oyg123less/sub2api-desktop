@@ -30,7 +30,7 @@ export default defineConfig({
     },
     {
       name: "mobile",
-      use: { ...devices["Pixel 7"] },
+      use: { ...devices["Pixel 7"], viewport: { width: 412, height: 915 } },
     },
   ],
 });

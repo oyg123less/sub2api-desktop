@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">Amber</title>
+  <desc id="desc">A geometric amber crystal containing an open A-shaped gateway.</desc>
+  <path fill="#d8643f" d="M32 3 56 17v30L32 61 8 47V17L32 3Z"/>
+  <path fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="6" d="m18.5 45 13.4-28L45.5 45M24 34h23"/>
+  <path fill="#167f78" d="m45 28 10 6-10 6V28Z"/>
+</svg>

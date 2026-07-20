@@ -52,6 +52,9 @@ $env:npm_config_cache = 'D:\Study\other\vet\.npm-cache'
 
 # Playwright 桌面、窄窗口和手机视口
 & $Node '.\node_modules\@playwright\test\cli.js' test --workers=4
+
+# 重新生成完全虚构的 v0.4.4 官网演示图
+& $Node '.\scripts\generate-demo-assets.mjs'
 ```
 
 构建产物位于 `website/dist/`。`wrangler.toml` 只声明 Pages 构建目录，不包含生产绑定、域名或凭据。
@@ -64,7 +67,9 @@ $env:npm_config_cache = 'D:\Study\other\vet\.npm-cache'
 
 ## 截图
 
-部分图片为 v0.4.2 模拟数据界面，仅用于说明操作位置；正文和应用内实际界面是 v0.4.4 行为的依据。后续替换截图时应覆盖云账户、工作区、设备定向共享和“启动服务并注入”。
+首页和产品演示使用 `public/screenshots/v044/` 中的完全虚构演示界面，所有画面均明确标注“演示数据 · v0.4.4”，不包含真实账号、代理、设备或 SSH 身份信息。这些位图由 `scripts/generate-demo-assets.mjs` 确定性生成。
+
+文档页同样使用 `public/screenshots/v044/` 中的脱敏演示界面；正文和应用内实际界面是 v0.4.4 行为的依据。
 
 替换前必须直接检查图片像素中的邮箱、账号 ID、Token、API Key、Guest Key、代理凭据、服务器地址和设备名称。不能只在网页上使用 CSS 遮挡。
 

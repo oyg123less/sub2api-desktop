@@ -35,30 +35,48 @@ for (const htmlFile of htmlFiles) {
     ? "/"
     : `/${relativeHtml.replace(/\/index\.html$/, "/").replace(/\.html$/, "")}`;
 
-  for (const element of document.querySelectorAll("a[href], img[src]")) {
-    const attribute = element.tagName === "IMG" ? "src" : "href";
-    const raw = element.getAttribute(attribute);
-    if (!raw || raw.startsWith("http:") || raw.startsWith("https:") || raw.startsWith("mailto:") || raw.startsWith("tel:")) continue;
+  const linkedElements = document.querySelectorAll(
+    'a[href], img[src], source[srcset], link[rel="icon"][href], meta[property="og:image"][content], meta[name="twitter:image"][content]',
+  );
 
-    const url = new URL(raw, `https://amberapp.asia${currentRoute}`);
-    const extension = path.extname(url.pathname);
+  for (const element of linkedElements) {
+    const attribute = element.tagName === "IMG"
+      ? "src"
+      : element.tagName === "SOURCE"
+        ? "srcset"
+        : element.tagName === "META"
+          ? "content"
+          : "href";
+    const rawValue = element.getAttribute(attribute);
+    if (!rawValue || rawValue.startsWith("mailto:") || rawValue.startsWith("tel:")) continue;
 
-    if (extension && extension !== ".html") {
-      const asset = path.join(dist, url.pathname.replace(/^\//, ""));
-      if (!fs.existsSync(asset)) errors.push(`${path.relative(dist, htmlFile)}: missing asset ${url.pathname}`);
-      continue;
-    }
+    const values = attribute === "srcset"
+      ? rawValue.split(",").map((candidate) => candidate.trim().split(/\s+/)[0]).filter(Boolean)
+      : [rawValue];
 
-    const targetFile = builtRoute(url.pathname);
-    if (!targetFile) {
-      errors.push(`${path.relative(dist, htmlFile)}: missing route ${url.pathname}`);
-      continue;
-    }
+    for (const raw of values) {
+      const url = new URL(raw, `https://amberapp.asia${currentRoute}`);
+      if (url.hostname !== "amberapp.asia") continue;
 
-    if (url.hash) {
-      const target = new JSDOM(fs.readFileSync(targetFile, "utf8")).window.document;
-      const id = decodeURIComponent(url.hash.slice(1));
-      if (!target.getElementById(id)) errors.push(`${path.relative(dist, htmlFile)}: missing anchor ${url.pathname}${url.hash}`);
+      const extension = path.extname(url.pathname);
+
+      if (extension && extension !== ".html") {
+        const asset = path.join(dist, url.pathname.replace(/^\//, ""));
+        if (!fs.existsSync(asset)) errors.push(`${path.relative(dist, htmlFile)}: missing asset ${url.pathname}`);
+        continue;
+      }
+
+      const targetFile = builtRoute(url.pathname);
+      if (!targetFile) {
+        errors.push(`${path.relative(dist, htmlFile)}: missing route ${url.pathname}`);
+        continue;
+      }
+
+      if (url.hash) {
+        const target = new JSDOM(fs.readFileSync(targetFile, "utf8")).window.document;
+        const id = decodeURIComponent(url.hash.slice(1));
+        if (!target.getElementById(id)) errors.push(`${path.relative(dist, htmlFile)}: missing anchor ${url.pathname}${url.hash}`);
+      }
     }
   }
 }
@@ -68,4 +86,4 @@ if (errors.length) {
   process.exit(1);
 }
 
-console.log(`Checked internal links and image sources across ${htmlFiles.length} HTML files.`);
+console.log(`Checked internal links, responsive images, and metadata assets across ${htmlFiles.length} HTML files.`);

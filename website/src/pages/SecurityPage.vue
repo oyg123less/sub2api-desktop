@@ -475,6 +475,19 @@ const currentVersion = `v${stableRelease.version}`;
   gap: 9px;
 }
 
+.boundary-actions .button:hover,
+.boundary-actions .button:focus-visible {
+  border-color: var(--teal);
+  background: var(--teal-soft);
+  color: var(--teal);
+  box-shadow: var(--shadow-xs);
+  transform: none;
+}
+
+.boundary-actions .button:active {
+  transform: none;
+}
+
 @media (max-width: 900px) {
   .boundary-grid,
   .control-grid,

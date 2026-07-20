@@ -9,15 +9,17 @@ import { stableRelease } from "../config/releases";
     <div class="container footer-grid">
       <div class="footer-brand">
         <RouterLink class="brand" to="/">
-          <img src="/app-icon.png" alt="" width="32" height="32" />
+          <img src="/amber-mark.svg" alt="" width="32" height="32" />
           <span>Amber</span>
         </RouterLink>
-        <p>Windows Codex 桌面网关与多账号调度工具。</p>
+        <p>把多个账号变成可调度、可共享的 Windows Codex 网关。</p>
       </div>
 
       <nav aria-label="页脚导航">
         <RouterLink to="/docs">使用文档</RouterLink>
         <RouterLink to="/download">下载 v{{ stableRelease.version }}</RouterLink>
+        <RouterLink to="/changelog">更新日志</RouterLink>
+        <RouterLink to="/faq">常见问题</RouterLink>
         <RouterLink to="/security">安全与隐私</RouterLink>
         <RouterLink to="/status">服务状态</RouterLink>
       </nav>

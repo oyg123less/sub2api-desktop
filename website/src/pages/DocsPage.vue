@@ -85,7 +85,7 @@ function closeMobileToc() {
         <CircleAlert :size="20" aria-hidden="true" />
         <div>
           <strong>截图版本说明</strong>
-          <p>部分图片来自 v0.4.2 模拟数据界面，仅用于说明操作位置；按钮名称和状态请以本页 {{ currentVersion }} 正文及应用内实际界面为准。</p>
+          <p>本页产品图均为 {{ currentVersion }} 完全虚构的脱敏演示数据，不包含真实账号、凭据、代理、设备或 SSH 身份信息。</p>
         </div>
       </div>
 
@@ -124,7 +124,7 @@ function closeMobileToc() {
         <p class="section-lede">进入“账号”，点击右上角“导入账号”。Amber 支持 ChatGPT OAuth、Base URL + API Key，以及单个或批量 JSON 文件。</p>
 
         <ImageViewer
-          src="/screenshots/accounts.png"
+          src="/screenshots/v044/accounts-v044.png"
           alt="Amber 账号列表与导入入口"
           caption="账号列表提供测试、启停、详情和批量操作。点击图片可查看大图。"
         />
@@ -145,20 +145,8 @@ function closeMobileToc() {
           </div>
         </dl>
 
-        <ImageViewer
-          src="/screenshots/import.png"
-          alt="Amber 统一账号导入方式选择"
-          caption="导入预览不会替代人工检查；含真实 Token 的 JSON 不得上传到聊天、工单或公开仓库。"
-        />
-
         <h3>并发、队列和批处理</h3>
         <p>账号详情中的“最大并发”限制同时处理的请求数，“队列容量”控制并发占满后的等待数量。队列也满时，新请求会被明确拒绝，而不是无限等待。批量全选只覆盖当前页，跨页选择会保留并显示总数。</p>
-
-        <ImageViewer
-          src="/screenshots/account-details.png"
-          alt="Amber 账号详情中的并发与队列设置"
-          caption="严重认证错误可能自动停用账号。修复凭据后先测试成功，再重新启用。"
-        />
       </section>
 
       <section id="proxies" class="doc-section">
@@ -167,8 +155,8 @@ function closeMobileToc() {
         <p class="section-lede">Amber 支持 HTTP、HTTPS 和 SOCKS5。代理保存后应先运行测试，分别查看 DNS、连接、TLS 和 HTTP 阶段，而不是只看最终成功或失败。</p>
 
         <ImageViewer
-          src="/screenshots/proxies.png"
-          alt="Amber 代理管理与批量工具栏"
+          src="/screenshots/v044/network-v044.png"
+          alt="Amber v0.4.4 代理与网络出口演示界面"
           caption="“应用到全部账号”是一次性写入现有账号，不是以后导入账号自动继承的全局规则。"
         />
 
@@ -186,9 +174,9 @@ function closeMobileToc() {
         <p class="section-lede">回到仪表盘，点击“启动服务”。默认地址为 <code>http://127.0.0.1:8080/v1</code>，本地 API Key 由 Amber 生成，与上游 OpenAI API Key 不是同一项凭据。</p>
 
         <ImageViewer
-          src="/screenshots/dashboard.png"
-          alt="Amber 仪表盘的服务状态与客户端配置"
-          caption="现有版本界面示意。使用前以应用内实际端口和本地 API Key 为准。"
+          src="/screenshots/v044/dashboard-v044.png"
+          alt="Amber v0.4.4 仪表盘与本地网关状态演示界面"
+          caption="脱敏演示界面。使用前以应用内实际端口和本地 API Key 为准。"
         />
 
         <h3>先验证模型列表</h3>
@@ -215,12 +203,6 @@ function closeMobileToc() {
           <li><strong>选择模型并核对预览</strong><p>检查将写入的 <code>config.toml</code>、<code>auth.json</code> 路径、Base URL 和模型。</p></li>
           <li><strong>执行一键注入</strong><p>Amber 会先备份已有配置。应用后重新加载或重启 Codex，再发起最小请求。</p></li>
         </ol>
-
-        <ImageViewer
-          src="/screenshots/codex-local.png"
-          alt="Amber Codex 本机接入与配置预览"
-          :caption="`${currentVersion} 会在注入前启动并验证本地服务；完成后仍需重新加载 Codex。`"
-        />
 
       </section>
 
@@ -263,8 +245,8 @@ done</code></pre>
         </div>
 
         <ImageViewer
-          src="/screenshots/codex.png"
-          alt="Amber Codex 远程接入目标配置"
+          src="/screenshots/v044/codex-injection-v044.png"
+          alt="Amber v0.4.4 Codex 远程注入与反向隧道演示界面"
           caption="反向隧道依赖本机 Amber、SSH 连接和本地服务持续在线；远程服务器不需要安装 Amber。"
         />
 
@@ -290,12 +272,6 @@ done</code></pre>
         <h2>云账号注册与加密同步</h2>
         <p class="section-lede">云账号用于同步、备份、多设备和共享，不是使用本地网关的前置条件。注册时需要邮箱验证码，并应使用密码管理器保存云主密码。</p>
 
-        <ImageViewer
-          src="/screenshots/cloud-register.png"
-          alt="Amber 云账号注册与邮箱验证"
-          caption="云主密码参与本地加密流程，不提供找回。请勿在截图、日志或工单中暴露邮箱、验证码和密钥。"
-        />
-
         <h3>同步失败时按阶段诊断</h3>
         <ol class="diagnostic-grid">
           <li><strong>DNS</strong><span>域名是否解析，系统或代理 DNS 是否返回可用地址。</span></li>
@@ -318,6 +294,12 @@ done</code></pre>
         <p class="section-index">09</p>
         <h2>当前 {{ currentVersion }} 的共享流程</h2>
         <p class="section-lede">{{ currentVersion }} 使用“连接码 + 临时密码”快速共享，不要求先添加好友。使用前，双方都需要登录各自的 Amber 云账号。</p>
+
+        <ImageViewer
+          src="/screenshots/v044/cloud-sharing-v044.png"
+          alt="Amber v0.4.4 云账户、加密同步与受控共享演示界面"
+          caption="连接码共享会为接收者建立独立授权；请勿在截图、日志或工单中暴露邮箱、验证码和密钥。"
+        />
 
         <div class="sharing-columns">
           <div>
@@ -466,9 +448,9 @@ done</code></pre>
 
 .docs-shell {
   display: grid;
-  grid-template-columns: 230px minmax(0, 1fr);
+  grid-template-columns: 220px minmax(0, 1fr);
   align-items: start;
-  gap: 64px;
+  gap: 52px;
   padding-block: 58px 100px;
 }
 
@@ -524,8 +506,9 @@ done</code></pre>
 }
 
 .docs-content {
+  width: 100%;
   min-width: 0;
-  max-width: 860px;
+  max-width: 968px;
 }
 
 .mobile-toc {
@@ -578,6 +561,26 @@ done</code></pre>
 
 .doc-section :deep(.image-viewer) {
   margin-block: 30px 38px;
+}
+
+.doc-section :deep(.image-button) {
+  box-shadow: 0 10px 28px rgba(28, 34, 30, 0.1);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .doc-section :deep(.image-expand) {
+    opacity: 0;
+    transform: translateY(4px);
+    transition:
+      opacity var(--motion-fast) ease,
+      transform var(--motion-fast) var(--ease-out);
+  }
+
+  .doc-section :deep(.image-button:hover .image-expand),
+  .doc-section :deep(.image-button:focus-visible .image-expand) {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .doc-steps {
@@ -942,6 +945,14 @@ done</code></pre>
 
   .docs-next .button {
     width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .doc-section :deep(.image-expand) {
+    opacity: 1;
+    transform: none;
+    transition: none;
   }
 }
 </style>
