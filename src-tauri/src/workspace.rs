@@ -158,7 +158,7 @@ pub fn validate_data_root(root: &Path) -> Result<(), String> {
     let index = read_index(root)?;
     for entry in index.workspaces {
         let relative = validate_relative_path(&entry.relative_path)?;
-        let workspace_dir = if relative == PathBuf::from(".") {
+        let workspace_dir = if relative == Path::new(".") {
             root.to_path_buf()
         } else {
             root.join(relative)
@@ -260,7 +260,7 @@ pub fn active(app: &AppHandle) -> Result<ActiveWorkspace, String> {
         .find(|entry| entry.id == index.active_workspace_id)
         .ok_or_else(|| "active workspace is missing".to_string())?;
     let relative = validate_relative_path(&entry.relative_path)?;
-    let data_dir = if relative == PathBuf::from(".") {
+    let data_dir = if relative == Path::new(".") {
         root
     } else {
         root.join(relative)
@@ -280,7 +280,7 @@ pub fn list(app: &AppHandle) -> Result<Vec<WorkspaceSummary>, String> {
         .into_iter()
         .map(|entry| {
             let relative = validate_relative_path(&entry.relative_path)?;
-            let data_dir = if relative == PathBuf::from(".") {
+            let data_dir = if relative == Path::new(".") {
                 root.clone()
             } else {
                 root.join(relative)
@@ -349,7 +349,7 @@ pub fn activate(app: &AppHandle, workspace_id: &str) -> Result<String, String> {
         .find(|entry| entry.id == workspace_id)
         .ok_or_else(|| "workspace was not found".to_string())?;
     let relative = validate_relative_path(&entry.relative_path)?;
-    let data_dir = if relative == PathBuf::from(".") {
+    let data_dir = if relative == Path::new(".") {
         root.clone()
     } else {
         root.join(relative)
