@@ -14,9 +14,9 @@ export const stableRelease: PublicReleaseInfo = {
   releaseUrl: "https://github.com/oyg123less/sub2api-desktop/releases/tag/v0.4.5",
   downloadUrl: "https://github.com/oyg123less/sub2api-desktop/releases/download/v0.4.5/Amber_0.4.5_x64-setup.exe",
   installerName: "Amber_0.4.5_x64-setup.exe",
-  installerSizeBytes: 8_008_724,
-  sha256: "81C2B1DB460317DFD3A35F9E06B364F753DE3F82377D0760506CEAAEE5D14528",
-  publishedAt: "2026-07-24T18:42:48Z",
+  installerSizeBytes: 8_001_595,
+  sha256: "76F3A4890C96B0902E488F0E491F83E357BC92DAC6506839B06195770FF2AC97",
+  publishedAt: "2026-07-24T19:10:05Z",
   status: "stable",
 };
 

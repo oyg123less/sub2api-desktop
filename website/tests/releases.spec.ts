@@ -9,8 +9,8 @@ describe("public release configuration", () => {
       "https://github.com/oyg123less/sub2api-desktop/releases/download/v0.4.5/Amber_0.4.5_x64-setup.exe",
     );
     expect(stableRelease.sha256).toMatch(/^[A-F0-9]{64}$/);
-    expect(stableRelease.installerSizeBytes).toBe(8_008_724);
-    expect(formatFileSize(stableRelease.installerSizeBytes)).toBe("7.64 MiB");
+    expect(stableRelease.installerSizeBytes).toBe(8_001_595);
+    expect(formatFileSize(stableRelease.installerSizeBytes)).toBe("7.63 MiB");
   });
 
   it("does not expose a download for the upcoming version", () => {
