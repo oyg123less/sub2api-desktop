@@ -44,5 +44,5 @@ test("persists manual dark mode, copies the version, and respects reduced motion
   await page.emulateMedia({ reducedMotion: "reduce" });
   const duration = await page.locator(".nav-item").first().evaluate((element) => getComputedStyle(element).transitionDuration);
   expect(duration.split(",").every((value) => Number.parseFloat(value) <= 0.00001)).toBe(true);
-  await page.screenshot({ path: `test-results/amber-dark-${testInfo.project.name}.png`, fullPage: true });
+  await page.screenshot({ path: testInfo.outputPath(`amber-dark-${testInfo.project.name}.png`), fullPage: true });
 });

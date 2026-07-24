@@ -9,8 +9,11 @@ import (
 	"sub2api-desktop/core/internal/openai"
 )
 
-// DefaultUserAgent mimics the official Codex CLI client.
-const DefaultUserAgent = "codex_cli_rs/0.125.0 (Ubuntu 22.4.0; x86_64) xterm-256color"
+const legacyDefaultUserAgent = "codex_cli_rs/0.125.0 (Ubuntu 22.4.0; x86_64) xterm-256color"
+
+// DefaultUserAgent is used only when the caller is not an official Codex
+// client. Official Codex requests keep their own, current client identity.
+const DefaultUserAgent = "codex_cli_rs/0.146.0 (Ubuntu 22.4.0; x86_64) xterm-256color"
 
 // DefaultSettings returns the built-in defaults (used on first run).
 func DefaultSettings() Settings {

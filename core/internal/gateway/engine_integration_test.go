@@ -112,8 +112,8 @@ func TestChatCompletionsStreaming(t *testing.T) {
 		t.Errorf("missing [DONE] terminator")
 	}
 	// Anti-ban headers.
-	if ua := captured.Get("User-Agent"); !strings.Contains(ua, "codex_cli_rs") {
-		t.Errorf("expected codex UA, got %q", ua)
+	if ua := captured.Get("User-Agent"); ua != store.DefaultUserAgent {
+		t.Errorf("expected fallback Codex UA %q, got %q", store.DefaultUserAgent, ua)
 	}
 	if captured.Get("originator") != "codex_cli_rs" {
 		t.Errorf("expected originator codex_cli_rs, got %q", captured.Get("originator"))

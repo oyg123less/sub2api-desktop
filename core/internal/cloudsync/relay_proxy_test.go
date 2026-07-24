@@ -96,6 +96,28 @@ func TestDialRelayWebSocketUsesHTTPConnectProxyAndClientHeaders(t *testing.T) {
 	}
 }
 
+func TestApplyRelayClientHeadersUsesWhitelist(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "http://amber-relay.local/v1/responses", nil)
+	applyRelayClientHeaders(request, map[string]string{
+		"User-Agent":    "codex_chatgpt_desktop/0.146.0 (Windows 11; x86_64)",
+		"originator":    "Codex Desktop",
+		"OpenAI-Beta":   "responses=stable",
+		"session_id":    "relay-session-123",
+		"Authorization": "Bearer must-not-cross-relay",
+		"X-Request-ID":  "spoofed-request-id",
+	})
+
+	if request.UserAgent() != "codex_chatgpt_desktop/0.146.0 (Windows 11; x86_64)" ||
+		request.Header.Get("originator") != "Codex Desktop" ||
+		request.Header.Get("OpenAI-Beta") != "responses=stable" ||
+		request.Header.Get("session_id") != "relay-session-123" {
+		t.Fatalf("relay client headers were not restored: %#v", request.Header)
+	}
+	if request.Header.Get("Authorization") != "" || request.Header.Get("X-Request-ID") != "" {
+		t.Fatalf("non-whitelisted relay headers crossed the boundary: %#v", request.Header)
+	}
+}
+
 func TestHTTPConnectProxyHonorsContextCancellation(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

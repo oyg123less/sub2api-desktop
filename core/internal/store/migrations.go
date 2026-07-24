@@ -16,7 +16,7 @@ import (
 	appcrypto "sub2api-desktop/core/internal/crypto"
 )
 
-const CurrentSchemaVersion = 16
+const CurrentSchemaVersion = 17
 
 type migration struct {
 	version int
@@ -41,6 +41,12 @@ var migrations = []migration{
 	{version: 14, name: "v0.4.2 connection-code sharing", apply: migrateV042ConnectSharing},
 	{version: 15, name: "v0.4.4 workspace ownership isolation", apply: migrateV044WorkspaceOwnership},
 	{version: 16, name: "v0.4.4 explicit account network modes", apply: migrateV044AccountNetworkModes},
+	{version: 17, name: "v0.4.5 current Codex client fallback", apply: migrateV045CodexClientFallback},
+}
+
+func migrateV045CodexClientFallback(tx *sql.Tx, _ *appcrypto.Cipher) error {
+	_, err := tx.Exec(`UPDATE settings SET value=? WHERE key='user_agent' AND value=?`, DefaultUserAgent, legacyDefaultUserAgent)
+	return err
 }
 
 func migrateV044AccountNetworkModes(tx *sql.Tx, _ *appcrypto.Cipher) error {

@@ -1,6 +1,7 @@
 import type { Context } from "hono";
 import { AppError, errorResponse } from "./errors";
 import { decryptShareCredential } from "./share-crypto";
+import { upstreamClientHeaders } from "./upstream-client-headers";
 import { bytesToBase64URL, randomToken, sha256 } from "./security";
 import type { AppEnv } from "./types";
 
@@ -174,10 +175,7 @@ async function directResponse(c: Context<AppEnv>, grant: AccessGrant, account: G
     Authorization: `Bearer ${credential.token}`,
     "Content-Type": "application/json",
     Accept: c.req.header("accept") || "text/event-stream, application/json",
-    "User-Agent": "codex_cli_rs/0.4.0 (Amber Cloud Share)",
-    originator: "codex_cli_rs",
-    "OpenAI-Beta": "responses=experimental",
-    session_id: crypto.randomUUID(),
+    ...upstreamClientHeaders(c.req.raw.headers),
   });
   try {
     const upstream = await fetch(upstreamURL(credential.upstream_url, c.req.path), { method: "POST", headers, body });
@@ -216,6 +214,7 @@ async function relayResponse(c: Context<AppEnv>, grant: AccessGrant, account: Gr
       endpoint: c.req.path.endsWith("/chat/completions") ? "chat/completions" : "responses",
       model: requestModel(body),
       accept: c.req.header("accept") || "text/event-stream, application/json",
+      headers: upstreamClientHeaders(c.req.raw.headers),
       body: bytesToBase64URL(new Uint8Array(body)),
     }),
   });

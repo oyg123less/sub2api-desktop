@@ -51,6 +51,64 @@ func TestOpenInitializesVersionedSchema(t *testing.T) {
 	}
 }
 
+func TestV045MigrationUpdatesOnlyLegacyDefaultUserAgent(t *testing.T) {
+	dir := t.TempDir()
+	cipher, err := appcrypto.LoadOrCreate(filepath.Join(dir, "key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(filepath.Join(dir, "sub2api.db"), cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	if err := st.setKV("user_agent", legacyDefaultUserAgent); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := st.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateV045CodexClientFallback(tx, cipher); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := st.LoadSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.UserAgent != DefaultUserAgent {
+		t.Fatalf("migrated user agent = %q, want %q", settings.UserAgent, DefaultUserAgent)
+	}
+
+	const customUserAgent = "custom-client/1.2.3"
+	if err := st.setKV("user_agent", customUserAgent); err != nil {
+		t.Fatal(err)
+	}
+	tx, err = st.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateV045CodexClientFallback(tx, cipher); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	settings, err = st.LoadSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.UserAgent != customUserAgent {
+		t.Fatalf("custom user agent was overwritten: %q", settings.UserAgent)
+	}
+}
+
 func TestLegacyUpgradeBacksUpAndMergesDuplicates(t *testing.T) {
 	dir := t.TempDir()
 	cipher, err := appcrypto.LoadOrCreate(filepath.Join(dir, "key"))

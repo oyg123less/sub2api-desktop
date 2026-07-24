@@ -176,8 +176,8 @@ async function refreshWorkspace(silent: boolean) {
   } catch (error) {
     if (error instanceof ControlAPIError && error.code === "client_upgrade_required") {
       upgradeRequired.value = {
-        minimum: String(error.details.minimum_version || "0.4.4"),
-        latest: String(error.details.latest_version || error.details.minimum_version || "0.4.4"),
+        minimum: String(error.details.minimum_version || "0.4.5"),
+        latest: String(error.details.latest_version || error.details.minimum_version || "0.4.5"),
         url: String(error.details.update_url || "https://github.com/oyg123less/sub2api-desktop/releases/latest"),
       };
       loadError.value = "";

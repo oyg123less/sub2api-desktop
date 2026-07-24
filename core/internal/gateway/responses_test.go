@@ -54,6 +54,10 @@ func TestResponsesPassthrough(t *testing.T) {
 
 	reqBody := `{"model":"gpt-5.5","stream":true,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`
 	r := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(reqBody))
+	r.Header.Set("User-Agent", "codex_chatgpt_desktop/0.146.0 (Windows 11; x86_64)")
+	r.Header.Set("originator", "Codex Desktop")
+	r.Header.Set("OpenAI-Beta", "responses=stable")
+	r.Header.Set("session_id", "codex-session-123")
 	w := httptest.NewRecorder()
 	engine.Responses(w, r)
 
@@ -67,8 +71,17 @@ func TestResponsesPassthrough(t *testing.T) {
 	if !strings.Contains(out, "Hello") {
 		t.Errorf("missing content in stream: %s", out)
 	}
-	if captured.Get("originator") != "codex_cli_rs" {
-		t.Errorf("expected originator codex_cli_rs, got %q", captured.Get("originator"))
+	if captured.Get("User-Agent") != r.Header.Get("User-Agent") {
+		t.Errorf("expected Codex User-Agent passthrough, got %q", captured.Get("User-Agent"))
+	}
+	if captured.Get("originator") != "Codex Desktop" {
+		t.Errorf("expected Codex originator passthrough, got %q", captured.Get("originator"))
+	}
+	if captured.Get("OpenAI-Beta") != "responses=stable" {
+		t.Errorf("expected OpenAI-Beta passthrough, got %q", captured.Get("OpenAI-Beta"))
+	}
+	if captured.Get("session_id") != "codex-session-123" {
+		t.Errorf("expected session_id passthrough, got %q", captured.Get("session_id"))
 	}
 	if captured.Get("chatgpt-account-id") != "acc-123" {
 		t.Errorf("expected chatgpt-account-id header")

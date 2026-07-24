@@ -1,6 +1,7 @@
 import { Hono, type Context } from "hono";
 import { AppError, errorResponse } from "./errors";
 import { decryptShareCredential } from "./share-crypto";
+import { upstreamClientHeaders } from "./upstream-client-headers";
 import { randomToken, sha256 } from "./security";
 import { forwardGroupShare } from "./share-group-gateway";
 import type { AppEnv } from "./types";
@@ -126,10 +127,7 @@ async function forward(c: Context<AppEnv>) {
       Authorization: `Bearer ${credential.token}`,
       "Content-Type": "application/json",
       Accept: c.req.header("accept") || "text/event-stream, application/json",
-      "User-Agent": "codex_cli_rs/0.4.0 (Amber Cloud Share)",
-      originator: "codex_cli_rs",
-      "OpenAI-Beta": "responses=experimental",
-      session_id: crypto.randomUUID(),
+      ...upstreamClientHeaders(c.req.raw.headers),
     });
     const upstream = await fetch(upstreamURL(credential.upstream_url, c.req.path, credential.account_type), {
       method: "POST",

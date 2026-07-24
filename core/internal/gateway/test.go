@@ -117,7 +117,7 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 		res.ErrorKind = "local"
 		return res
 	}
-	setCodexHeaders(req, token, acc, cfg)
+	setCodexHeaders(req, token, acc, cfg, upstreamClientHeaders{})
 
 	resp, err := client.Do(req)
 	if err != nil {

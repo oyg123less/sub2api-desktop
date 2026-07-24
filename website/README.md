@@ -61,7 +61,7 @@ $env:npm_config_cache = 'D:\Study\other\vet\.npm-cache'
 
 稳定版与即将发布版本只在 `src/config/releases.ts` 维护。版本、下载地址、文件大小、发布时间与 SHA-256 必须和正式 GitHub Release 完全一致。
 
-当前稳定版为 v0.4.4，安装包由 GitHub Releases 直接托管。
+当前稳定版为 v0.4.5，安装包由 GitHub Releases 直接托管。
 
 ## 截图
 

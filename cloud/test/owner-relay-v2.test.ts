@@ -76,6 +76,12 @@ function relayRequest() {
       host_device_id: "device-primary",
       fallback_device_ids: ["device-backup"],
       endpoint: "responses",
+      headers: {
+        "User-Agent": "codex_chatgpt_desktop/0.146.0 (Windows 11; x86_64)",
+        originator: "Codex Desktop",
+        "OpenAI-Beta": "responses=stable",
+        session_id: "relay-session-123",
+      },
       body: "e30",
     }),
   });
@@ -90,6 +96,7 @@ describe("OwnerRelay protocol 2 routing", () => {
     const responsePromise = relay.fetch(relayRequest());
     const firstAttempt = await primary.next("relay_request");
     expect(firstAttempt.attempt_id).toEqual(expect.any(String));
+    expect(firstAttempt.headers).toMatchObject({ session_id: "relay-session-123", originator: "Codex Desktop" });
     expect(backup.messages.some((message) => message.type === "relay_request")).toBe(false);
     primary.socket.send(JSON.stringify({
       protocol: 2,
@@ -103,6 +110,7 @@ describe("OwnerRelay protocol 2 routing", () => {
     const secondAttempt = await backup.next("relay_request");
     expect(secondAttempt.attempt_id).toEqual(expect.any(String));
     expect(secondAttempt.attempt_id).not.toBe(firstAttempt.attempt_id);
+    expect(secondAttempt.headers).toEqual(firstAttempt.headers);
     backup.socket.send(JSON.stringify({
       protocol: 2,
       type: "response_start",

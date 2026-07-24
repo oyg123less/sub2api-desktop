@@ -37,6 +37,7 @@ func (e *Engine) Responses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := e.settings()
+	clientHeaders := upstreamClientHeadersFromRequest(r, cfg)
 	requestedModel, _ := body["model"].(string)
 	requestID := strings.TrimSpace(r.Header.Get("X-Request-ID"))
 	if requestID == "" {
@@ -101,7 +102,7 @@ func (e *Engine) Responses(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		attempt++
-		meta := forwardMeta{RequestID: requestID, RequestedModel: requestedModel, ResolvedModel: logModel, Attempt: attempt, Stream: clientStream, EstimatedPromptTokens: estimateTokensFromBytes(len(bodyBytes))}
+		meta := forwardMeta{RequestID: requestID, RequestedModel: requestedModel, ResolvedModel: logModel, Attempt: attempt, Stream: clientStream, EstimatedPromptTokens: estimateTokensFromBytes(len(bodyBytes)), ClientHeaders: clientHeaders}
 		result := e.forwardResponsesOnce(r.Context(), w, upstreamBody, acc, cfg, meta)
 		if result.outcome == outcomeAuthFailed && acc.AccountType == store.AccountTypeOAuth && acc.RefreshToken != "" {
 			if refreshed, err := e.forceRefreshAccount(r.Context(), acc, cfg); err == nil {
@@ -192,7 +193,7 @@ func (e *Engine) forwardResponsesOnce(ctx context.Context, w http.ResponseWriter
 	if err != nil {
 		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: err.Error()}
 	}
-	setCodexHeaders(req, token, acc, cfg)
+	setCodexHeaders(req, token, acc, cfg, meta.ClientHeaders)
 
 	markRelayUpstreamStarted(ctx)
 	resp, err := client.Do(req)

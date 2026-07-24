@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -136,6 +137,111 @@ func TestFailoverOnUpstreamServerError(t *testing.T) {
 			}
 			if got := atomic.LoadInt32(&calls); got != 2 {
 				t.Fatalf("upstream calls = %d, want 2", got)
+			}
+		})
+	}
+}
+
+func TestFailoverPreservesUpstreamClientHeaders(t *testing.T) {
+	const officialUserAgent = "codex_chatgpt_desktop/0.146.0 (Windows 11; x86_64)"
+	tests := []struct {
+		name            string
+		path            string
+		body            string
+		call            func(*gateway.Engine, http.ResponseWriter, *http.Request)
+		requestHeaders  http.Header
+		wantUserAgent   string
+		wantOriginator  string
+		wantOpenAIBeta  string
+		wantSessionID   string
+		rejectSessionID string
+	}{
+		{
+			name: "official Codex chat completions",
+			path: "/v1/chat/completions",
+			body: `{"model":"gpt-5.4","stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+			call: (*gateway.Engine).ChatCompletions,
+			requestHeaders: http.Header{
+				"User-Agent":  []string{officialUserAgent},
+				"Originator":  []string{"Codex Desktop"},
+				"Openai-Beta": []string{"responses=stable"},
+			},
+			wantUserAgent:  officialUserAgent,
+			wantOriginator: "Codex Desktop",
+			wantOpenAIBeta: "responses=stable",
+		},
+		{
+			name: "non-Codex responses fallback",
+			path: "/v1/responses",
+			body: `{"model":"gpt-5.4","stream":true,"input":"hi"}`,
+			call: (*gateway.Engine).Responses,
+			requestHeaders: http.Header{
+				"User-Agent":  []string{"cursor/1.0"},
+				"Originator":  []string{"cursor"},
+				"Openai-Beta": []string{"untrusted-beta"},
+				"Session_id":  []string{"untrusted-session"},
+			},
+			wantUserAgent:   store.DefaultUserAgent,
+			wantOriginator:  "codex_cli_rs",
+			wantOpenAIBeta:  "responses=experimental",
+			rejectSessionID: "untrusted-session",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var mu sync.Mutex
+			captured := make([]http.Header, 0, 2)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				captured = append(captured, r.Header.Clone())
+				attempt := len(captured)
+				mu.Unlock()
+				if attempt == 1 {
+					http.Error(w, "temporary upstream failure", http.StatusBadGateway)
+					return
+				}
+				writeSuccessfulSSE(w, "recovered")
+			}))
+			defer upstream.Close()
+			t.Setenv("SUB2API_UPSTREAM_URL", upstream.URL)
+
+			st := newTestStore(t)
+			seedFailoverAccounts(t, st)
+			engine := newFailoverEngine(t, st)
+			request := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			request.Header = tt.requestHeaders.Clone()
+			response := httptest.NewRecorder()
+			tt.call(engine, response, request)
+
+			if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "recovered") {
+				t.Fatalf("expected successful failover, status=%d body=%s", response.Code, response.Body.String())
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(captured) != 2 {
+				t.Fatalf("captured %d upstream requests, want 2", len(captured))
+			}
+			for attempt, headers := range captured {
+				if got := headers.Get("User-Agent"); got != tt.wantUserAgent {
+					t.Fatalf("attempt %d User-Agent = %q, want %q", attempt+1, got, tt.wantUserAgent)
+				}
+				if got := headers.Get("originator"); got != tt.wantOriginator {
+					t.Fatalf("attempt %d originator = %q, want %q", attempt+1, got, tt.wantOriginator)
+				}
+				if got := headers.Get("OpenAI-Beta"); got != tt.wantOpenAIBeta {
+					t.Fatalf("attempt %d OpenAI-Beta = %q, want %q", attempt+1, got, tt.wantOpenAIBeta)
+				}
+				if tt.wantSessionID != "" && headers.Get("session_id") != tt.wantSessionID {
+					t.Fatalf("attempt %d session_id = %q, want %q", attempt+1, headers.Get("session_id"), tt.wantSessionID)
+				}
+			}
+			firstSessionID := captured[0].Get("session_id")
+			if firstSessionID == "" || captured[1].Get("session_id") != firstSessionID {
+				t.Fatalf("session_id changed across failover: %q then %q", firstSessionID, captured[1].Get("session_id"))
+			}
+			if tt.rejectSessionID != "" && firstSessionID == tt.rejectSessionID {
+				t.Fatalf("rejected session_id was passed through: %q", firstSessionID)
 			}
 		})
 	}

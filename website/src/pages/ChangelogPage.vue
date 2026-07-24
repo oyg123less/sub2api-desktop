@@ -18,6 +18,10 @@ import {
 
 const history = [
   {
+    version: "v0.4.4",
+    summary: "完成同机多用户工作区隔离、设备定向共享、无好友前置连接码，以及可靠的 Codex 启动与注入闭环。",
+  },
+  {
     version: "v0.4.3",
     summary: "统一受管理共享账号在云账户、账号测试和 Codex 调用中的路由。",
   },
@@ -74,7 +78,7 @@ const history = [
       </div>
 
       <p class="stable-summary">
-        v{{ stableRelease.version }} 完成同机多用户工作区隔离、设备定向共享、无好友前置的连接码流程，以及可靠的 Codex 启动与注入闭环。
+        v{{ stableRelease.version }} 修复 Windows 覆盖安装竞态，统一本地与云共享的 Codex 客户端标识，并提升多账号故障切换兼容性。
       </p>
 
       <div class="change-grid">
@@ -83,9 +87,9 @@ const history = [
           <div>
             <h3>新增</h3>
             <ul>
-              <li>每个云用户使用独立本地工作区，隔离账号、代理、同步队列、日志与 Codex 目标。</li>
-              <li>新共享固定到创建它的设备，并可显式配置最多两台备用设备。</li>
-              <li>共享主流程改为连接码与临时密码，不再要求先添加好友。</li>
+              <li>GitHub Release 在隔离 Windows Runner 中验证从 v0.4.4 直接覆盖安装。</li>
+              <li>正式构建同时提供推荐的 NSIS EXE 与 MSI 安装包。</li>
+              <li>数据库迁移只升级旧的默认 Codex User-Agent，不覆盖用户自定义配置。</li>
             </ul>
           </div>
         </article>
@@ -95,9 +99,9 @@ const history = [
           <div>
             <h3>修复</h3>
             <ul>
-              <li>账号网络模式明确区分直连、系统代理和指定代理，避免直连账号意外继承代理。</li>
-              <li>Codex 注入会启动服务并验证健康状态、API Key、模型列表与写入结果。</li>
-              <li>云端首选 <code>api.amberapp.asia</code>，幂等请求可回退到 Workers 域名。</li>
+              <li>安装器先停止桌面 supervisor，再等待 Sidecar 进程和可执行文件句柄完全释放。</li>
+              <li>本地网关、Worker 直连共享与 Owner Relay 统一透传真实 Codex 客户端标识。</li>
+              <li>账号故障切换期间保持同一组客户端头和会话标识，减少上游兼容性异常。</li>
             </ul>
           </div>
         </article>
@@ -107,9 +111,9 @@ const history = [
           <div>
             <h3>兼容性</h3>
             <ul>
-              <li>当前安装包面向 Windows x64。</li>
-              <li>保留既有共享与 Guest Key 的兼容性，历史好友数据不会在升级时删除。</li>
-              <li>v0.4.3 数据升级时保留原文件，不把新工作区静默合并回旧数据库。</li>
+              <li>本地数据库 schema 更新为 17，既有账号、代理、工作区和共享数据保持不变。</li>
+              <li>非 Codex 客户端继续使用 Amber 的兼容性回退头，不接受伪造的嵌入式 Codex 标识。</li>
+              <li>当前安装包面向 Windows x64，v0.4.4 可直接覆盖升级。</li>
             </ul>
           </div>
         </article>
@@ -121,7 +125,7 @@ const history = [
             <ul>
               <li>需要设备回流的共享仍要求主设备或已配置的合格备用设备保持 Amber 在线。</li>
               <li>上游请求开始后不会跨设备重放；连接中断时可能返回结果未知。</li>
-              <li>归属不明确的历史数据库以只读恢复工作区打开，不会自动同步。</li>
+              <li>云共享客户端标识修复要求生产 Worker 同步部署 v0.4.5。</li>
             </ul>
           </div>
         </article>

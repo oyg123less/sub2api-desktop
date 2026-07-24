@@ -256,12 +256,12 @@ test("shows row accounts, edits limits, and toggles routing", async ({ page }, t
   await firstAccount.hover();
   await expect.poll(() => firstAccount.evaluate((element) => getComputedStyle(element).transform)).not.toBe("none");
   await expect(page.locator('[data-test="account-detail-modal"]')).toHaveCount(0);
-  await page.screenshot({ path: `test-results/accounts-v032-list-${testInfo.project.name}.png`, fullPage: true });
+  await page.screenshot({ path: testInfo.outputPath(`accounts-v032-list-${testInfo.project.name}.png`), fullPage: true });
   await page.locator('[data-test="account-details"]').first().click();
   await expect(page.locator('[data-test="account-detail-modal"]')).toBeVisible();
   await expect(page.getByText("Detailed usage", { exact: true })).toBeVisible();
   await expect(page.getByText("Active 1 · waiting 2", { exact: true })).toBeVisible();
-  await page.screenshot({ path: `test-results/accounts-v032-detail-${testInfo.project.name}.png`, fullPage: true });
+  await page.screenshot({ path: testInfo.outputPath(`accounts-v032-detail-${testInfo.project.name}.png`), fullPage: true });
   await page.getByLabel("Maximum concurrency").fill("7");
   await page.getByLabel("Waiting queue limit").fill("42");
   await page.getByRole("button", { name: "Save" }).click();

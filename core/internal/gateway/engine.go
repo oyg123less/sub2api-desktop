@@ -152,6 +152,7 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := e.settings()
+	clientHeaders := upstreamClientHeadersFromRequest(r, cfg)
 	requestedModel := chatReq.Model
 	requestID := strings.TrimSpace(r.Header.Get("X-Request-ID"))
 	if requestID == "" {
@@ -191,7 +192,7 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		attempt++
-		meta := forwardMeta{RequestID: requestID, RequestedModel: requestedModel, ResolvedModel: logModel, Attempt: attempt, Stream: chatReq.Stream, EstimatedPromptTokens: estimateTokensFromBytes(len(bodyBytes))}
+		meta := forwardMeta{RequestID: requestID, RequestedModel: requestedModel, ResolvedModel: logModel, Attempt: attempt, Stream: chatReq.Stream, EstimatedPromptTokens: estimateTokensFromBytes(len(bodyBytes)), ClientHeaders: clientHeaders}
 		result := e.forwardOnce(r.Context(), w, &chatReq, acc, cfg, meta)
 		if result.outcome == outcomeAuthFailed && acc.AccountType == store.AccountTypeOAuth && acc.RefreshToken != "" {
 			if refreshed, err := e.forceRefreshAccount(r.Context(), acc, cfg); err == nil {
@@ -278,6 +279,7 @@ type forwardMeta struct {
 	RequestID, RequestedModel, ResolvedModel string
 	Attempt, EstimatedPromptTokens           int
 	Stream                                   bool
+	ClientHeaders                            upstreamClientHeaders
 }
 
 var errBoundProxyUnavailable = errors.New("bound proxy is unavailable")
@@ -335,7 +337,7 @@ func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq
 	if err != nil {
 		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: err.Error()}
 	}
-	setCodexHeaders(req, token, acc, cfg)
+	setCodexHeaders(req, token, acc, cfg, meta.ClientHeaders)
 
 	markRelayUpstreamStarted(ctx)
 	resp, err := client.Do(req)
@@ -630,26 +632,78 @@ func applyAntiBan(req *apicompat.ResponsesRequest, model string, cfg store.Setti
 	req.Stream = true
 }
 
-// setCodexHeaders disguises the request as the official Codex CLI.
-func setCodexHeaders(req *http.Request, token string, acc *store.Account, cfg store.Settings) {
+type upstreamClientHeaders struct {
+	UserAgent  string
+	Originator string
+	OpenAIBeta string
+	SessionID  string
+}
+
+func fallbackUpstreamClientHeaders(cfg store.Settings) upstreamClientHeaders {
+	userAgent := strings.TrimSpace(cfg.UserAgent)
+	if userAgent == "" {
+		userAgent = store.DefaultUserAgent
+	}
+	originator := strings.TrimSpace(cfg.Originator)
+	if originator == "" {
+		originator = "codex_cli_rs"
+	}
+	return upstreamClientHeaders{
+		UserAgent:  userAgent,
+		Originator: originator,
+		OpenAIBeta: "responses=experimental",
+		SessionID:  uuid.NewString(),
+	}
+}
+
+func upstreamClientHeadersFromRequest(req *http.Request, cfg store.Settings) upstreamClientHeaders {
+	headers := fallbackUpstreamClientHeaders(cfg)
+	if req == nil {
+		return headers
+	}
+
+	incomingUserAgent := strings.TrimSpace(req.UserAgent())
+	incomingOriginator := strings.TrimSpace(req.Header.Get("originator"))
+	officialClient := false
+	if openai.IsCodexOfficialClientRequestStrict(incomingUserAgent) {
+		headers.UserAgent = incomingUserAgent
+		officialClient = true
+	}
+	if openai.IsCodexOfficialClientOriginator(incomingOriginator) {
+		headers.Originator = incomingOriginator
+		officialClient = true
+	}
+	if !officialClient {
+		return headers
+	}
+	if value := strings.TrimSpace(req.Header.Get("OpenAI-Beta")); value != "" {
+		headers.OpenAIBeta = value
+	}
+	if value := strings.TrimSpace(req.Header.Get("session_id")); value != "" {
+		headers.SessionID = value
+	}
+	return headers
+}
+
+// setCodexHeaders preserves a real Codex caller identity and otherwise uses
+// Amber's current compatibility fallback.
+func setCodexHeaders(req *http.Request, token string, acc *store.Account, cfg store.Settings, headers upstreamClientHeaders) {
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	if acc.AccountType != store.AccountTypeAPIKey && acc.ChatGPTAccountID != "" {
 		req.Header.Set("chatgpt-account-id", acc.ChatGPTAccountID)
 	}
-	ua := cfg.UserAgent
-	if ua == "" {
-		ua = store.DefaultUserAgent
+	if headers.UserAgent == "" {
+		headers = fallbackUpstreamClientHeaders(cfg)
 	}
-	req.Header.Set("User-Agent", ua)
-	originator := cfg.Originator
-	if originator == "" {
-		originator = "codex_cli_rs"
+	req.Header.Set("User-Agent", headers.UserAgent)
+	req.Header.Set("originator", headers.Originator)
+	req.Header.Set("OpenAI-Beta", headers.OpenAIBeta)
+	if headers.SessionID == "" {
+		headers.SessionID = uuid.NewString()
 	}
-	req.Header.Set("originator", originator)
-	req.Header.Set("OpenAI-Beta", "responses=experimental")
-	req.Header.Set("session_id", uuid.NewString())
+	req.Header.Set("session_id", headers.SessionID)
 }
 
 func (e *Engine) logRequest(acc *store.Account, model string, status, prompt, completion int, latency time.Duration, stream bool, errMsg string) {

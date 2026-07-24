@@ -360,6 +360,7 @@ func (m *Manager) handleRelayRequest(parent context.Context, session *relaySessi
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", message.Accept)
 	request.Header.Set("X-Request-ID", message.RequestID)
+	applyRelayClientHeaders(request, message.Headers)
 	writer := &relayResponseWriter{session: session, requestID: message.RequestID, attemptID: message.AttemptID, header: make(http.Header)}
 	var started sync.Once
 	handler(ctx, writer, request, message.AccountUID, func() {
@@ -374,6 +375,18 @@ func (m *Manager) handleRelayRequest(parent context.Context, session *relaySessi
 		return
 	}
 	writer.finish()
+}
+
+func applyRelayClientHeaders(request *http.Request, headers map[string]string) {
+	if request == nil {
+		return
+	}
+	for _, name := range []string{"User-Agent", "originator", "OpenAI-Beta", "session_id"} {
+		value := strings.TrimSpace(headers[name])
+		if value != "" && len(value) <= 2048 {
+			request.Header.Set(name, value)
+		}
+	}
 }
 
 type relayResponseWriter struct {
