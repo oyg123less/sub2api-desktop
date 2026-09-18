@@ -204,3 +204,14 @@ func TestStatusCountsManagedCloudShares(t *testing.T) {
 		t.Fatalf("account_count=%d, want local + managed cloud share", payload.AccountCount)
 	}
 }
+
+func TestControlMountDoesNotPanic(t *testing.T) {
+	control, _ := newAccountsControlTest(t)
+	mux := http.NewServeMux()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("control.Mount panicked: %v", r)
+		}
+	}()
+	control.Mount(mux)
+}

@@ -73,7 +73,11 @@ func extractBearer(h string) string {
 }
 
 func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
-	models := openai.GatewayModels()
+	var active []string
+	if h.engine != nil {
+		active = h.engine.ActiveModels()
+	}
+	models := openai.ActiveGatewayModels(active)
 	data := make([]map[string]any, 0, len(models))
 	for _, m := range models {
 		if strings.HasPrefix(m.ID, "gpt-image") {

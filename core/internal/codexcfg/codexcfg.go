@@ -20,12 +20,13 @@ import (
 )
 
 const (
-	configName   = "config.toml"
-	authName     = "auth.json"
-	backupSuffix = ".sub2api-bak"
-	absentSuffix = ".sub2api-absent"
-	providerID   = "sub2api"
-	providerName = "Amber"
+	configName      = "config.toml"
+	authName        = "auth.json"
+	CatalogFileName = "amber_models.json"
+	backupSuffix    = ".sub2api-bak"
+	absentSuffix    = ".sub2api-absent"
+	providerID      = "sub2api"
+	providerName    = "Amber"
 	// DefaultModel is the Codex model used when applying the config.
 	DefaultModel = openai.DefaultCodexModel
 )
@@ -57,6 +58,7 @@ func (m *Manager) Dir() string { return m.dir }
 type Status struct {
 	ConfigPath   string `json:"config_path"`
 	AuthPath     string `json:"auth_path"`
+	CatalogPath  string `json:"catalog_path,omitempty"`
 	Applied      bool   `json:"applied"`
 	ConfigExists bool   `json:"config_exists"`
 	Model        string `json:"model,omitempty"`
@@ -73,7 +75,11 @@ func (m *Manager) authPath() string   { return filepath.Join(m.dir, authName) }
 // Status inspects the current Codex config and optionally compares the
 // configured gateway URL and API key with their current expected values.
 func (m *Manager) Status(expectedBaseURL, expectedAPIKey string) (Status, error) {
-	st := Status{ConfigPath: m.configPath(), AuthPath: m.authPath()}
+	st := Status{
+		ConfigPath:  m.configPath(),
+		AuthPath:    m.authPath(),
+		CatalogPath: filepath.Join(m.dir, CatalogFileName),
+	}
 	configuredBaseURL := ""
 	data, err := os.ReadFile(m.configPath())
 	switch {
@@ -134,7 +140,8 @@ func (m *Manager) Status(expectedBaseURL, expectedAPIKey string) (Status, error)
 }
 
 // Apply writes a Codex config pointing at the given gateway base URL and API
-// key, backing up any existing files on first apply.
+// key, backing up any existing files on first apply. Existing custom sections
+// (e.g. [projects], [mcp_servers], [plugins], [windows]) are safely preserved.
 func (m *Manager) Apply(baseURL, apiKey, model string) error {
 	if model == "" {
 		model = DefaultModel
@@ -148,7 +155,15 @@ func (m *Manager) Apply(baseURL, apiKey, model string) error {
 	if err := m.backupOnce(m.authPath()); err != nil {
 		return err
 	}
-	if err := atomicWriteFile(m.configPath(), []byte(renderConfig(baseURL, model)), 0o600); err != nil {
+	catalogPath := filepath.Join(m.dir, CatalogFileName)
+	var tomlContent string
+	existing, err := os.ReadFile(m.configPath())
+	if err == nil && len(existing) > 0 {
+		tomlContent = mergeConfig(string(existing), baseURL, model, catalogPath)
+	} else {
+		tomlContent = renderConfig(baseURL, model, catalogPath)
+	}
+	if err := atomicWriteFile(m.configPath(), []byte(tomlContent), 0o600); err != nil {
 		return err
 	}
 	auth, err := m.mergedAuth(apiKey)
@@ -215,6 +230,7 @@ func (m *Manager) Restore() error {
 	if err := restoreOne(m.configPath()); err != nil {
 		return err
 	}
+	_ = os.Remove(filepath.Join(m.dir, CatalogFileName))
 	return restoreOne(m.authPath())
 }
 
@@ -381,7 +397,7 @@ func RenderConfig(baseURL, model string) string {
 	if model == "" {
 		model = DefaultModel
 	}
-	return renderConfig(baseURL, model)
+	return renderConfig(baseURL, model, "")
 }
 
 // RenderAuth returns the auth.json content (containing only OPENAI_API_KEY)
@@ -391,18 +407,245 @@ func RenderAuth(apiKey string) string {
 	return string(out) + "\n"
 }
 
-func renderConfig(baseURL, model string) string {
+func renderConfig(baseURL, model, catalogPath string) string {
+	catalogLine := ""
+	if catalogPath != "" {
+		catalogLine = fmt.Sprintf("model_catalog_json = %q\n", filepath.ToSlash(catalogPath))
+	}
 	return fmt.Sprintf(`model_provider = %q
 model = %q
 model_reasoning_effort = "high"
 disable_response_storage = true
-
+%s
 [model_providers.%s]
 name = %q
 base_url = %q
 wire_api = "responses"
 requires_openai_auth = true
-`, providerID, model, providerID, providerName, baseURL)
+`, providerID, model, catalogLine, providerID, providerName, baseURL)
+}
+
+func mergeConfig(existing, baseURL, model, catalogPath string) string {
+	if strings.TrimSpace(existing) == "" {
+		return renderConfig(baseURL, model, catalogPath)
+	}
+
+	content := existing
+	setTopLevelKey := func(src, key, val string) string {
+		re := regexp.MustCompile(`(?m)^[ \t]*` + regexp.QuoteMeta(key) + `[ \t]*=.*$`)
+		newLine := fmt.Sprintf("%s = %s", key, val)
+		if re.MatchString(src) {
+			return re.ReplaceAllString(src, newLine)
+		}
+		firstTable := regexp.MustCompile(`(?m)^\[`).FindStringIndex(src)
+		if firstTable != nil {
+			return src[:firstTable[0]] + newLine + "\n" + src[firstTable[0]:]
+		}
+		return strings.TrimRight(src, "\r\n") + "\n" + newLine + "\n"
+	}
+
+	content = setTopLevelKey(content, "model_provider", fmt.Sprintf("%q", providerID))
+	content = setTopLevelKey(content, "model", fmt.Sprintf("%q", model))
+	content = setTopLevelKey(content, "model_reasoning_effort", `"high"`)
+	content = setTopLevelKey(content, "disable_response_storage", "true")
+	if catalogPath != "" {
+		content = setTopLevelKey(content, "model_catalog_json", fmt.Sprintf("%q", filepath.ToSlash(catalogPath)))
+	}
+
+	sub2apiHeader := fmt.Sprintf("[model_providers.%s]", providerID)
+	sub2apiBlock := fmt.Sprintf(`[model_providers.%s]
+name = %q
+base_url = %q
+wire_api = "responses"
+requires_openai_auth = true
+`, providerID, providerName, baseURL)
+
+	idx := strings.Index(content, sub2apiHeader)
+	if idx != -1 {
+		after := content[idx+len(sub2apiHeader):]
+		nextSection := regexp.MustCompile(`(?m)^\[`).FindStringIndex(after)
+		if nextSection != nil {
+			endIdx := idx + len(sub2apiHeader) + nextSection[0]
+			content = content[:idx] + sub2apiBlock + "\n" + content[endIdx:]
+		} else {
+			content = content[:idx] + sub2apiBlock
+		}
+	} else {
+		content = strings.TrimRight(content, "\r\n") + "\n\n" + sub2apiBlock
+	}
+
+	return content
+}
+
+// CodexCatalogReasoningOption defines reasoning depth levels accepted by Codex.
+type CodexCatalogReasoningOption struct {
+	ReasoningLevel string `json:"reasoning_level"`
+	Description    string `json:"description"`
+}
+
+// CodexCatalogServiceTier defines speed/service tiers for Codex.
+type CodexCatalogServiceTier struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// CodexCatalogTruncationPolicy defines context truncation rules.
+type CodexCatalogTruncationPolicy struct {
+	Mode  string `json:"mode"`
+	Limit int    `json:"limit"`
+}
+
+// CodexCatalogModel represents a model entry in amber_models.json for Codex Desktop.
+type CodexCatalogModel struct {
+	Slug                              string                        `json:"slug"`
+	DisplayName                       string                        `json:"display_name"`
+	Description                       string                        `json:"description"`
+	DefaultReasoningLevel             string                        `json:"default_reasoning_level"`
+	SupportedReasoningLevels          []CodexCatalogReasoningOption `json:"supported_reasoning_levels"`
+	ShellType                         string                        `json:"shell_type"`
+	Visibility                        string                        `json:"visibility"`
+	SupportedInAPI                    bool                          `json:"supported_in_api"`
+	Priority                          int                           `json:"priority"`
+	AdditionalSpeedTiers              []string                      `json:"additional_speed_tiers"`
+	ServiceTiers                      []CodexCatalogServiceTier     `json:"service_tiers"`
+	DefaultServiceTier                *string                       `json:"default_service_tier"`
+	AvailabilityNUX                   *string                       `json:"availability_nux"`
+	Upgrade                           *string                       `json:"upgrade"`
+	SupportsReasoningSummaryParameter bool                          `json:"supports_reasoning_summary_parameter"`
+	DefaultReasoningSummary           string                        `json:"default_reasoning_summary"`
+	SupportVerbosity                  bool                          `json:"support_verbosity"`
+	DefaultVerbosity                  string                        `json:"default_verbosity"`
+	ApplyPatchToolType                string                        `json:"apply_patch_tool_type"`
+	WebSearchToolType                 string                        `json:"web_search_tool_type"`
+	TruncationPolicy                  CodexCatalogTruncationPolicy  `json:"truncation_policy"`
+	SupportsParallelToolCalls         bool                          `json:"supports_parallel_tool_calls"`
+	SupportsImageDetailOriginal       bool                          `json:"supports_image_detail_original"`
+	ContextWindow                     int                           `json:"context_window"`
+	MaxContextWindow                  int                           `json:"max_context_window"`
+	EffectiveContextWindowPercent     int                           `json:"effective_context_window_percent"`
+	ExperimentalSupportedTools        []string                      `json:"experimental_supported_tools"`
+	InputModalities                   []string                      `json:"input_modalities"`
+	SupportsSearchTool                bool                          `json:"supports_search_tool"`
+	IsDefault                         bool                          `json:"is_default,omitempty"`
+	Hidden                            bool                          `json:"hidden,omitempty"`
+}
+
+func defaultReasoningOptions() []CodexCatalogReasoningOption {
+	return []CodexCatalogReasoningOption{
+		{ReasoningLevel: "low", Description: "Fast responses with lighter reasoning"},
+		{ReasoningLevel: "medium", Description: "Balances speed and reasoning depth for everyday tasks"},
+		{ReasoningLevel: "high", Description: "Greater reasoning depth for complex problems"},
+	}
+}
+
+func defaultServiceTiers() []CodexCatalogServiceTier {
+	return []CodexCatalogServiceTier{
+		{ID: "priority", Name: "Fast", Description: "1.5x speed, increased usage"},
+	}
+}
+
+func newCatalogEntry(slug, displayName, desc string) CodexCatalogModel {
+	return CodexCatalogModel{
+		Slug:                              slug,
+		DisplayName:                       displayName,
+		Description:                       desc,
+		DefaultReasoningLevel:             "medium",
+		SupportedReasoningLevels:          defaultReasoningOptions(),
+		ShellType:                         "powershell",
+		Visibility:                        "public",
+		SupportedInAPI:                    true,
+		Priority:                          0,
+		AdditionalSpeedTiers:              []string{"fast"},
+		ServiceTiers:                      defaultServiceTiers(),
+		DefaultServiceTier:                nil,
+		AvailabilityNUX:                   nil,
+		Upgrade:                           nil,
+		SupportsReasoningSummaryParameter: true,
+		DefaultReasoningSummary:           "none",
+		SupportVerbosity:                  true,
+		DefaultVerbosity:                  "low",
+		ApplyPatchToolType:                "freeform",
+		WebSearchToolType:                 "text_and_image",
+		TruncationPolicy:                  CodexCatalogTruncationPolicy{Mode: "tokens", Limit: 10000},
+		SupportsParallelToolCalls:         true,
+		SupportsImageDetailOriginal:       true,
+		ContextWindow:                     272000,
+		MaxContextWindow:                  272000,
+		EffectiveContextWindowPercent:     95,
+		ExperimentalSupportedTools:        []string{},
+		InputModalities:                   []string{"text", "image"},
+		SupportsSearchTool:                true,
+	}
+}
+
+// BuildCodexCatalog returns the catalog models for standard OpenAI models
+// plus any active third-party models.
+func BuildCodexCatalog(activeModels []string) []CodexCatalogModel {
+	seen := make(map[string]struct{})
+	list := make([]CodexCatalogModel, 0, 16)
+
+	addModel := func(m CodexCatalogModel) {
+		slug := strings.TrimSpace(m.Slug)
+		if slug == "" {
+			return
+		}
+		if _, exists := seen[slug]; exists {
+			return
+		}
+		seen[slug] = struct{}{}
+		list = append(list, m)
+	}
+
+	// 1. Standard OpenAI core models supported in Codex
+	addModel(newCatalogEntry("gpt-6-astra", "GPT-6 Astra", "OpenAI Flagship Agentic Model"))
+	addModel(newCatalogEntry("gpt-5.6-sol", "GPT-5.6 Sol", "Fast responses and coding performance"))
+	addModel(newCatalogEntry("gpt-5.6-terra", "GPT-5.6 Terra", "Balanced agentic coding model for everyday work"))
+	addModel(newCatalogEntry("gpt-5.6-luna", "GPT-5.6 Luna", "Fast and affordable agentic coding model"))
+	addModel(newCatalogEntry("gpt-5.5", "GPT-5.5", "Frontier model for complex coding and reasoning"))
+	addModel(newCatalogEntry("gpt-5.2", "GPT-5.2", "Optimized for professional coding agents"))
+
+	// 2. Add all currently active models from Amber pool
+	for _, raw := range activeModels {
+		slug := strings.TrimSpace(raw)
+		if slug == "" {
+			continue
+		}
+		if _, exists := seen[slug]; exists {
+			continue
+		}
+		dyn := openai.DynamicModel(slug)
+		disp := dyn.DisplayName
+		if strings.TrimSpace(disp) == "" || disp == slug {
+			disp = strings.ToUpper(slug[:1]) + slug[1:]
+		}
+		desc := fmt.Sprintf("%s via Amber local gateway", disp)
+		addModel(newCatalogEntry(slug, disp, desc))
+	}
+
+	return list
+}
+
+// SyncModelCatalog updates amber_models.json under dir (defaults to ~/.codex).
+// If the directory does not exist, it safely skips so inactive environments are untouched.
+func SyncModelCatalog(dir string, activeModels []string) error {
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		dir = filepath.Join(home, ".codex")
+	}
+	if !fileExists(dir) {
+		return nil
+	}
+	catalogFile := filepath.Join(dir, CatalogFileName)
+	models := BuildCodexCatalog(activeModels)
+	data, err := json.MarshalIndent(map[string]any{"models": models}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWriteFile(catalogFile, append(data, '\n'), 0o600)
 }
 
 func fileExists(path string) bool {

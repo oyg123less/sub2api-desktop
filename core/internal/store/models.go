@@ -1,6 +1,9 @@
 package store
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // AccountStatus enumerates the lifecycle states of an OpenAI account.
 type AccountStatus string
@@ -202,4 +205,42 @@ type Settings struct {
 	MaxLogRows       int    `json:"max_log_rows"`
 	AutoRecovery     bool   `json:"auto_recovery"`
 	CompatProfile    string `json:"compatibility_profile"`
+	CustomModels     string `json:"custom_models,omitempty"`
+}
+
+// AccountKnownModels returns the models inherently supplied by this account
+// based on its type and BaseURL, regardless of whether it is active.
+func AccountKnownModels(acc *Account) []string {
+	if acc == nil {
+		return nil
+	}
+	if acc.AccountType == AccountTypeOAuth {
+		return []string{
+			"gpt-6", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+			"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark", "codex-auto-review", "gpt-5.2",
+		}
+	}
+	base := strings.ToLower(strings.TrimSpace(acc.BaseURL))
+	if strings.Contains(base, "deepseek") {
+		return []string{"deepseek-chat", "deepseek-reasoner"}
+	}
+	if strings.Contains(base, "moonshot") || strings.Contains(base, "kimi") {
+		return []string{"moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"}
+	}
+	if strings.Contains(base, "zhipu") || strings.Contains(base, "bigmodel") || strings.Contains(base, "glm") {
+		return []string{"glm-4-plus", "glm-4-flash"}
+	}
+	if strings.Contains(base, "minimax") {
+		return []string{"abab6.5s-chat"}
+	}
+	return nil
+}
+
+// AccountProviderModels returns the models inherently supplied by this account
+// based on its type and BaseURL when active.
+func AccountProviderModels(acc *Account) []string {
+	if acc == nil || acc.Status != AccountActive {
+		return nil
+	}
+	return AccountKnownModels(acc)
 }

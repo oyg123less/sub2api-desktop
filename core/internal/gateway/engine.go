@@ -16,7 +16,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -80,13 +82,85 @@ func isVersionSegment(s string) bool {
 	return true
 }
 
+func isStandardOpenAICompatible(acc *store.Account, model string) bool {
+	if acc == nil || acc.AccountType != store.AccountTypeAPIKey {
+		return false
+	}
+	if acc.Source == "cloud_share" {
+		return false
+	}
+	base := strings.ToLower(strings.TrimSpace(acc.BaseURL))
+	if strings.HasSuffix(base, "/responses") {
+		return false
+	}
+	m := strings.ToLower(strings.TrimSpace(model))
+	if strings.Contains(base, "deepseek") || strings.Contains(m, "deepseek") {
+		return true
+	}
+	if strings.Contains(base, "moonshot") || strings.Contains(m, "moonshot") || strings.Contains(m, "kimi") {
+		return true
+	}
+	if strings.Contains(base, "zhipu") || strings.Contains(base, "bigmodel") || strings.Contains(m, "glm") {
+		return true
+	}
+	if strings.Contains(base, "minimax") || strings.Contains(m, "abab") {
+		return true
+	}
+	if m != "" && !strings.HasPrefix(m, "gpt-") && !strings.Contains(m, "codex") && !strings.HasPrefix(m, "o1") && !strings.HasPrefix(m, "o3") && !strings.HasPrefix(m, "o4") && !strings.HasPrefix(m, "chatgpt") {
+		return true
+	}
+	return false
+}
+
+func apiKeyChatCompletionsURL(base string) string {
+	normalized := strings.TrimRight(strings.TrimSpace(base), "/")
+	if normalized == "" {
+		return "https://api.openai.com/v1/chat/completions"
+	}
+	if strings.HasSuffix(normalized, "/chat/completions") {
+		return normalized
+	}
+	segment := normalized
+	if idx := strings.LastIndex(normalized, "/"); idx >= 0 {
+		segment = normalized[idx+1:]
+	}
+	if isVersionSegment(segment) {
+		return normalized + "/chat/completions"
+	}
+	return normalized + "/v1/chat/completions"
+}
+
+func apiKeyModelsURL(base string) string {
+	normalized := strings.TrimRight(strings.TrimSpace(base), "/")
+	if normalized == "" {
+		return "https://api.openai.com/v1/models"
+	}
+	if strings.HasSuffix(normalized, "/models") {
+		return normalized
+	}
+	if strings.HasSuffix(normalized, "/chat/completions") {
+		normalized = strings.TrimSuffix(normalized, "/chat/completions")
+	} else if strings.HasSuffix(normalized, "/responses") {
+		normalized = strings.TrimSuffix(normalized, "/responses")
+	}
+	segment := normalized
+	if idx := strings.LastIndex(normalized, "/"); idx >= 0 {
+		segment = normalized[idx+1:]
+	}
+	if isVersionSegment(segment) {
+		return normalized + "/models"
+	}
+	return normalized + "/v1/models"
+}
+
 // Engine holds the dependencies for request forwarding.
 type Engine struct {
-	store     *store.Store
-	accounts  *account.Manager
-	settings  func() store.Settings
-	logger    *slog.Logger
-	scheduler *Scheduler
+	store              *store.Store
+	accounts           *account.Manager
+	settings           func() store.Settings
+	logger             *slog.Logger
+	scheduler          *Scheduler
+	accountModelsCache sync.Map
 }
 
 // New constructs a gateway engine.
@@ -160,13 +234,13 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	model, ok := resolveModel(requestedModel, cfg.DefaultModel)
 	if !ok {
-		writeError(w, http.StatusBadRequest, "unknown model: "+requestedModel+"（仅支持 gpt-5*/codex 系列模型）", "invalid_request_error")
+		writeError(w, http.StatusBadRequest, "unknown model: "+requestedModel, "invalid_request_error")
 		return
 	}
 	chatReq.Model = model
 	logModel := upstreamLogModel(model)
 
-	candidates, releaseFirst, err := e.selectAccounts(r.Context())
+	candidates, releaseFirst, err := e.selectAccounts(r.Context(), model)
 	if err != nil {
 		if r.Context().Err() != nil {
 			return
@@ -175,7 +249,7 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(candidates) == 0 {
-		writeError(w, http.StatusServiceUnavailable, "没有可用账号，请先在应用内登录 ChatGPT 账号", "no_account")
+		writeError(w, http.StatusServiceUnavailable, "没有可用账号或没有支持该模型的账号，请检查号池中对应账号是否已启用", "no_account")
 		return
 	}
 
@@ -285,6 +359,10 @@ type forwardMeta struct {
 var errBoundProxyUnavailable = errors.New("bound proxy is unavailable")
 
 func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq *apicompat.ChatCompletionsRequest, acc *store.Account, cfg store.Settings, meta forwardMeta) forwardResult {
+	if isStandardOpenAICompatible(acc, chatReq.Model) {
+		return e.forwardStandardChatCompletions(ctx, w, chatReq, acc, cfg, meta)
+	}
+
 	start := time.Now()
 
 	// Resolve proxy + client.
@@ -370,6 +448,139 @@ func (e *Engine) forwardOnce(ctx context.Context, w http.ResponseWriter, chatReq
 	return e.aggregateResponse(ctx, w, resp.Body, chatReq, acc, start, meta)
 }
 
+func (e *Engine) forwardStandardChatCompletions(ctx context.Context, w http.ResponseWriter, chatReq *apicompat.ChatCompletionsRequest, acc *store.Account, cfg store.Settings, meta forwardMeta) forwardResult {
+	start := time.Now()
+	proxy, err := e.proxyForAccount(acc)
+	if err != nil {
+		message := errBoundProxyUnavailable.Error()
+		e.logForward(acc, meta, http.StatusBadGateway, 0, 0, time.Since(start), message, "proxy_unavailable", "proxy_resolution_failed")
+		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadGateway, errMsg: message, retryable: true}
+	}
+	client, err := newHTTPClient(proxy, acc.NetworkMode, cfg.CompatProfile, 10*time.Minute)
+	if err != nil {
+		e.logForward(acc, meta, http.StatusInternalServerError, 0, 0, time.Since(start), err.Error(), "upstream_network_error", "client_setup_failed")
+		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: err.Error(), retryable: true}
+	}
+
+	upstreamModel, effort := openai.MapCodexModel(chatReq.Model)
+	reqCopy := *chatReq
+	if upstreamModel != "" {
+		reqCopy.Model = upstreamModel
+	}
+	if effort != "" && reqCopy.ReasoningEffort == "" {
+		reqCopy.ReasoningEffort = effort
+	}
+
+	bodyBytes, err := json.Marshal(&reqCopy)
+	if err != nil {
+		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: err.Error()}
+	}
+
+	url := apiKeyChatCompletionsURL(acc.BaseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: err.Error()}
+	}
+	token := acc.APIKey
+	if strings.TrimSpace(token) == "" {
+		token = acc.AccessToken
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	if reqCopy.Stream {
+		req.Header.Set("Accept", "text/event-stream")
+	}
+
+	markRelayUpstreamStarted(ctx)
+	resp, err := client.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			e.logForwardUsage(acc, meta, 499, estimatedUsage(meta, 0), time.Since(start), "client cancelled request", "client_cancelled", "request_cancelled")
+			return forwardResult{outcome: outcomeClientClosed}
+		}
+		message := "upstream request failed: " + err.Error()
+		e.logForward(acc, meta, http.StatusBadGateway, 0, 0, time.Since(start), message, "upstream_network_error", "request_failed")
+		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadGateway, errMsg: message, retryable: true}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg := readUpstreamError(resp.Body)
+		result := classifyUpstreamHTTPError(resp.StatusCode, resp.Header, msg, acc, nil)
+		e.logForward(acc, meta, resp.StatusCode, 0, 0, time.Since(start), msg, result.errorKind, result.terminalEvent)
+		return result
+	}
+
+	_ = e.store.TouchAccount(acc.ID)
+
+	if reqCopy.Stream {
+		return e.relayChatCompletionsSSE(ctx, w, resp.Body, acc, start, meta)
+	}
+	return e.relayChatCompletionsJSON(ctx, w, resp.Body, acc, start, meta)
+}
+
+func (e *Engine) relayChatCompletionsSSE(ctx context.Context, w http.ResponseWriter, body io.Reader, acc *store.Account, start time.Time, meta forwardMeta) forwardResult {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: "streaming unsupported"}
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	sc := scanSSE(body)
+	outputBytes := 0
+	var lastUsage *apicompat.ChatUsage
+
+	for sc.Scan() {
+		line := sc.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		if _, err := io.WriteString(w, line+"\n\n"); err != nil {
+			e.logForward(acc, meta, 499, 0, 0, time.Since(start), "client cancelled stream", "client_cancelled", "client_cancelled")
+			return forwardResult{outcome: outcomeClientClosed, headersWritten: true}
+		}
+		flusher.Flush()
+		outputBytes += len(line)
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload != "" && payload != "[DONE]" {
+			var chunk apicompat.ChatCompletionsChunk
+			if err := json.Unmarshal([]byte(payload), &chunk); err == nil && chunk.Usage != nil {
+				lastUsage = chunk.Usage
+			}
+		}
+	}
+	usage := usageMetrics{Prompt: meta.EstimatedPromptTokens, Completion: outputBytes / 4}
+	if lastUsage != nil {
+		usage.Prompt = lastUsage.PromptTokens
+		usage.Completion = lastUsage.CompletionTokens
+	}
+	e.logForwardUsage(acc, meta, http.StatusOK, usage, time.Since(start), "", "", "")
+	return forwardResult{outcome: outcomeSuccess, status: http.StatusOK, headersWritten: true}
+}
+
+func (e *Engine) relayChatCompletionsJSON(ctx context.Context, w http.ResponseWriter, body io.Reader, acc *store.Account, start time.Time, meta forwardMeta) forwardResult {
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadGateway, errMsg: "read response body: " + err.Error()}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+
+	var chatResp apicompat.ChatCompletionsResponse
+	usage := usageMetrics{Prompt: meta.EstimatedPromptTokens, Completion: len(data) / 4}
+	if err := json.Unmarshal(data, &chatResp); err == nil && chatResp.Usage != nil {
+		usage.Prompt = chatResp.Usage.PromptTokens
+		usage.Completion = chatResp.Usage.CompletionTokens
+	}
+	e.logForwardUsage(acc, meta, http.StatusOK, usage, time.Since(start), "", "", "")
+	return forwardResult{outcome: outcomeSuccess, status: http.StatusOK, headersWritten: true}
+}
+
 func shouldFailoverUpstreamError(result forwardResult) bool {
 	return result.outcome == outcomeUpstreamError && !result.headersWritten &&
 		(result.retryable || result.status >= http.StatusInternalServerError)
@@ -450,7 +661,7 @@ func readUpstreamError(body io.Reader) string {
 	return s
 }
 
-func (e *Engine) selectAccounts(ctx context.Context) ([]*store.Account, func(), error) {
+func (e *Engine) selectAccounts(ctx context.Context, model string) ([]*store.Account, func(), error) {
 	cfg := e.settings()
 	if cfg.AutoRecovery {
 		_ = e.store.RecoverExpiredRateLimits(time.Now())
@@ -485,6 +696,9 @@ func (e *Engine) selectAccounts(ctx context.Context) ([]*store.Account, func(), 
 				continue
 			}
 		} else if strings.TrimSpace(a.AccessToken) == "" && strings.TrimSpace(a.RefreshToken) == "" {
+			continue
+		}
+		if model != "" && !e.accountSupportsModel(a, model) {
 			continue
 		}
 		out = append(out, a)
@@ -598,17 +812,413 @@ func isSevereAccountFailure(message string) bool {
 }
 
 // resolveModel returns the model to forward: the configured default when the
-// request omits a model, or the request's model when it belongs to the
-// gpt-5*/codex families. Anything else is rejected (no silent fallback).
+// request omits a model, or the request's model when non-empty.
 func resolveModel(model, def string) (string, bool) {
-	m := strings.ToLower(strings.TrimSpace(model))
+	m := strings.TrimSpace(model)
 	if m == "" {
+		if strings.TrimSpace(def) == "" {
+			return openai.DefaultGatewayModel, true
+		}
 		return def, true
 	}
-	if strings.HasPrefix(m, "gpt-5") || strings.Contains(m, "codex") {
-		return model, true
+	if strings.ContainsAny(m, " \t\r\n\"'") {
+		return "", false
 	}
-	return "", false
+	return m, true
+}
+
+func (e *Engine) accountSupportsModel(acc *store.Account, requestedModel string) bool {
+	if acc == nil {
+		return false
+	}
+	baseModel := strings.ToLower(strings.TrimSpace(openai.StripReasoningEffortSuffix(requestedModel)))
+	if baseModel == "" {
+		return true
+	}
+
+	if cached, ok := e.accountModelsCache.Load(acc.ID); ok {
+		if models, ok := cached.([]string); ok && len(models) > 0 {
+			for _, m := range models {
+				if strings.EqualFold(m, baseModel) {
+					return true
+				}
+			}
+			return false
+		}
+	}
+
+	for _, m := range store.AccountProviderModels(acc) {
+		if strings.EqualFold(m, baseModel) {
+			return true
+		}
+	}
+
+	if acc.AccountType == store.AccountTypeOAuth {
+		return strings.HasPrefix(baseModel, "gpt-") ||
+			strings.Contains(baseModel, "codex") ||
+			strings.HasPrefix(baseModel, "o1") ||
+			strings.HasPrefix(baseModel, "o3") ||
+			strings.HasPrefix(baseModel, "o4") ||
+			strings.HasPrefix(baseModel, "chatgpt")
+	}
+
+	base := strings.ToLower(strings.TrimSpace(acc.BaseURL))
+	if strings.Contains(base, "deepseek") {
+		return strings.Contains(baseModel, "deepseek")
+	}
+	if strings.Contains(base, "moonshot") {
+		return strings.HasPrefix(baseModel, "moonshot") || strings.HasPrefix(baseModel, "kimi")
+	}
+	if strings.Contains(base, "zhipu") || strings.Contains(base, "bigmodel") {
+		return strings.HasPrefix(baseModel, "glm")
+	}
+	if strings.Contains(base, "minimax") {
+		return strings.HasPrefix(baseModel, "abab")
+	}
+	if strings.Contains(base, "openai.com") || base == "" {
+		return strings.HasPrefix(baseModel, "gpt-") ||
+			strings.HasPrefix(baseModel, "o1") ||
+			strings.HasPrefix(baseModel, "o3") ||
+			strings.HasPrefix(baseModel, "o4") ||
+			strings.Contains(baseModel, "codex")
+	}
+
+	return true
+}
+
+// ActiveModels returns the unique list of model IDs supported by all currently
+// active accounts in the pool, plus any configured custom models.
+func (e *Engine) ActiveModels() []string {
+	if e == nil || e.store == nil {
+		return nil
+	}
+	all, err := e.store.ListAccounts()
+	if err != nil {
+		all = nil
+	}
+	received, err := e.store.ListActiveCloudReceivedAccounts()
+	if err == nil {
+		all = append(all, received...)
+	}
+
+	seen := make(map[string]struct{})
+	var result []string
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if _, exists := seen[id]; !exists {
+			seen[id] = struct{}{}
+			result = append(result, id)
+		}
+	}
+
+	for _, a := range all {
+		if a.Status != store.AccountActive {
+			continue
+		}
+		if a.AccountType == store.AccountTypeAPIKey {
+			if strings.TrimSpace(a.APIKey) == "" {
+				continue
+			}
+		} else {
+			if strings.TrimSpace(a.AccessToken) == "" && strings.TrimSpace(a.RefreshToken) == "" {
+				continue
+			}
+		}
+
+		var providerModels []string
+		if cached, ok := e.accountModelsCache.Load(a.ID); ok {
+			if models, ok := cached.([]string); ok && len(models) > 0 {
+				providerModels = models
+			}
+		}
+		if len(providerModels) == 0 {
+			providerModels = store.AccountProviderModels(a)
+		}
+		for _, m := range providerModels {
+			add(m)
+		}
+	}
+
+	cfg := e.settings()
+	if cfg.CustomModels != "" {
+		for _, m := range openai.ParseModelList(cfg.CustomModels) {
+			add(m)
+		}
+	}
+	return result
+}
+
+// AccountModelsResult represents the models supported by an account and default selection.
+type AccountModelsResult struct {
+	Models       []string `json:"models"`
+	DefaultModel string   `json:"default_model"`
+	Source       string   `json:"source"`
+}
+
+// AccountAvailableModels returns models for an existing account, querying upstream /models for API-key accounts.
+func (e *Engine) AccountAvailableModels(ctx context.Context, acc *store.Account) (AccountModelsResult, error) {
+	if acc == nil {
+		return AccountModelsResult{
+			Models:       openai.ActiveModelOptions(nil),
+			DefaultModel: openai.DefaultTestModel,
+			Source:       "fallback",
+		}, nil
+	}
+
+	if acc.AccountType == store.AccountTypeOAuth {
+		models := store.AccountKnownModels(acc)
+		if len(models) == 0 {
+			models = openai.ActiveModelOptions(nil)
+		}
+		return AccountModelsResult{
+			Models:       models,
+			DefaultModel: openai.DefaultTestModel,
+			Source:       "oauth",
+		}, nil
+	}
+
+	baseLower := strings.ToLower(strings.TrimSpace(acc.BaseURL))
+	if strings.Contains(baseLower, "chatgpt.com/backend-api/codex/responses") {
+		return AccountModelsResult{
+			Models:       store.AccountKnownModels(&store.Account{AccountType: store.AccountTypeOAuth}),
+			DefaultModel: openai.DefaultTestModel,
+			Source:       "oauth",
+		}, nil
+	}
+
+	apiKey := strings.TrimSpace(acc.APIKey)
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(acc.AccessToken)
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	models, err := e.fetchUpstreamModels(probeCtx, acc.BaseURL, apiKey, acc.ProxyID, acc.NetworkMode)
+	if err == nil && len(models) > 0 {
+		e.accountModelsCache.Store(acc.ID, models)
+		return AccountModelsResult{
+			Models:       models,
+			DefaultModel: pickDefaultModel(models, acc.BaseURL),
+			Source:       "upstream",
+		}, nil
+	}
+
+	if cached, ok := e.accountModelsCache.Load(acc.ID); ok {
+		if cachedModels, ok := cached.([]string); ok && len(cachedModels) > 0 {
+			return AccountModelsResult{
+				Models:       cachedModels,
+				DefaultModel: pickDefaultModel(cachedModels, acc.BaseURL),
+				Source:       "cache",
+			}, nil
+		}
+	}
+
+	known := store.AccountKnownModels(acc)
+	if len(known) > 0 {
+		return AccountModelsResult{
+			Models:       known,
+			DefaultModel: pickDefaultModel(known, acc.BaseURL),
+			Source:       "known",
+		}, nil
+	}
+
+	return AccountModelsResult{
+		Models:       openai.ActiveModelOptions(nil),
+		DefaultModel: openai.DefaultTestModel,
+		Source:       "fallback",
+	}, nil
+}
+
+// ProbeModels queries upstream /models for an arbitrary BaseURL and APIKey.
+func (e *Engine) ProbeModels(ctx context.Context, baseURL, apiKey string, proxyID *int64, networkMode store.AccountNetworkMode) (AccountModelsResult, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	models, err := e.fetchUpstreamModels(probeCtx, baseURL, apiKey, proxyID, networkMode)
+	if err == nil && len(models) > 0 {
+		return AccountModelsResult{
+			Models:       models,
+			DefaultModel: pickDefaultModel(models, baseURL),
+			Source:       "upstream",
+		}, nil
+	}
+
+	mockAcc := &store.Account{
+		AccountType: store.AccountTypeAPIKey,
+		BaseURL:     baseURL,
+	}
+	known := store.AccountKnownModels(mockAcc)
+	if len(known) > 0 {
+		return AccountModelsResult{
+			Models:       known,
+			DefaultModel: pickDefaultModel(known, baseURL),
+			Source:       "known",
+		}, nil
+	}
+
+	return AccountModelsResult{
+		Models:       openai.ActiveModelOptions(nil),
+		DefaultModel: openai.DefaultTestModel,
+		Source:       "fallback",
+	}, nil
+}
+
+func (e *Engine) fetchUpstreamModels(ctx context.Context, baseURL, apiKey string, proxyID *int64, networkMode store.AccountNetworkMode) ([]string, error) {
+	targetURL := apiKeyModelsURL(baseURL)
+	var proxy *store.Proxy
+	if proxyID != nil && e.store != nil {
+		proxy, _ = e.store.GetProxy(*proxyID)
+	}
+	cfg := e.settings()
+	client, err := newHTTPClient(proxy, networkMode, cfg.CompatProfile, 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(apiKey) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("upstream returned HTTP %d", resp.StatusCode)
+	}
+
+	var envelope struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+		Models []any `json:"models"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1024*1024)).Decode(&envelope); err != nil {
+		return nil, err
+	}
+
+	seen := make(map[string]struct{})
+	var models []string
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if _, exists := seen[id]; !exists {
+			seen[id] = struct{}{}
+			models = append(models, id)
+		}
+	}
+
+	for _, item := range envelope.Data {
+		add(item.ID)
+	}
+	for _, item := range envelope.Models {
+		if s, ok := item.(string); ok {
+			add(s)
+		} else if m, ok := item.(map[string]any); ok {
+			if id, ok := m["id"].(string); ok {
+				add(id)
+			}
+		}
+	}
+
+	if len(models) == 0 {
+		return nil, errors.New("no models found in upstream response")
+	}
+
+	sortModelsByPriority(models, baseURL)
+	return models, nil
+}
+
+func pickDefaultModel(models []string, baseURL string) string {
+	if len(models) == 0 {
+		return openai.DefaultTestModel
+	}
+	baseLower := strings.ToLower(baseURL)
+	if strings.Contains(baseLower, "deepseek") {
+		for _, m := range models {
+			if strings.EqualFold(m, "deepseek-chat") {
+				return m
+			}
+		}
+	}
+	if strings.Contains(baseLower, "moonshot") || strings.Contains(baseLower, "kimi") {
+		for _, m := range models {
+			if strings.EqualFold(m, "moonshot-v1-8k") || strings.Contains(strings.ToLower(m), "moonshot") {
+				return m
+			}
+		}
+	}
+	for _, m := range models {
+		mLower := strings.ToLower(m)
+		if strings.Contains(mLower, "chat") && !strings.Contains(mLower, "embed") {
+			return m
+		}
+	}
+	for _, m := range models {
+		mLower := strings.ToLower(m)
+		if strings.Contains(mLower, "gpt") && !strings.Contains(mLower, "embed") {
+			return m
+		}
+	}
+	return models[0]
+}
+
+func sortModelsByPriority(models []string, baseURL string) {
+	sort.SliceStable(models, func(i, j int) bool {
+		a := strings.ToLower(models[i])
+		b := strings.ToLower(models[j])
+		scoreA := modelPriorityScore(a, baseURL)
+		scoreB := modelPriorityScore(b, baseURL)
+		if scoreA != scoreB {
+			return scoreA > scoreB
+		}
+		return a < b
+	})
+}
+
+func modelPriorityScore(name, baseURL string) int {
+	baseLower := strings.ToLower(baseURL)
+	if strings.Contains(baseLower, "deepseek") {
+		if name == "deepseek-chat" {
+			return 100
+		}
+		if name == "deepseek-reasoner" {
+			return 90
+		}
+	}
+	if strings.Contains(baseLower, "moonshot") {
+		if strings.HasPrefix(name, "moonshot-v1-8k") {
+			return 100
+		}
+		if strings.Contains(name, "moonshot") {
+			return 90
+		}
+	}
+	for _, dep := range []string{"embed", "whisper", "tts", "dall-e", "moderation", "davinci", "babbage"} {
+		if strings.Contains(name, dep) {
+			return 10
+		}
+	}
+	if strings.Contains(name, "chat") {
+		return 80
+	}
+	if strings.Contains(name, "reasoner") || strings.Contains(name, "pro") || strings.Contains(name, "turbo") || strings.Contains(name, "flash") {
+		return 70
+	}
+	return 50
 }
 
 // upstreamLogModel is the model name stored in request logs: the canonical

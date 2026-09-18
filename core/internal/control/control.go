@@ -179,6 +179,8 @@ func (c *Control) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /control/accounts/{id}/refresh", h(c.refreshAccount))
 	mux.HandleFunc("POST /control/accounts/{id}/proxy", h(c.bindProxy))
 	mux.HandleFunc("POST /control/accounts/{id}/test", h(c.testAccount))
+	mux.HandleFunc("POST /control/accounts/{id}/models", h(c.accountModels))
+	mux.HandleFunc("POST /control/accounts/probe-models", h(c.probeModels))
 	mux.HandleFunc("POST /control/accounts/{id}/status", h(c.setAccountStatus))
 	mux.HandleFunc("PUT /control/accounts/{id}/limits", h(c.setAccountLimits))
 
@@ -279,6 +281,8 @@ func (c *Control) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /control/diagnostics/runs", h(c.createDiagnosticRun))
 	mux.HandleFunc("GET /control/diagnostics/runs/{id}", h(c.getDiagnosticRun))
 	mux.HandleFunc("GET /control/diagnostics/runs/{id}/report", h(c.diagnosticReport))
+
+	go c.syncCodexCatalog()
 }
 
 // WithCORS wraps a handler with permissive CORS headers and handles preflight
@@ -683,6 +687,73 @@ func (c *Control) testAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
+// accountModels queries the available models for an existing account.
+func (c *Control) accountModels(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	var acc *store.Account
+	var err error
+	if id < 0 {
+		acc, err = c.store.GetCloudReceivedAccount(id)
+	} else {
+		acc, err = c.store.GetAccount(id)
+	}
+	if err != nil {
+		writeControlError(w, http.StatusNotFound, "account_not_found", "account not found", false, nil)
+		return
+	}
+	if c.engine == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"models":        store.AccountKnownModels(acc),
+			"default_model": openai.DefaultTestModel,
+			"source":        "known",
+		})
+		return
+	}
+	res, err := c.engine.AccountAvailableModels(ctx, acc)
+	if err != nil {
+		writeControlError(w, http.StatusInternalServerError, "probe_failed", err.Error(), true, nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// probeModels queries models directly for a base URL + API key pair before importing.
+func (c *Control) probeModels(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		BaseURL     string                   `json:"base_url"`
+		APIKey      string                   `json:"api_key"`
+		ProxyID     *int64                   `json:"proxy_id"`
+		NetworkMode store.AccountNetworkMode `json:"network_mode"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeControlError(w, http.StatusBadRequest, "invalid_body", "invalid json body", false, nil)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	if c.engine == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"models":        openai.ActiveModelOptions(nil),
+			"default_model": openai.DefaultTestModel,
+			"source":        "fallback",
+		})
+		return
+	}
+	res, err := c.engine.ProbeModels(ctx, body.BaseURL, body.APIKey, body.ProxyID, body.NetworkMode)
+	if err != nil {
+		writeControlError(w, http.StatusInternalServerError, "probe_failed", err.Error(), true, nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
 // setAccountStatus lets the user force an account's status (e.g. reset a
 // rate-limited/errored account back to active).
 func (c *Control) setAccountStatus(w http.ResponseWriter, r *http.Request) {
@@ -720,6 +791,7 @@ func (c *Control) setAccountStatus(w http.ResponseWriter, r *http.Request) {
 			writeCloudControlError(w, err)
 			return
 		}
+		c.syncCodexCatalog()
 		updated, _ := c.store.GetCloudReceivedAccount(id)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "account": updated})
 		return
@@ -732,6 +804,7 @@ func (c *Control) setAccountStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	c.syncCodexCatalog()
 	acc, _ := c.store.GetAccount(id)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "account": acc})
 }
@@ -786,6 +859,7 @@ func (c *Control) importAccounts(w http.ResponseWriter, r *http.Request) {
 		writeImportError(w, err)
 		return
 	}
+	c.syncCodexCatalog()
 	errors := []string{}
 	for _, row := range result.Rows {
 		if row.ErrorMessage != "" {
@@ -832,6 +906,7 @@ func (c *Control) commitImportAccounts(w http.ResponseWriter, r *http.Request) {
 		writeImportError(w, err)
 		return
 	}
+	c.syncCodexCatalog()
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -897,6 +972,7 @@ func (c *Control) deleteAccount(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	c.syncCodexCatalog()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -925,6 +1001,7 @@ func (c *Control) batchDeleteAccounts(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	c.syncCodexCatalog()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "requested": result.Requested, "deleted": result.Deleted, "missing": result.Missing, "failed": result.Failed})
 }
 
@@ -1058,6 +1135,7 @@ func (c *Control) oauthPoll(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := map[string]any{"done": done, "error": errMsg}
 	if acc != nil {
+		c.syncCodexCatalog()
 		resp["account"] = acc
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -1155,8 +1233,12 @@ func (c *Control) testProxy(w http.ResponseWriter, r *http.Request) {
 // listModels returns the model options (incl. reasoning-effort suffixed
 // variants) offered in the connectivity-test / default-model pickers.
 func (c *Control) listModels(w http.ResponseWriter, r *http.Request) {
+	var extra []string
+	if c.engine != nil {
+		extra = c.engine.ActiveModels()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"models":              openai.ModelOptions(),
+		"models":              openai.ActiveModelOptions(extra),
 		"default_model":       openai.DefaultGatewayModel,
 		"default_test_model":  openai.DefaultTestModel,
 		"codex_default_model": openai.DefaultCodexModel,

@@ -39,9 +39,17 @@ var instructionsGPT52 string
 //go:embed instructions_gpt5_5.txt
 var instructionsGPT55 string
 
+// Source: openai/codex codex-rs/models-manager/models.json at 121f91fd5d9d.
+//
+//go:embed instructions_gpt6_astra.txt
+var instructionsGPT6Astra string
+
 // latestCodexInstructions 返回当前已知最新版本的 Codex base instructions，
-// 当前为 GPT-5.5；若 5.5 prompt 意外为空则回退到 DefaultInstructions 保证非空。
+// 当前为 GPT-6 Astra；若为空则回退到 GPT-5.5，最终回退到 DefaultInstructions。
 func latestCodexInstructions() string {
+	if v := strings.TrimSpace(instructionsGPT6Astra); v != "" {
+		return instructionsGPT6Astra
+	}
 	if v := strings.TrimSpace(instructionsGPT55); v != "" {
 		return instructionsGPT55
 	}
@@ -49,20 +57,27 @@ func latestCodexInstructions() string {
 }
 
 // CodexBaseInstructionsForModel 按模型返回最匹配的真实 Codex base instructions：
+//   - gpt-6 / gpt-6-astra（含供应商前缀与变体）→ GPT-6 Astra prompt
 //   - 含 "codex" 的模型（gpt-5-codex / gpt-5.x-codex / codex-max / spark 等）→ GPT-5-Codex prompt
 //   - gpt-5.5 系非 codex 模型 → GPT-5.5 prompt
 //   - gpt-5.2 系非 codex 模型 → GPT-5.2 prompt
 //   - gpt-5.1 系非 codex 模型 → GPT-5.1 prompt
-//   - 其它（含 gpt-5.3 / gpt-5.4 / gpt-5.6 / 裸 gpt-5 / 未知模型）→ 回退到最新已维护版本（GPT-5.5）
+//   - 其它（含 gpt-5.3 / gpt-5.4 / gpt-5.6 / 裸 gpt-5 / 未知模型）→ 回退到最新已维护版本（当前 GPT-6 Astra）
 //
 // 任一专用 prompt 意外为空时回退链最终落到 DefaultInstructions，保证返回非空。
 func CodexBaseInstructionsForModel(model string) string {
 	m := strings.ToLower(strings.TrimSpace(model))
 	switch {
+	case m == "gpt-6" || m == "gpt-6-astra" || strings.HasPrefix(m, "gpt-6-astra-") || strings.HasPrefix(m, "gpt-6-"):
+		if v := strings.TrimSpace(instructionsGPT6Astra); v != "" {
+			return instructionsGPT6Astra
+		}
 	case strings.Contains(m, "codex"):
 		return DefaultInstructions
 	case strings.HasPrefix(m, "gpt-5.5"):
-		return latestCodexInstructions()
+		if v := strings.TrimSpace(instructionsGPT55); v != "" {
+			return instructionsGPT55
+		}
 	case strings.HasPrefix(m, "gpt-5.2"):
 		if v := strings.TrimSpace(instructionsGPT52); v != "" {
 			return instructionsGPT52

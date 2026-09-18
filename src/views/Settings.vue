@@ -272,6 +272,18 @@ onMounted(() => {
             <option v-for="m in models" :key="m" :value="m">{{ m }}</option>
           </select>
         </div>
+        <div class="setting-row">
+          <div class="setting-info">
+            <h4>{{ t("settings.customModels") }}</h4>
+            <p>{{ t("settings.customModelsDesc") }}</p>
+          </div>
+          <input
+            v-model="s.custom_models"
+            class="input mono"
+            style="width: 280px"
+            :placeholder="t('settings.customModelsPlaceholder')"
+          />
+        </div>
       </div>
 
       <!-- Appearance -->

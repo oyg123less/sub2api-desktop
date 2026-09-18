@@ -13,7 +13,10 @@ import (
 	"sync"
 	"testing"
 
+	"sub2api-desktop/core/internal/account"
 	"sub2api-desktop/core/internal/codexcfg"
+	appcrypto "sub2api-desktop/core/internal/crypto"
+	"sub2api-desktop/core/internal/gateway"
 	"sub2api-desktop/core/internal/store"
 )
 
@@ -231,5 +234,104 @@ func TestCodexApplyDoesNotWriteConfigWhenGatewayVerificationFails(t *testing.T) 
 				t.Fatalf("config was written after failed verification: %v", err)
 			}
 		})
+	}
+}
+
+func TestCodexCatalogSyncLifecycle(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	codexDir := filepath.Join(home, ".codex")
+
+	cipher, err := appcrypto.LoadOrCreate(filepath.Join(home, "key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(home, "data.db"), cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	acc, err := st.CreateAccount(&store.Account{
+		AccountType: store.AccountTypeAPIKey,
+		BaseURL:     "https://api.moonshot.cn/v1",
+		APIKey:      "sk-test",
+		Email:       "kimi-account",
+		Status:      store.AccountActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := account.NewManager(st)
+	engine := gateway.New(st, mgr, func() store.Settings {
+		return store.Settings{
+			ListenPort:  0,
+			LocalAPIKey: "local-test-key",
+			CodexModel:  "moonshot-v1-8k",
+		}
+	}, nil)
+
+	server := newCodexGatewayStub(t, true)
+	server.models = []string{"moonshot-v1-8k"}
+
+	settings := &settingsPatchAccess{value: store.Settings{
+		ListenPort:  server.Port(),
+		LocalAPIKey: "local-test-key",
+		CodexModel:  "moonshot-v1-8k",
+	}}
+
+	ctrl := &Control{
+		store:    st,
+		mgr:      mgr,
+		engine:   engine,
+		server:   server,
+		settings: settings,
+	}
+
+	// 1. Apply Codex
+	req := httptest.NewRequest(http.MethodPost, "/control/codex/apply", strings.NewReader(`{"model":"moonshot-v1-8k"}`))
+	rec := httptest.NewRecorder()
+	ctrl.codexApply(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply failed: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	catalogPath := filepath.Join(codexDir, codexcfg.CatalogFileName)
+	data, err := os.ReadFile(catalogPath)
+	if err != nil {
+		t.Fatalf("amber_models.json should exist after apply: %v", err)
+	}
+	if !strings.Contains(string(data), "moonshot-v1-8k") {
+		t.Fatalf("amber_models.json missing moonshot-v1-8k: %s", string(data))
+	}
+
+	// 2. Disable account -> amber_models.json should update automatically
+	statusReq := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/control/accounts/%d/status", acc.ID), strings.NewReader(`{"status":"disabled"}`))
+	statusReq.SetPathValue("id", fmt.Sprintf("%d", acc.ID))
+	statusRec := httptest.NewRecorder()
+	ctrl.setAccountStatus(statusRec, statusReq)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("setAccountStatus failed: status=%d body=%s", statusRec.Code, statusRec.Body.String())
+	}
+
+	dataAfterDisable, err := os.ReadFile(catalogPath)
+	if err != nil {
+		t.Fatalf("amber_models.json should still exist: %v", err)
+	}
+	if strings.Contains(string(dataAfterDisable), "moonshot-v1-8k") {
+		t.Fatalf("amber_models.json should no longer contain moonshot-v1-8k after account disabled: %s", string(dataAfterDisable))
+	}
+
+	// 3. Restore Codex -> amber_models.json should be removed
+	restoreReq := httptest.NewRequest(http.MethodPost, "/control/codex/restore", nil)
+	restoreRec := httptest.NewRecorder()
+	ctrl.codexRestore(restoreRec, restoreReq)
+	if restoreRec.Code != http.StatusOK {
+		t.Fatalf("codexRestore failed: status=%d body=%s", restoreRec.Code, restoreRec.Body.String())
+	}
+	if _, err := os.Stat(catalogPath); !os.IsNotExist(err) {
+		t.Fatalf("amber_models.json should be removed after restore: %v", err)
 	}
 }

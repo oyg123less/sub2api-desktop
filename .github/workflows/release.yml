@@ -77,11 +77,11 @@ jobs:
       - name: Build Tauri app
         run: npm run tauri build
 
-      - name: Verify in-place upgrade from v0.4.4
+      - name: Verify in-place upgrade from v0.4.5
         shell: pwsh
         run: |
-          $installer = Get-ChildItem src-tauri\target\release\bundle\nsis\Amber_0.4.5_x64-setup.exe | Select-Object -ExpandProperty FullName
-          .\scripts\test-upgrade-installer.ps1 -CurrentInstaller $installer -PreviousVersion 0.4.4
+          $installer = Get-ChildItem src-tauri\target\release\bundle\nsis\Amber_0.4.6_x64-setup.exe | Select-Object -ExpandProperty FullName
+          .\scripts\test-upgrade-installer.ps1 -CurrentInstaller $installer -PreviousVersion 0.4.5
 
       - name: Smoke test clean data directory
         shell: pwsh

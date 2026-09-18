@@ -164,6 +164,11 @@ func (s *Store) LoadSettings() (Settings, error) {
 	} else if v != "" {
 		out.CompatProfile = v
 	}
+	if v, err := get("custom_models"); err != nil {
+		return out, err
+	} else if v != "" {
+		out.CustomModels = v
+	}
 
 	// Seed a local API key on first run.
 	if out.LocalAPIKey == "" {
@@ -200,6 +205,7 @@ func (s *Store) SaveSettings(v Settings) error {
 		"max_log_rows":          strconv.Itoa(v.MaxLogRows),
 		"auto_recovery":         b2s(v.AutoRecovery),
 		"compatibility_profile": v.CompatProfile,
+		"custom_models":         v.CustomModels,
 	}
 	for k, val := range kv {
 		if err := s.setKV(k, val); err != nil {

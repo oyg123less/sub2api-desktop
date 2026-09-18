@@ -21,7 +21,7 @@ import (
 
 const (
 	maxCloudResponseBytes   = 4 * 1024 * 1024
-	amberClientVersion      = "0.4.5"
+	amberClientVersion      = "0.4.6"
 	amberUserAgent          = "Amber/" + amberClientVersion
 	defaultCloudPrimaryURL  = "https://api.amberapp.asia"
 	defaultCloudFallbackURL = "https://amber-cloud-api.484486528.workers.dev"

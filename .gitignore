@@ -34,3 +34,7 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Local scripts and patches
+build_*.bat
+patches_*/

@@ -1,6 +1,9 @@
 package openai
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestCatalogIncludesGPT56Everywhere(t *testing.T) {
 	wanted := []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
@@ -61,4 +64,54 @@ func containsString(values []string, wanted string) bool {
 		}
 	}
 	return false
+}
+
+func TestGPT6CatalogAndInstructions(t *testing.T) {
+	models := GatewayModels()
+	if !containsModel(models, "gpt-6") {
+		t.Fatal("gateway catalog missing gpt-6")
+	}
+	if !containsModel(models, "gpt-6-astra") {
+		t.Fatal("gateway catalog missing gpt-6-astra")
+	}
+
+	instr := CodexBaseInstructionsForModel("gpt-6")
+	if len(instr) == 0 {
+		t.Fatal("CodexBaseInstructionsForModel(gpt-6) is empty")
+	}
+	if !strings.Contains(instr, "GPT-6") {
+		t.Fatal("CodexBaseInstructionsForModel(gpt-6) does not contain GPT-6 prompt")
+	}
+
+	mapped, effort := MapCodexModel("gpt-6-high")
+	if mapped != "gpt-6" || effort != "high" {
+		t.Fatalf("MapCodexModel(gpt-6-high) = (%q, %q), want (gpt-6, high)", mapped, effort)
+	}
+}
+
+func TestActiveGatewayModelsDynamicFiltering(t *testing.T) {
+	// When empty, returns default catalog
+	defaults := ActiveGatewayModels(nil)
+	if len(defaults) == 0 {
+		t.Fatal("ActiveGatewayModels(nil) returned empty")
+	}
+
+	// When active accounts supply models (e.g. DeepSeek only)
+	active := []string{"deepseek-chat", "deepseek-reasoner"}
+	filtered := ActiveGatewayModels(active)
+	if len(filtered) != 2 {
+		t.Fatalf("len(filtered) = %d, want 2", len(filtered))
+	}
+	if filtered[0].ID != "deepseek-chat" || filtered[0].OwnedBy != "deepseek" {
+		t.Fatalf("unexpected filtered[0]: %#v", filtered[0])
+	}
+	if filtered[1].ID != "deepseek-reasoner" || filtered[1].OwnedBy != "deepseek" {
+		t.Fatalf("unexpected filtered[1]: %#v", filtered[1])
+	}
+
+	// Active options include deepseek models
+	opts := ActiveModelOptions(active)
+	if !containsString(opts, "deepseek-chat") || !containsString(opts, "deepseek-reasoner") {
+		t.Fatalf("ActiveModelOptions missing deepseek models: %v", opts)
+	}
 }

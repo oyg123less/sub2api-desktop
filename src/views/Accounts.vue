@@ -42,6 +42,24 @@ const testRunning = ref(false);
 const testResult = ref<AccountTestResult | null>(null);
 const testError = ref("");
 const modelOptions = ref<string[]>([]);
+const testModelsLoading = ref(false);
+const accountModelOptions = ref<string[]>([]);
+const testCustomInput = ref(false);
+const customTestModel = ref("");
+
+const effectiveTestModel = computed(() => {
+  if (testCustomInput.value) {
+    return customTestModel.value.trim();
+  }
+  return testModel.value.trim();
+});
+
+const currentTestModelOptions = computed(() => {
+  if (accountModelOptions.value.length > 0) {
+    return accountModelOptions.value;
+  }
+  return modelOptions.value;
+});
 
 function pct(v?: number) {
   if (v == null) return 0;
@@ -438,22 +456,68 @@ async function copyTestDetails(value: string) {
   }
 }
 
-function openTest(a: Account) {
+async function openTest(a: Account) {
 	detailTarget.value = null;
   testTarget.value = a;
   testResult.value = null;
   testError.value = "";
   testRunning.value = false;
+  testCustomInput.value = false;
+  customTestModel.value = "";
   testOpen.value = true;
+
+  if (a.account_type === "api_key") {
+    testModelsLoading.value = true;
+    try {
+      const res = await api.getAccountModels(a.id);
+      if (res.models && res.models.length > 0) {
+        accountModelOptions.value = res.models;
+        testModel.value = res.default_model || res.models[0];
+      } else {
+        accountModelOptions.value = modelOptions.value;
+      }
+    } catch {
+      accountModelOptions.value = modelOptions.value;
+    } finally {
+      testModelsLoading.value = false;
+    }
+  } else {
+    accountModelOptions.value = modelOptions.value;
+    if (!testModel.value || !modelOptions.value.includes(testModel.value)) {
+      testModel.value = "gpt-5.6-sol";
+    }
+  }
+}
+
+async function refreshAccountTestModels() {
+  if (!testTarget.value || testTarget.value.account_type !== "api_key") return;
+  testModelsLoading.value = true;
+  try {
+    const res = await api.getAccountModels(testTarget.value.id);
+    if (res.models && res.models.length > 0) {
+      accountModelOptions.value = res.models;
+      testModel.value = res.default_model || res.models[0];
+      app.toast(t("accounts.modelsRefreshed", { count: res.models.length }), "success");
+    }
+  } catch (e) {
+    app.toast((e as Error).message, "error");
+  } finally {
+    testModelsLoading.value = false;
+  }
 }
 
 async function runTest() {
   if (!testTarget.value) return;
+  const targetModel = effectiveTestModel.value;
+  if (!targetModel) {
+    app.toast(t("accounts.testModelRequired"), "error");
+    return;
+  }
   testRunning.value = true;
   testResult.value = null;
   testError.value = "";
   try {
-    const r = await api.testAccount(testTarget.value.id, testModel.value);
+    const r = await api.testAccount(testTarget.value.id, targetModel);
     testResult.value = r;
     await load();
   } catch (e) {
@@ -1079,9 +1143,46 @@ onUnmounted(() => {
           </div>
           <div class="account-test-scroll">
             <div class="field">
-              <label class="field-label">{{ t("accounts.testModel") }}</label>
-              <select v-model="testModel" class="select" :disabled="testRunning">
-                <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
+              <div class="row-between field-header-line">
+                <label class="field-label">{{ t("accounts.testModel") }}</label>
+                <div class="row-gap-sm test-model-tools">
+                  <button
+                    v-if="testTarget?.account_type === 'api_key' && !testCustomInput"
+                    class="btn btn-ghost btn-xs"
+                    type="button"
+                    :disabled="testModelsLoading || testRunning"
+                    :title="t('accounts.refreshModels')"
+                    @click="refreshAccountTestModels"
+                  >
+                    <Icon name="refresh" :size="12" :class="{ spin: testModelsLoading }" />
+                    <small>{{ t("common.refresh") }}</small>
+                  </button>
+                  <button
+                    class="btn btn-ghost btn-xs"
+                    type="button"
+                    :disabled="testRunning"
+                    @click="testCustomInput = !testCustomInput"
+                  >
+                    <small>{{ testCustomInput ? t("accounts.selectModel") : t("accounts.customModel") }}</small>
+                  </button>
+                </div>
+              </div>
+
+              <div v-if="testModelsLoading" class="test-models-loading faint text-xs">
+                <Icon name="refresh" class="spin" :size="12" />
+                <span>{{ t("accounts.fetchingModels") }}</span>
+              </div>
+
+              <input
+                v-if="testCustomInput"
+                v-model="customTestModel"
+                class="input mono"
+                type="text"
+                :placeholder="t('accounts.customModelPlaceholder')"
+                :disabled="testRunning"
+              />
+              <select v-else v-model="testModel" class="select" :disabled="testRunning || testModelsLoading">
+                <option v-for="m in currentTestModelOptions" :key="m" :value="m">{{ m }}</option>
               </select>
             </div>
 
@@ -1429,6 +1530,9 @@ onUnmounted(() => {
 .account-test-head .modal-desc { margin-bottom: 0; }
 .account-test-scroll { min-width: 0; min-height: 0; padding: 16px 22px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .account-test-scroll .field { margin-top: 0; }
+.field-header-line { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.test-model-tools { display: inline-flex; align-items: center; gap: 6px; }
+.test-models-loading { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; color: var(--accent); }
 .account-test-actions { flex: 0 0 auto; margin: 0; padding: 14px 22px 18px; border-top: 1px solid var(--border-soft); background: var(--bg-card); }
 .test-running { display: flex; align-items: center; gap: 12px; margin: 14px 0; }
 .test-running .icon { color: var(--accent); }

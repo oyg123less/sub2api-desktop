@@ -46,7 +46,7 @@ func (e *Engine) Responses(w http.ResponseWriter, r *http.Request) {
 	clientStream, _ := body["stream"].(bool)
 	model, ok := resolveModel(requestedModel, cfg.DefaultModel)
 	if !ok {
-		writeError(w, http.StatusBadRequest, "unknown model: "+requestedModel+"（仅支持 gpt-5*/codex 系列模型）", "invalid_request_error")
+		writeError(w, http.StatusBadRequest, "unknown model: "+requestedModel, "invalid_request_error")
 		return
 	}
 	logModel := upstreamLogModel(model)
@@ -76,7 +76,7 @@ func (e *Engine) Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	candidates, releaseFirst, err := e.selectAccounts(r.Context())
+	candidates, releaseFirst, err := e.selectAccounts(r.Context(), model)
 	if err != nil {
 		if r.Context().Err() != nil {
 			return
@@ -85,7 +85,7 @@ func (e *Engine) Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(candidates) == 0 {
-		writeError(w, http.StatusServiceUnavailable, "没有可用账号，请先在应用内登录 ChatGPT 账号", "no_account")
+		writeError(w, http.StatusServiceUnavailable, "没有可用账号或没有支持该模型的账号，请检查号池中对应账号是否已启用", "no_account")
 		return
 	}
 
@@ -103,13 +103,22 @@ func (e *Engine) Responses(w http.ResponseWriter, r *http.Request) {
 		}
 		attempt++
 		meta := forwardMeta{RequestID: requestID, RequestedModel: requestedModel, ResolvedModel: logModel, Attempt: attempt, Stream: clientStream, EstimatedPromptTokens: estimateTokensFromBytes(len(bodyBytes)), ClientHeaders: clientHeaders}
-		result := e.forwardResponsesOnce(r.Context(), w, upstreamBody, acc, cfg, meta)
+		var result forwardResult
+		if isStandardOpenAICompatible(acc, model) {
+			result = e.forwardResponsesViaChatCompletions(r.Context(), w, bodyBytes, acc, cfg, meta)
+		} else {
+			result = e.forwardResponsesOnce(r.Context(), w, upstreamBody, acc, cfg, meta)
+		}
 		if result.outcome == outcomeAuthFailed && acc.AccountType == store.AccountTypeOAuth && acc.RefreshToken != "" {
 			if refreshed, err := e.forceRefreshAccount(r.Context(), acc, cfg); err == nil {
 				acc = refreshed
 				attempt++
 				meta.Attempt = attempt
-				result = e.forwardResponsesOnce(r.Context(), w, upstreamBody, acc, cfg, meta)
+				if isStandardOpenAICompatible(acc, model) {
+					result = e.forwardResponsesViaChatCompletions(r.Context(), w, bodyBytes, acc, cfg, meta)
+				} else {
+					result = e.forwardResponsesOnce(r.Context(), w, upstreamBody, acc, cfg, meta)
+				}
 			} else if isNetworkOrProxyError(err) {
 				result = forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadGateway, errMsg: "token refresh connection failed: " + err.Error(), retryable: true}
 			} else {
@@ -341,4 +350,195 @@ func responsesUsageCounts(usage *apicompat.ResponsesUsage) (int, int) {
 		return 0, 0
 	}
 	return usage.InputTokens, usage.OutputTokens
+}
+
+func (e *Engine) forwardResponsesViaChatCompletions(
+	ctx context.Context,
+	w http.ResponseWriter,
+	responsesBody []byte,
+	acc *store.Account,
+	cfg store.Settings,
+	meta forwardMeta,
+) forwardResult {
+	start := time.Now()
+	proxy, err := e.proxyForAccount(acc)
+	if err != nil {
+		message := errBoundProxyUnavailable.Error()
+		e.logForward(acc, meta, http.StatusBadGateway, 0, 0, time.Since(start), message, "proxy_unavailable", "proxy_resolution_failed")
+		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadGateway, errMsg: message, retryable: true}
+	}
+	client, err := newHTTPClient(proxy, acc.NetworkMode, cfg.CompatProfile, 10*time.Minute)
+	if err != nil {
+		e.logForward(acc, meta, http.StatusInternalServerError, 0, 0, time.Since(start), err.Error(), "upstream_network_error", "client_setup_failed")
+		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: err.Error(), retryable: true}
+	}
+
+	var respReq apicompat.ResponsesRequest
+	if err := json.Unmarshal(responsesBody, &respReq); err != nil {
+		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadRequest, errMsg: "parse responses request: " + err.Error()}
+	}
+
+	chatReq, err := apicompat.ResponsesToChatCompletionsRequest(&respReq)
+	if err != nil {
+		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadRequest, errMsg: "convert responses to chat completions: " + err.Error()}
+	}
+
+	upstreamModel, effort := openai.MapCodexModel(chatReq.Model)
+	if upstreamModel != "" {
+		chatReq.Model = upstreamModel
+	}
+	if effort != "" && chatReq.ReasoningEffort == "" {
+		chatReq.ReasoningEffort = effort
+	}
+	chatReq.Stream = meta.Stream
+
+	chatBody, err := json.Marshal(chatReq)
+	if err != nil {
+		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: err.Error()}
+	}
+
+	url := apiKeyChatCompletionsURL(acc.BaseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(chatBody))
+	if err != nil {
+		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: err.Error()}
+	}
+	token := acc.APIKey
+	if strings.TrimSpace(token) == "" {
+		token = acc.AccessToken
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	if meta.Stream {
+		req.Header.Set("Accept", "text/event-stream")
+	}
+
+	markRelayUpstreamStarted(ctx)
+	resp, err := client.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			e.logForwardUsage(acc, meta, 499, estimatedUsage(meta, 0), time.Since(start), "client cancelled request", "client_cancelled", "request_cancelled")
+			return forwardResult{outcome: outcomeClientClosed}
+		}
+		message := "upstream request failed: " + err.Error()
+		e.logForward(acc, meta, http.StatusBadGateway, 0, 0, time.Since(start), message, "upstream_network_error", "request_failed")
+		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadGateway, errMsg: message, retryable: true}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg := readUpstreamError(resp.Body)
+		result := classifyUpstreamHTTPError(resp.StatusCode, resp.Header, msg, acc, nil)
+		e.logForward(acc, meta, resp.StatusCode, 0, 0, time.Since(start), msg, result.errorKind, result.terminalEvent)
+		return result
+	}
+
+	_ = e.store.TouchAccount(acc.ID)
+
+	if meta.Stream {
+		return e.relayChatCompletionsToResponsesSSE(ctx, w, resp.Body, acc, start, meta)
+	}
+	return e.aggregateChatCompletionsToResponsesJSON(ctx, w, resp.Body, acc, start, meta)
+}
+
+func (e *Engine) relayChatCompletionsToResponsesSSE(
+	ctx context.Context,
+	w http.ResponseWriter,
+	body io.Reader,
+	acc *store.Account,
+	start time.Time,
+	meta forwardMeta,
+) forwardResult {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusInternalServerError, errMsg: "streaming unsupported"}
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	state := apicompat.NewChatCompletionsToResponsesStreamState(responseModel(meta))
+	sc := scanSSE(body)
+	outputBytes := 0
+
+	writeEvent := func(evt apicompat.ResponsesStreamEvent) bool {
+		data, err := json.Marshal(evt)
+		if err != nil {
+			return false
+		}
+		if _, err := io.WriteString(w, "data: "+string(data)+"\n\n"); err != nil {
+			return false
+		}
+		outputBytes += len(data)
+		flusher.Flush()
+		return true
+	}
+
+	for sc.Scan() {
+		line := sc.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" {
+			continue
+		}
+		if payload == "[DONE]" {
+			break
+		}
+		var chunk apicompat.ChatCompletionsChunk
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			continue
+		}
+		for _, evt := range apicompat.ChatCompletionsChunkToResponsesEvents(&chunk, state) {
+			if !writeEvent(evt) {
+				usage := bestUsage(state.Usage, nil, meta, outputBytes)
+				e.logForwardUsage(acc, meta, 499, usage, time.Since(start), "client cancelled stream", "client_cancelled", "client_cancelled")
+				return forwardResult{outcome: outcomeClientClosed, headersWritten: true}
+			}
+		}
+	}
+
+	for _, evt := range apicompat.FinalizeChatCompletionsResponsesStream(state) {
+		if !writeEvent(evt) {
+			usage := bestUsage(state.Usage, nil, meta, outputBytes)
+			e.logForwardUsage(acc, meta, 499, usage, time.Since(start), "client cancelled stream", "client_cancelled", "client_cancelled")
+			return forwardResult{outcome: outcomeClientClosed, headersWritten: true}
+		}
+	}
+	_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	flusher.Flush()
+
+	usage := bestUsage(state.Usage, nil, meta, outputBytes)
+	e.logForwardUsage(acc, meta, http.StatusOK, usage, time.Since(start), "", "", "")
+	return forwardResult{outcome: outcomeSuccess, status: http.StatusOK, headersWritten: true}
+}
+
+func (e *Engine) aggregateChatCompletionsToResponsesJSON(
+	ctx context.Context,
+	w http.ResponseWriter,
+	body io.Reader,
+	acc *store.Account,
+	start time.Time,
+	meta forwardMeta,
+) forwardResult {
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadGateway, errMsg: "read response body: " + err.Error()}
+	}
+	var chatResp apicompat.ChatCompletionsResponse
+	if err := json.Unmarshal(data, &chatResp); err != nil {
+		return forwardResult{outcome: outcomeUpstreamError, status: http.StatusBadGateway, errMsg: "parse chat completions response: " + err.Error()}
+	}
+	respObj := apicompat.ChatCompletionsResponseToResponses(&chatResp, responseModel(meta))
+	writeJSON(w, http.StatusOK, respObj)
+
+	usage := usageMetrics{Prompt: meta.EstimatedPromptTokens, Completion: len(data) / 4}
+	if chatResp.Usage != nil {
+		usage.Prompt = chatResp.Usage.PromptTokens
+		usage.Completion = chatResp.Usage.CompletionTokens
+	}
+	e.logForwardUsage(acc, meta, http.StatusOK, usage, time.Since(start), "", "", "")
+	return forwardResult{outcome: outcomeSuccess, status: http.StatusOK, headersWritten: true}
 }

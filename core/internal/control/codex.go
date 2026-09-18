@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -29,11 +30,10 @@ func (c *Control) codexModel() string {
 	return codexcfg.DefaultModel
 }
 
-// validCodexModel reports whether a model name belongs to the gpt-5*/codex
-// families accepted by the gateway.
+// validCodexModel reports whether a model name is a valid non-empty identifier.
 func validCodexModel(model string) bool {
-	m := strings.ToLower(strings.TrimSpace(model))
-	return strings.HasPrefix(m, "gpt-5") || strings.Contains(m, "codex")
+	m := strings.TrimSpace(model)
+	return len(m) > 0 && !strings.ContainsAny(m, " \t\r\n\"'")
 }
 
 func (c *Control) codexStatus(w http.ResponseWriter, r *http.Request) {
@@ -53,9 +53,14 @@ func (c *Control) codexStatus(w http.ResponseWriter, r *http.Request) {
 	if st.Applied && validCodexModel(st.Model) {
 		model = strings.TrimSpace(st.Model)
 	}
+	var activeModels []string
+	if c.engine != nil {
+		activeModels = c.engine.ActiveModels()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"config_path":    st.ConfigPath,
 		"auth_path":      st.AuthPath,
+		"catalog_path":   st.CatalogPath,
 		"applied":        st.Applied,
 		"config_exists":  st.ConfigExists,
 		"backup_exists":  st.BackupExists,
@@ -65,7 +70,7 @@ func (c *Control) codexStatus(w http.ResponseWriter, r *http.Request) {
 		"stale_reason":   st.StaleReason,
 		"base_url":       base,
 		"model":          model,
-		"models":         openai.ModelOptions(),
+		"models":         openai.ActiveModelOptions(activeModels),
 		"config_preview": codexcfg.RenderConfig(base, model),
 		"auth_preview":   codexcfg.RenderAuth(cfg.LocalAPIKey),
 	})
@@ -79,7 +84,7 @@ func (c *Control) codexApply(w http.ResponseWriter, r *http.Request) {
 	model := strings.TrimSpace(body.Model)
 	if model != "" {
 		if !validCodexModel(model) {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "模型名无效：仅支持 gpt-5*/codex 系列（如 gpt-5.6-sol、gpt-5.4-high、gpt-5.3-codex）"})
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "模型名无效：请输入有效的模型标识符"})
 			return
 		}
 		cur := c.settings.Get()
@@ -122,6 +127,7 @@ func (c *Control) codexApply(w http.ResponseWriter, r *http.Request) {
 		writeControlError(w, http.StatusInternalServerError, "codex_config_write_failed", err.Error(), false, nil)
 		return
 	}
+	c.syncCodexCatalog(true)
 	applied, err := mgr.Status(c.codexBaseURL(), cfg.LocalAPIKey)
 	if err != nil || !applied.Applied || applied.Stale || strings.TrimSpace(applied.Model) != c.codexModel() {
 		writeControlError(w, http.StatusInternalServerError, "codex_config_verification_failed", "Codex configuration was written but could not be verified.", false, nil)
@@ -181,8 +187,9 @@ func (c *Control) verifyCodexGateway(parent context.Context, apiKey, model strin
 	if err := json.NewDecoder(io.LimitReader(modelsResponse.Body, 2*1024*1024)).Decode(&catalog); err != nil || len(catalog.Data) == 0 {
 		return &codexGatewayVerificationError{status: http.StatusBadGateway, code: "gateway_health_check_failed", message: "Amber returned an invalid model catalog.", retryable: true}
 	}
+	baseModel := openai.StripReasoningEffortSuffix(model)
 	for _, item := range catalog.Data {
-		if item.ID == model {
+		if item.ID == model || item.ID == baseModel {
 			return nil
 		}
 	}
@@ -266,4 +273,33 @@ func (c *Control) codexWriteFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.codexFiles(w, r)
+}
+
+// syncCodexCatalog updates amber_models.json in ~/.codex with active models.
+// If force is not true, it only updates when Codex is currently integrated with Amber
+// or amber_models.json already exists.
+func (c *Control) syncCodexCatalog(force ...bool) {
+	if c.engine == nil {
+		return
+	}
+	mgr, err := codexcfg.New("")
+	if err != nil {
+		return
+	}
+	st, err := mgr.Status("", "")
+	if err != nil {
+		return
+	}
+	isForced := len(force) > 0 && force[0]
+	catalogExists := false
+	if st.CatalogPath != "" {
+		if _, statErr := os.Stat(st.CatalogPath); statErr == nil {
+			catalogExists = true
+		}
+	}
+	if !isForced && !st.Applied && !catalogExists {
+		return
+	}
+	activeModels := c.engine.ActiveModels()
+	_ = codexcfg.SyncModelCatalog(mgr.Dir(), activeModels)
 }

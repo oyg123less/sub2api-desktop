@@ -48,7 +48,7 @@ func (c *Control) codexRemoteInject(w http.ResponseWriter, r *http.Request) {
 		request.Model = c.codexModel()
 	}
 	if !validCodexModel(request.Model) {
-		writeControlError(w, http.StatusBadRequest, "invalid_model", "model must belong to the gpt-5 or codex family", false, nil)
+		writeControlError(w, http.StatusBadRequest, "invalid_model", "model must be a valid model identifier", false, nil)
 		return
 	}
 	request.Mode = strings.TrimSpace(request.Mode)

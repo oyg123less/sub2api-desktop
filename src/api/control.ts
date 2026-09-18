@@ -175,6 +175,12 @@ export interface AccountTestResult {
   account_status: string;
 }
 
+export interface AccountModelsResponse {
+  models: string[];
+  default_model: string;
+  source: string;
+}
+
 export interface RequestLog {
   id: number;
   account_email?: string;
@@ -707,6 +713,7 @@ export interface Settings {
 	max_log_rows: number;
 	auto_recovery: boolean;
 	compatibility_profile: "standard" | "codex";
+	custom_models?: string;
 }
 
 export interface ImportResult {
@@ -1002,6 +1009,9 @@ export const api = {
     req<{ ok: boolean }>("POST", `/control/accounts/${id}/proxy`, { proxy_id: proxyId, network_mode: networkMode }),
   testAccount: (id: number, model?: string, prompt?: string) =>
     req<AccountTestResult>("POST", `/control/accounts/${id}/test`, { model: model ?? "", prompt: prompt ?? "" }),
+  getAccountModels: (id: number) => req<AccountModelsResponse>("POST", `/control/accounts/${id}/models`),
+  probeModels: (data: { base_url: string; api_key: string; proxy_id?: number | null; network_mode?: Account["network_mode"] }) =>
+    req<AccountModelsResponse>("POST", "/control/accounts/probe-models", data),
   setAccountStatus: (id: number, status: string) =>
     req<{ ok: boolean; account: Account }>("POST", `/control/accounts/${id}/status`, { status }),
 	setAccountLimits: (id: number, limits: { max_concurrency: number; queue_capacity: number }) =>

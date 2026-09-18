@@ -6,6 +6,7 @@ import "strings"
 // suffixed variants such as gpt-5.4-high) to the canonical model names accepted
 // by the ChatGPT Codex backend. Mirrors upstream sub2api's codexModelMap.
 var codexModelMap = map[string]string{
+	"gpt-6-astra":          "gpt-6-astra",
 	"gpt-5.6-sol":          "gpt-5.6-sol",
 	"gpt-5.6-terra":        "gpt-5.6-terra",
 	"gpt-5.6-luna":         "gpt-5.6-luna",
@@ -56,6 +57,7 @@ var codexVersionModelPrefixes = []struct {
 	prefix string
 	target string
 }{
+	{prefix: "gpt-6-astra", target: "gpt-6-astra"},
 	{prefix: "gpt-5.6-sol", target: "gpt-5.6-sol"},
 	{prefix: "gpt-5.6-terra", target: "gpt-5.6-terra"},
 	{prefix: "gpt-5.6-luna", target: "gpt-5.6-luna"},
@@ -110,6 +112,15 @@ func ReasoningEffortFromModel(model string) string {
 	return NormalizeReasoningEffort(parts[len(parts)-1])
 }
 
+// StripReasoningEffortSuffix removes a trailing reasoning effort suffix (e.g. -high, -low) if present.
+func StripReasoningEffortSuffix(model string) string {
+	m := strings.TrimSpace(model)
+	if i := strings.LastIndex(m, "-"); i >= 0 && isKnownEffortSuffix(strings.ToLower(m[i+1:])) {
+		return m[:i]
+	}
+	return m
+}
+
 // MapCodexModel resolves the user-requested model to the upstream model name
 // accepted by the ChatGPT Codex backend and the reasoning effort implied by
 // its suffix (empty when none).
@@ -126,9 +137,21 @@ func MapCodexModel(model string) (upstream string, effort string) {
 		return target, effort
 	}
 	if i := strings.LastIndex(m, "-"); i >= 0 && isKnownEffortSuffix(m[i+1:]) {
-		if target, ok := codexModelMap[m[:i]]; ok {
+		base := m[:i]
+		if target, ok := codexModelMap[base]; ok {
 			return target, effort
 		}
+		for _, p := range codexVersionModelPrefixes {
+			if strings.HasPrefix(base, p.prefix) {
+				return p.target, effort
+			}
+		}
+		// Universal fallback: strip reasoning-effort suffix for any model (e.g. gpt-6-high -> gpt-6)
+		origPrefix := model
+		if lastDash := strings.LastIndex(origPrefix, "-"); lastDash >= 0 {
+			origPrefix = origPrefix[:lastDash]
+		}
+		return origPrefix, effort
 	}
 	for _, p := range codexVersionModelPrefixes {
 		if strings.HasPrefix(m, p.prefix) {

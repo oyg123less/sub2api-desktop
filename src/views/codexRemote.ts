@@ -112,8 +112,8 @@ export function normalizeCodexRemoteTargets(response: unknown): CodexRemoteTarge
 }
 
 export function isValidCodexModel(model: string): boolean {
-  const value = model.trim().toLowerCase();
-  return value.startsWith("gpt-5") || value.includes("codex");
+  const value = model.trim();
+  return value.length > 0 && !/\s/.test(value);
 }
 
 export function hasEmbeddedSSHUser(host: string): boolean {

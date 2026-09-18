@@ -51,8 +51,8 @@ func TestCloudClientRetriesSafeReads(t *testing.T) {
 
 func TestCloudClientSendsVersionAndPreservesUpgradeDetails(t *testing.T) {
 	client, err := newCloudClient("https://cloud.example", &http.Client{Transport: cloudRoundTripFunc(func(request *http.Request) (*http.Response, error) {
-		if request.Header.Get("User-Agent") != "Amber/0.4.5" || request.Header.Get("X-Amber-Client-Version") != "0.4.5" {
-			t.Fatalf("missing v0.4.5 client headers: %#v", request.Header)
+		if request.Header.Get("User-Agent") != "Amber/0.4.6" || request.Header.Get("X-Amber-Client-Version") != "0.4.6" {
+			t.Fatalf("missing v0.4.6 client headers: %#v", request.Header)
 		}
 		return cloudJSONResponse(http.StatusUpgradeRequired, `{"error":{"code":"client_upgrade_required","message":"Update required","minimum_version":"0.4.3","latest_version":"0.4.3","update_url":"https://example.test/releases/latest"}}`), nil
 	})})

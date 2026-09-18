@@ -44,6 +44,18 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 	if testModel == "" {
 		testModel = openai.DefaultTestModel
 	}
+	if acc != nil && acc.AccountType == store.AccountTypeAPIKey && !e.accountSupportsModel(acc, testModel) {
+		if cached, ok := e.accountModelsCache.Load(acc.ID); ok {
+			if models, ok := cached.([]string); ok && len(models) > 0 {
+				testModel = models[0]
+			}
+		}
+		if !e.accountSupportsModel(acc, testModel) {
+			if known := store.AccountKnownModels(acc); len(known) > 0 {
+				testModel = known[0]
+			}
+		}
+	}
 	testPrompt := strings.TrimSpace(prompt)
 	if testPrompt == "" {
 		testPrompt = "hi"
@@ -83,6 +95,68 @@ func (e *Engine) TestAccount(ctx context.Context, acc *store.Account, model, pro
 		}
 		res.AccountStatus = string(e.currentAccountState(acc).Status)
 		e.logRequest(acc, testModel, http.StatusUnauthorized, 0, 0, time.Since(start), true, res.Error)
+		return res
+	}
+
+	if isStandardOpenAICompatible(acc, testModel) {
+		promptJSON, _ := json.Marshal(testPrompt)
+		chatReq := &apicompat.ChatCompletionsRequest{
+			Model:    testModel,
+			Messages: []apicompat.ChatMessage{{Role: "user", Content: json.RawMessage(promptJSON)}},
+			Stream:   false,
+		}
+		upstreamModel, effort := openai.MapCodexModel(testModel)
+		if upstreamModel != "" {
+			chatReq.Model = upstreamModel
+		}
+		if effort != "" && chatReq.ReasoningEffort == "" {
+			chatReq.ReasoningEffort = effort
+		}
+		bodyBytes, err := json.Marshal(chatReq)
+		if err != nil {
+			res.Error = "构造请求失败: " + err.Error()
+			res.ErrorKind = "local"
+			return res
+		}
+		url := apiKeyChatCompletionsURL(acc.BaseURL)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+		if err != nil {
+			res.Error = err.Error()
+			res.ErrorKind = "local"
+			return res
+		}
+		apiKey := acc.APIKey
+		if strings.TrimSpace(apiKey) == "" {
+			apiKey = acc.AccessToken
+		}
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			res.Status = http.StatusBadGateway
+			res.Error = "上游请求失败: " + err.Error()
+			res.ErrorKind = "network"
+			e.logRequest(acc, testModel, res.Status, 0, 0, time.Since(start), false, res.Error)
+			return res
+		}
+		defer resp.Body.Close()
+		res.Status = resp.StatusCode
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			msg := readUpstreamError(resp.Body)
+			res.Error = msg
+			res.ErrorKind = "upstream"
+			e.logRequest(acc, testModel, res.Status, 0, 0, time.Since(start), false, msg)
+			return res
+		}
+		if acc.Source != "cloud_share" {
+			_ = e.store.TouchAccount(acc.ID)
+		}
+		e.recordAccountTestSuccessFor(acc)
+		res.OK = true
+		res.AccountStatus = string(e.currentAccountState(acc).Status)
+		res.LatencyMS = time.Since(start).Milliseconds()
+		e.logRequest(acc, testModel, http.StatusOK, 10, 10, time.Since(start), false, "")
 		return res
 	}
 
