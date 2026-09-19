@@ -103,23 +103,24 @@ function onTabKeydown(event: KeyboardEvent, index: number) {
   width: fit-content;
   max-width: 100%;
   margin-bottom: 30px;
-  padding: 4px;
+  padding: 5px;
   overflow-x: auto;
   border: 1px solid var(--border);
-  border-radius: var(--radius-card);
-  background: var(--surface-muted);
+  border-radius: 999px;
+  background: rgba(18, 25, 38, 0.75);
+  backdrop-filter: blur(12px);
   scrollbar-width: thin;
 }
 
 .showcase-tabs button {
   display: inline-flex;
   min-width: max-content;
-  min-height: 42px;
+  min-height: 40px;
   align-items: center;
   gap: 8px;
-  padding: 8px 14px;
-  border: 0;
-  border-radius: var(--radius-control);
+  padding: 8px 18px;
+  border: 1px solid transparent;
+  border-radius: 999px;
   background: transparent;
   color: var(--ink-soft);
   font-size: 14px;
@@ -128,19 +129,27 @@ function onTabKeydown(event: KeyboardEvent, index: number) {
   transition:
     background-color var(--motion-fast) ease,
     color var(--motion-fast) ease,
+    border-color var(--motion-fast) ease,
     box-shadow var(--motion-fast) ease;
 }
 
+.showcase-tabs button:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.05);
+}
+
 .showcase-tabs button[aria-selected="true"] {
-  background: var(--surface);
-  color: var(--amber-dark);
-  box-shadow: var(--shadow-xs);
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.45);
+  color: #fbbf24;
+  box-shadow: 0 0 16px rgba(245, 158, 11, 0.2);
 }
 
 .tab-index {
-  color: var(--ink-faint);
+  color: #fbbf24;
   font-family: "Cascadia Code", Consolas, monospace;
   font-size: 11px;
+  opacity: 0.7;
 }
 
 .showcase-layout {

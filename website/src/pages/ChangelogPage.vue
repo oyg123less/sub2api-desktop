@@ -18,6 +18,10 @@ import {
 
 const history = [
   {
+    version: "v0.4.5",
+    summary: "修复 Windows 覆盖安装竞态，统一本地与云端 Codex 真实客户端标识，并优化多账号故障切换兼容性。",
+  },
+  {
     version: "v0.4.4",
     summary: "完成同机多用户工作区隔离、设备定向共享、无好友前置连接码，以及可靠的 Codex 启动与注入闭环。",
   },
@@ -78,7 +82,7 @@ const history = [
       </div>
 
       <p class="stable-summary">
-        v{{ stableRelease.version }} 修复 Windows 覆盖安装竞态，统一本地与云共享的 Codex 客户端标识，并提升多账号故障切换兼容性。
+        v{{ stableRelease.version }} 深度打通 Codex 桌面版多模型生态与安全配置合并：实现动态模型探测自动写入 amber_models.json、多模型原生下拉切换、非破坏性 Safe Merge 保护用户所有自定义配置，并在账号切换与启动时全自动同步。
       </p>
 
       <div class="change-grid">
@@ -87,9 +91,9 @@ const history = [
           <div>
             <h3>新增</h3>
             <ul>
-              <li>GitHub Release 在隔离 Windows Runner 中验证从 v0.4.4 直接覆盖安装。</li>
-              <li>正式构建同时提供推荐的 NSIS EXE 与 MSI 安装包。</li>
-              <li>数据库迁移只升级旧的默认 Codex User-Agent，不覆盖用户自定义配置。</li>
+              <li>Codex 桌面版多模型自动感知：注入时自动探测已启用账号的所有模型并生成 <code>~/.codex/amber_models.json</code>，Codex 桌面端原生下拉框即可直接选择 Claude、OpenAI、Gemini、DeepSeek 等不同供应商模型。</li>
+              <li>非破坏性 Safe Merge：深度改造 <code>config.toml</code> 生成机制，智能保留用户手写的 <code>[projects]</code>、<code>[windows]</code>、<code>[mcp_servers]</code>、<code>notify</code> 等全部自定义段落。</li>
+              <li>全生命周期自动维护：账号切换、导入、启用/禁用及 Amber 启动时自动同步模型清单与配置，无感协同。</li>
             </ul>
           </div>
         </article>
@@ -99,9 +103,9 @@ const history = [
           <div>
             <h3>修复</h3>
             <ul>
-              <li>安装器先停止桌面 supervisor，再等待 Sidecar 进程和可执行文件句柄完全释放。</li>
-              <li>本地网关、Worker 直连共享与 Owner Relay 统一透传真实 Codex 客户端标识。</li>
-              <li>账号故障切换期间保持同一组客户端头和会话标识，减少上游兼容性异常。</li>
+              <li>修复 Codex 桌面版仅能识别单个硬编码模型的问题，支持任意供应商与模型自由切换。</li>
+              <li>修复每次覆盖写入 <code>config.toml</code> 导致用户自定义配置段被清除的问题。</li>
+              <li>优化配置注入状态回显与多模型数量实时提示。</li>
             </ul>
           </div>
         </article>
@@ -111,9 +115,9 @@ const history = [
           <div>
             <h3>兼容性</h3>
             <ul>
-              <li>本地数据库 schema 更新为 17，既有账号、代理、工作区和共享数据保持不变。</li>
-              <li>非 Codex 客户端继续使用 Amber 的兼容性回退头，不接受伪造的嵌入式 Codex 标识。</li>
-              <li>当前安装包面向 Windows x64，v0.4.4 可直接覆盖升级。</li>
+              <li>完全兼容 Codex CLI 与 Codex 桌面版最新架构，继续向后兼容 Amber 既有数据库。</li>
+              <li>安装包提供推荐的 Windows x64 NSIS EXE 与 MSI 双格式，v0.4.4 / v0.4.5 均可直接覆盖升级。</li>
+              <li>非 Codex 客户端继续使用 Amber 统一的高兼容性代理头与 OpenAI 兼容格式。</li>
             </ul>
           </div>
         </article>
@@ -123,9 +127,9 @@ const history = [
           <div>
             <h3>已知限制</h3>
             <ul>
+              <li>Codex 桌面版如已启动，切换模型或注入新配置后建议通过顶部菜单重新载入或重启 Codex 客户端以确保立即生效。</li>
               <li>需要设备回流的共享仍要求主设备或已配置的合格备用设备保持 Amber 在线。</li>
               <li>上游请求开始后不会跨设备重放；连接中断时可能返回结果未知。</li>
-              <li>云共享客户端标识修复要求生产 Worker 同步部署 v0.4.5。</li>
             </ul>
           </div>
         </article>

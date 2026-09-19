@@ -44,16 +44,19 @@ if (fs.existsSync(redirectsFile) && /\/\*\s+\/index\.html\s+200/.test(fs.readFil
   errors.push("SPA fallback would turn unknown routes into HTTP 200 soft 404s");
 }
 
+const releasesSource = fs.readFileSync(path.resolve("src/config/releases.ts"), "utf8");
+const stableVersion = releasesSource.match(/version:\s*"([^"]+)"/)?.[1] ?? "0.4.6";
+
 const homeHtml = fs.existsSync(routeFile("/")) ? fs.readFileSync(routeFile("/"), "utf8") : "";
 if (!homeHtml.includes('"@type": "SoftwareApplication"')) errors.push("Home page is missing SoftwareApplication JSON-LD");
-if (!homeHtml.includes("v0.4.5")) errors.push("Home page does not identify v0.4.5 as stable");
+if (!homeHtml.includes(`v${stableVersion}`)) errors.push(`Home page does not identify v${stableVersion} as stable`);
 if (homeHtml.includes("__AMBER_")) errors.push("Release metadata placeholders were not replaced");
 
 const jsonLdText = new JSDOM(homeHtml).window.document.querySelector('script[type="application/ld+json"]')?.textContent;
 if (jsonLdText) {
   const jsonLd = JSON.parse(jsonLdText);
-  if (jsonLd.softwareVersion !== "0.4.5") errors.push("SoftwareApplication version does not match the stable release");
-  if (!jsonLd.downloadUrl?.endsWith("/v0.4.5/Amber_0.4.5_x64-setup.exe")) {
+  if (jsonLd.softwareVersion !== stableVersion) errors.push("SoftwareApplication version does not match the stable release");
+  if (!jsonLd.downloadUrl?.endsWith(`/v${stableVersion}/Amber_${stableVersion}_x64-setup.exe`)) {
     errors.push("SoftwareApplication download URL does not match the stable installer");
   }
 }

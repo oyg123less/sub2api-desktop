@@ -7,10 +7,10 @@
     "node": ">=24"
   },
   "scripts": {
-    "dev": "vite --host 127.0.0.1 --port 4174",
+    "dev": "node -r ./scripts/node-polyfill.cjs ./node_modules/vite/bin/vite.js --host 127.0.0.1 --port 4174",
     "typecheck": "vue-tsc --noEmit",
-    "test": "vitest run",
-    "build": "vue-tsc --noEmit && vite-ssg build",
+    "test": "node -r ./scripts/node-polyfill.cjs ./node_modules/vitest/vitest.mjs run",
+    "build": "vue-tsc --noEmit && node -r ./scripts/node-polyfill.cjs ./node_modules/vite-ssg/bin/vite-ssg.js build",
     "check:dist": "node scripts/check-dist.mjs",
     "check:links": "node scripts/check-links.mjs",
     "check:secrets": "node scripts/check-secrets.mjs",

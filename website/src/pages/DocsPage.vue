@@ -564,7 +564,10 @@ done</code></pre>
 }
 
 .doc-section :deep(.image-button) {
-  box-shadow: 0 10px 28px rgba(28, 34, 30, 0.1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6);
 }
 
 @media (hover: hover) and (pointer: fine) {

@@ -3,17 +3,10 @@ import {
   ArrowRight,
   Cable,
   ChevronDown,
-  Cloud,
   Download,
   Gauge,
   Github,
-  KeyRound,
-  Laptop,
-  Network,
-  Server,
   Share2,
-  ShieldCheck,
-  UsersRound,
 } from "lucide-vue-next";
 import type { Component } from "vue";
 import { RouterLink } from "vue-router";
@@ -24,28 +17,27 @@ import RevealOnScroll from "../components/RevealOnScroll.vue";
 import SectionHeading from "../components/SectionHeading.vue";
 import { stableRelease } from "../config/releases";
 import { homeFaqs } from "../data/faq";
-import { capabilityItems, trustItems, useCases, workflowItems } from "../data/home";
+import { capabilityItems, trustItems } from "../data/home";
 
 const capabilityIcons: Record<string, Component> = {
   routing: Gauge,
   sharing: Share2,
   codex: Cable,
 };
-
-const scenarioIcons: Component[] = [UsersRound, Server, ShieldCheck];
 </script>
 
 <template>
   <section class="home-hero" aria-labelledby="home-title">
+    <div class="hero-glow" aria-hidden="true"></div>
     <div class="hero-shell">
       <RevealOnScroll class="hero-copy">
         <span class="hero-version">
-          <span class="status-dot" aria-hidden="true"></span>
-          当前稳定版 v{{ stableRelease.version }}
+          <span class="pulse-dot" aria-hidden="true"></span>
+          v{{ stableRelease.version }} 已发布 · 原生动态联动
         </span>
         <h1 id="home-title">Amber</h1>
-        <p class="hero-lede">把多个账号变成可调度、可共享的 Codex 网关。</p>
-        <p class="hero-description">在 Windows 上统一管理账号、代理、共享和本地/远程 Codex 接入。</p>
+        <p class="hero-lede">把多个账号，变成可调度、可共享的 Codex 网关</p>
+        <p class="hero-description">在 Windows 上统一管理账号池、网络出口与受控授权，本地优先无损接入。</p>
 
         <div class="hero-actions">
           <a class="button button-primary hero-download" :href="stableRelease.downloadUrl">
@@ -53,41 +45,48 @@ const scenarioIcons: Component[] = [UsersRound, Server, ShieldCheck];
             下载 Windows
           </a>
           <RouterLink class="button button-secondary" to="/docs">
-            查看文档
+            查看使用文档
             <ArrowRight :size="17" aria-hidden="true" />
           </RouterLink>
         </div>
 
-        <p class="hero-meta">Windows 10 / 11 · x64 · 开源</p>
+        <p class="hero-meta">Windows 10 / 11 · x64 · 免费开源 · 本地优先</p>
       </RevealOnScroll>
 
       <RevealOnScroll class="hero-product" :delay="90">
-        <ProductScreenshot
-          src="/screenshots/v044/hero-cover-v044.png"
-          mobile-src="/screenshots/v044/hero-cover-v044-mobile.png"
-          alt="Amber v0.4.4 仪表盘真实界面封面"
-          :width="1920"
-          :height="600"
-          loading="eager"
-          fetch-priority="high"
-        />
+        <div class="hero-media-wrapper">
+          <div class="border-beam" aria-hidden="true"></div>
+          <div class="border-beam-runner" aria-hidden="true"></div>
+          <ProductScreenshot
+            src="/gateway-topology.svg"
+            mobile-src="/gateway-topology.svg"
+            alt="Amber 多账号智能网关与 Codex 原生联动拓扑架构"
+            :width="1200"
+            :height="520"
+            loading="eager"
+            fetch-priority="high"
+          />
+        </div>
       </RevealOnScroll>
     </div>
   </section>
 
   <section class="home-trust" aria-label="Amber 产品信息">
     <div class="container trust-list">
-      <span v-for="item in trustItems" :key="item">{{ item }}</span>
+      <span v-for="item in trustItems" :key="item" class="trust-badge">
+        <span class="trust-dot"></span>
+        {{ item }}
+      </span>
     </div>
   </section>
 
-  <section class="section" aria-labelledby="capability-title">
+  <section class="section section-spacious" aria-labelledby="capability-title">
     <div class="container">
       <SectionHeading
-        eyebrow="核心能力"
+        eyebrow="核心特性"
         heading-id="capability-title"
-        title="一个入口，接住账号、共享与 Codex"
-        description="Amber 把高频操作放进同一套可观察流程，每项能力都有明确状态和退出路径。"
+        title="一个入口，打通账号池、共享与 Codex"
+        description="将零散的配置整合为可观测、可自愈的本地网关，每项功能都有清晰的边界与状态。"
       />
 
       <div class="capability-grid">
@@ -115,122 +114,12 @@ const scenarioIcons: Component[] = [UsersRound, Server, ShieldCheck];
   <section id="product-showcase" class="section section-muted product-section" aria-labelledby="showcase-title">
     <div class="container">
       <SectionHeading
-        eyebrow="产品演示"
+        eyebrow="产品全景"
         heading-id="showcase-title"
-        title="四个视图，看清 Amber 如何工作"
-        description="切换账号、网络、共享和 Codex 接入。以下均为 Amber v0.4.4 真实界面，敏感信息已做不可逆脱敏。"
+        title="四个核心视图，一览无余"
+        description="调度状态、网络出口、受控共享与原生接入。均为真实客户端界面，敏感数据已做脱敏处理。"
       />
       <ProductShowcase />
-    </div>
-  </section>
-
-  <section class="section" aria-labelledby="workflow-title">
-    <div class="container">
-      <SectionHeading
-        eyebrow="三步工作流"
-        heading-id="workflow-title"
-        title="从导入到调用，不在工具之间来回切换"
-        description="先确认账号与网络，再启动网关；共享是可选动作，不影响本地使用。"
-      />
-
-      <ol class="workflow-list">
-        <RevealOnScroll
-          v-for="(item, index) in workflowItems"
-          :key="item.number"
-          as="li"
-          :delay="index * 70"
-        >
-          <span class="workflow-number">{{ item.number }}</span>
-          <div class="workflow-copy">
-            <h3>{{ item.title }}</h3>
-            <p>{{ item.description }}</p>
-          </div>
-          <div class="workflow-image" aria-hidden="true">
-            <img :src="item.image" alt="" width="2800" height="1750" loading="lazy" decoding="async" />
-          </div>
-        </RevealOnScroll>
-      </ol>
-    </div>
-  </section>
-
-  <section class="section feature-band network-band" aria-labelledby="network-title">
-    <div class="container feature-layout">
-      <RevealOnScroll class="feature-copy">
-        <p class="eyebrow">账号、代理与网络出口</p>
-        <h2 id="network-title">每个账号的网络模式都明确可见</h2>
-        <p>直连不会意外继承代理；系统代理与指定代理分开测试。账号测试通过后，再交给调度器参与请求。</p>
-        <div class="mode-list" aria-label="网络模式">
-          <span><Network :size="17" aria-hidden="true" />direct</span>
-          <span><Laptop :size="17" aria-hidden="true" />system</span>
-          <span><KeyRound :size="17" aria-hidden="true" />proxy</span>
-        </div>
-        <RouterLink class="inline-action" to="/docs#proxies">
-          配置账号与代理
-          <ArrowRight :size="17" aria-hidden="true" />
-        </RouterLink>
-      </RevealOnScroll>
-
-      <RevealOnScroll class="feature-media" :delay="80">
-        <ProductScreenshot
-          src="/screenshots/v044/network-v044.png"
-          mobile-src="/screenshots/v044/network-v044-compact.png"
-          alt="Amber v0.4.4 代理与网络出口真实界面"
-        />
-      </RevealOnScroll>
-    </div>
-  </section>
-
-  <section class="section section-muted feature-band sharing-band" aria-labelledby="sharing-title">
-    <div class="container feature-layout feature-layout-reverse">
-      <RevealOnScroll class="feature-media">
-        <ProductScreenshot
-          src="/screenshots/v044/cloud-sharing-v044.png"
-          mobile-src="/screenshots/v044/cloud-sharing-v044-compact.png"
-          alt="Amber v0.4.4 连接码受控共享真实界面"
-        />
-      </RevealOnScroll>
-
-      <RevealOnScroll class="feature-copy" :delay="80">
-        <p class="eyebrow">云共享与远程 Codex</p>
-        <h2 id="sharing-title">共享的是受控入口，不是裸露账号</h2>
-        <p>连接码建立独立授权；需要本地回流的请求固定由指定设备承载。远程 Codex 则通过已验证的 SSH 反向隧道回到 Amber。</p>
-        <div class="request-path" aria-label="远程 Codex 请求路径">
-          <span>远程 Codex</span>
-          <ArrowRight :size="16" aria-hidden="true" />
-          <span>SSH 隧道</span>
-          <ArrowRight :size="16" aria-hidden="true" />
-          <span>Amber</span>
-        </div>
-        <div class="feature-actions">
-          <RouterLink class="inline-action" to="/docs#sharing">查看共享说明 <ArrowRight :size="17" aria-hidden="true" /></RouterLink>
-          <RouterLink class="inline-action" to="/docs#ssh-reverse">查看远程接入 <ArrowRight :size="17" aria-hidden="true" /></RouterLink>
-        </div>
-      </RevealOnScroll>
-    </div>
-  </section>
-
-  <section class="section" aria-labelledby="scenarios-title">
-    <div class="container">
-      <SectionHeading
-        eyebrow="适用场景"
-        heading-id="scenarios-title"
-        title="为重复调用和明确边界设计"
-        description="围绕个人账号池、远程开发和固定范围共享，保持清晰的使用边界。"
-      />
-      <div class="scenario-grid">
-        <RevealOnScroll v-for="(item, index) in useCases" :key="item.title" :delay="index * 70">
-          <article
-            class="scenario-card"
-            :class="`scenario-card-${index === 1 ? 'teal' : index === 2 ? 'green' : 'amber'}`"
-          >
-            <span class="card-icon scenario-icon">
-              <component :is="scenarioIcons[index]" :size="23" aria-hidden="true" />
-            </span>
-            <h3>{{ item.title }}</h3>
-            <p>{{ item.description }}</p>
-          </article>
-        </RevealOnScroll>
-      </div>
     </div>
   </section>
 
@@ -239,8 +128,8 @@ const scenarioIcons: Component[] = [UsersRound, Server, ShieldCheck];
       <SectionHeading
         eyebrow="常见问题"
         heading-id="home-faq-title"
-        title="开始前，先把边界说清楚"
-        description="这里保留五个最高频问题，完整排查路径仍在常见问题页。"
+        title="开始之前，理清关键细节"
+        description="这里汇总了最受关注的核心疑问，更多深度解答请查阅完整常见问题页。"
       />
 
       <div class="home-faq-list">
@@ -267,14 +156,14 @@ const scenarioIcons: Component[] = [UsersRound, Server, ShieldCheck];
       <div>
         <p class="eyebrow">Amber v{{ stableRelease.version }}</p>
         <h2 id="cta-title">准备好让 Codex 连接到你的账号池了吗？</h2>
-        <p>Windows 10 / 11 · x64 · 开源项目</p>
+        <p>面向 Windows 10 / 11 · x64 · 免费开源，即刻体验</p>
       </div>
       <div class="cta-actions">
-        <a class="button button-dark" :href="stableRelease.downloadUrl">
+        <a class="button button-primary" :href="stableRelease.downloadUrl">
           <Download :size="18" aria-hidden="true" />
-          下载 Windows 版
+          下载 Windows
         </a>
-        <RouterLink class="button cta-secondary" to="/docs">查看使用文档</RouterLink>
+        <RouterLink class="button button-secondary cta-secondary" to="/docs">查看使用文档</RouterLink>
         <a class="cta-github" href="https://github.com/oyg123less/sub2api-desktop" target="_blank" rel="noreferrer">
           <Github :size="17" aria-hidden="true" />
           GitHub
@@ -286,54 +175,107 @@ const scenarioIcons: Component[] = [UsersRound, Server, ShieldCheck];
 
 <style scoped>
 .home-hero {
+  position: relative;
+  overflow: hidden;
   border-bottom: 1px solid var(--border);
-  background: var(--bg);
+  background:
+    radial-gradient(ellipse 70% 40% at 50% -5%, rgba(245, 158, 11, 0.12) 0%, transparent 65%),
+    var(--bg);
+}
+
+.hero-glow {
+  position: absolute;
+  top: -160px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 800px;
+  height: 400px;
+  background: radial-gradient(circle, rgba(245, 158, 11, 0.15) 0%, transparent 70%);
+  filter: blur(80px);
+  pointer-events: none;
+  z-index: 0;
 }
 
 .hero-shell {
+  position: relative;
+  z-index: 1;
   width: min(calc(100% - 40px), var(--hero-container));
   margin-inline: auto;
-  padding-block: 38px 20px;
+  padding-block: 56px 36px;
 }
 
 .hero-copy {
-  width: min(100%, 850px);
+  width: min(100%, 860px);
   margin-inline: auto;
   text-align: center;
 }
 
 .hero-version {
   display: inline-flex;
-  min-height: 28px;
+  min-height: 32px;
   align-items: center;
-  gap: 7px;
-  padding: 4px 10px;
-  border: 1px solid rgba(36, 116, 75, 0.18);
+  gap: 8px;
+  padding: 4px 14px;
+  border: 1px solid rgba(245, 158, 11, 0.3);
   border-radius: 999px;
-  background: var(--green-soft);
-  color: var(--green);
-  font-size: 12px;
-  font-weight: 760;
+  background: rgba(245, 158, 11, 0.08);
+  color: #fbbf24;
+  font-size: 13px;
+  font-weight: 650;
+  box-shadow: 0 0 16px rgba(245, 158, 11, 0.1);
+  margin-bottom: 12px;
+}
+
+.pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 8px #10b981;
+  animation: pulse-ring 2.4s infinite ease-in-out;
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6);
+  }
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
+  }
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+  }
 }
 
 .hero-copy h1 {
-  margin: 10px 0 5px;
-  font-size: 64px;
-  line-height: 1.08;
+  margin: 12px 0 10px;
+  font-size: 68px;
+  font-weight: 850;
+  letter-spacing: -0.035em;
+  background: linear-gradient(180deg, #ffffff 45%, #94a3b8 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  line-height: 1.05;
 }
 
 .hero-lede {
-  margin-bottom: 8px;
-  color: var(--ink);
-  font-size: 27px;
-  font-weight: 720;
+  margin-bottom: 12px;
+  font-size: 26px;
+  font-weight: 700;
   line-height: 1.4;
+  color: #f1f5f9;
+  letter-spacing: -0.01em;
 }
 
 .hero-description {
-  margin-bottom: 20px;
+  max-width: 680px;
+  margin: 0 auto 28px;
   color: var(--ink-soft);
   font-size: 17px;
+  line-height: 1.6;
 }
 
 .hero-actions {
@@ -341,311 +283,259 @@ const scenarioIcons: Component[] = [UsersRound, Server, ShieldCheck];
   flex-wrap: wrap;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 14px;
 }
 
 .hero-actions .button {
   min-height: 50px;
-  padding-inline: 20px;
+  padding-inline: 24px;
+  font-size: 15px;
 }
 
 .hero-meta {
-  margin: 10px 0 0;
+  margin: 18px 0 0;
   color: var(--ink-faint);
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 500;
 }
 
+/* Hero Product Showcase */
 .hero-product {
   position: relative;
-  width: min(100%, 1120px);
-  height: auto;
-  aspect-ratio: 16 / 5;
-  margin: 24px auto 0;
+  width: min(100%, 1160px);
+  margin: 32px auto 0;
+}
+
+.hero-media-wrapper {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1200 / 520;
+  border-radius: 16px;
+  overflow: hidden;
+  border: none;
+  background: #080c14;
+  box-shadow:
+    0 30px 80px -20px rgba(0, 0, 0, 0.95),
+    0 0 50px -10px rgba(245, 158, 11, 0.12);
+}
+
+/* Static base border - exactly ONE 1.5px frame */
+.border-beam {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 1.5px solid rgba(255, 255, 255, 0.08);
+  pointer-events: none;
+  z-index: 9;
+}
+
+/* Moving laser runner - precisely overlaps the 1.5px static border */
+.border-beam-runner {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 1.5px solid transparent;
+  -webkit-mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.border-beam-runner::after {
+  content: "";
+  position: absolute;
+  width: 280px;
+  height: 280px;
+  offset-path: rect(0 100% 100% 0 round 16px);
+  offset-anchor: 50% 50%;
+  background: radial-gradient(
+    circle at center,
+    #ffffff 0%,
+    #fef08a 18%,
+    #fbbf24 38%,
+    rgba(245, 158, 11, 0.45) 58%,
+    transparent 76%
+  );
+  animation: border-beam-travel 5.5s linear infinite;
+}
+
+@keyframes border-beam-travel {
+  0% {
+    offset-distance: 0%;
+  }
+  100% {
+    offset-distance: 100%;
+  }
+}
+
+@supports not (offset-path: rect(0 100% 100% 0 round 16px)) {
+  .border-beam-runner::after {
+    width: 200%;
+    height: 200%;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    background: conic-gradient(
+      from 0deg,
+      transparent 0deg,
+      transparent 280deg,
+      rgba(245, 158, 11, 0.08) 310deg,
+      #f59e0b 345deg,
+      #ffffff 360deg
+    );
+    animation: border-beam-spin 5s linear infinite;
+  }
+}
+
+@keyframes border-beam-spin {
+  from {
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+  to {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
 }
 
 .hero-product :deep(.image-viewer),
-.hero-product :deep(.image-button) {
+.hero-product :deep(.image-button),
+.hero-product :deep(picture),
+.hero-product :deep(img) {
+  width: 100%;
   height: 100%;
+  margin: 0;
+  padding: 0;
+  display: block;
+  object-fit: cover;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
 }
 
 .hero-product :deep(.image-button) {
   aspect-ratio: auto;
+  cursor: zoom-in;
 }
 
 .hero-product :deep(.image-expand) {
   display: none;
 }
 
-.hero-product :deep(img) {
-  object-position: center;
-}
-
+/* Trust Badges */
 .home-trust {
   border-bottom: 1px solid var(--border);
-  background: var(--surface);
+  background: var(--bg-subtle);
+  padding-block: 16px;
 }
 
 .trust-list {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
 }
 
-.trust-list span {
-  display: grid;
-  min-height: 58px;
-  place-items: center;
-  padding: 12px;
-  border-left: 1px solid var(--border);
+.trust-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.03);
   color: var(--ink-soft);
   font-size: 13px;
-  font-weight: 700;
-  text-align: center;
+  font-weight: 600;
+  backdrop-filter: blur(8px);
+  transition:
+    border-color var(--motion-fast) ease,
+    color var(--motion-fast) ease;
 }
 
-.trust-list span:last-child {
-  border-right: 1px solid var(--border);
+.trust-badge:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  color: var(--ink);
 }
 
-.capability-grid,
-.scenario-grid {
+.trust-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fbbf24;
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.5);
+}
+
+/* Core Capabilities Grid */
+.capability-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 18px;
+  gap: 24px;
 }
 
-.capability-grid > *,
-.scenario-grid > * {
+.capability-grid > * {
   min-width: 0;
   height: 100%;
 }
 
-.capability-card,
-.scenario-card {
+.capability-card {
   display: flex;
   height: 100%;
   flex-direction: column;
-  padding: 28px;
+  padding: 36px 32px;
 }
 
-.scenario-card {
-  min-width: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-card);
-  background: var(--surface);
-  box-shadow: var(--shadow-xs);
-}
-
-.scenario-card-amber {
-  --card-accent: var(--amber);
-  --card-accent-soft: var(--amber-soft);
-}
-
-.scenario-card-teal {
-  --card-accent: var(--teal);
-  --card-accent-soft: var(--teal-soft);
-}
-
-.scenario-card-green {
-  --card-accent: var(--green);
-  --card-accent-soft: var(--green-soft);
-}
-
-.capability-icon,
-.scenario-icon {
+.capability-icon {
   display: grid;
-  width: 46px;
-  height: 46px;
-  margin-bottom: 22px;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 24px;
   place-items: center;
   border-radius: var(--radius-control);
   background: var(--card-accent-soft);
   color: var(--card-accent);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: 0 0 16px var(--card-accent-soft);
 }
 
-.capability-card h3,
-.scenario-card h3 {
-  margin-bottom: 9px;
+.capability-card h3 {
+  margin-bottom: 12px;
+  font-size: 21px;
+  font-weight: 750;
+  color: var(--ink);
 }
 
-.capability-card p,
-.scenario-card p {
-  margin-bottom: 22px;
+.capability-card p {
+  margin-bottom: 24px;
   color: var(--ink-soft);
-}
-
-.card-link,
-.inline-action {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--amber-dark);
-  font-size: 14px;
-  font-weight: 740;
-  text-decoration: none;
+  font-size: 15px;
+  line-height: 1.65;
 }
 
 .card-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #fbbf24;
+  font-size: 14px;
+  font-weight: 700;
+  text-decoration: none;
   margin-top: auto;
 }
 
-.card-link:hover,
-.inline-action:hover {
-  color: var(--amber);
+.card-link:hover {
+  color: #fde68a;
 }
 
 .product-section {
   border-block: 1px solid var(--border);
 }
 
-.workflow-list {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin: 0;
-  padding: 0;
-  border-block: 1px solid var(--border);
-  list-style: none;
-}
-
-.workflow-list > li {
-  display: grid;
-  min-width: 0;
-  grid-template-columns: 42px minmax(0, 1fr);
-  gap: 15px;
-  padding: 28px;
-  border-right: 1px solid var(--border);
-}
-
-.workflow-list > li:first-child {
-  padding-left: 0;
-}
-
-.workflow-list > li:last-child {
-  padding-right: 0;
-  border-right: 0;
-}
-
-.workflow-number {
-  color: var(--amber-dark);
-  font-family: "Cascadia Code", Consolas, monospace;
-  font-size: 15px;
-  font-weight: 800;
-}
-
-.workflow-copy h3 {
-  margin-bottom: 7px;
-}
-
-.workflow-copy p {
-  margin-bottom: 18px;
-  color: var(--ink-soft);
-  font-size: 14px;
-}
-
-.workflow-image {
-  grid-column: 1 / -1;
-  aspect-ratio: 16 / 7;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-card);
-  background: var(--surface-muted);
-}
-
-.workflow-image img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  object-position: center 18%;
-}
-
-.network-band {
-  border-block: 1px solid var(--border);
-  background: var(--surface);
-}
-
-.feature-layout {
-  display: grid;
-  grid-template-columns: minmax(280px, 0.76fr) minmax(0, 1.34fr);
-  gap: 72px;
-  align-items: center;
-}
-
-.feature-layout-reverse {
-  grid-template-columns: minmax(0, 1.34fr) minmax(280px, 0.76fr);
-}
-
-.feature-copy h2 {
-  margin-bottom: 16px;
-}
-
-.feature-copy > p:not(.eyebrow) {
-  margin-bottom: 24px;
-  color: var(--ink-soft);
-  font-size: 17px;
-}
-
-.feature-media {
-  min-width: 0;
-}
-
-.mode-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 24px;
-}
-
-.mode-list span {
-  display: inline-flex;
-  min-height: 34px;
-  align-items: center;
-  gap: 7px;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface-muted);
-  color: var(--ink);
-  font-family: "Cascadia Code", Consolas, monospace;
-  font-size: 12px;
-}
-
-.request-path {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 24px;
-}
-
-.request-path span {
-  padding: 7px 9px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-control);
-  background: var(--surface);
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 720;
-}
-
-.request-path svg {
-  color: var(--teal);
-}
-
-.feature-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 18px;
-}
-
-.scenario-card {
-  min-height: 250px;
-}
-
-.scenario-card p {
-  margin-bottom: 0;
-}
-
+/* FAQ Section */
 .home-faq-layout > .section-heading {
-  margin-bottom: 30px;
+  margin-bottom: 36px;
 }
 
 .home-faq-list {
@@ -657,7 +547,7 @@ const scenarioIcons: Component[] = [UsersRound, Server, ShieldCheck];
 }
 
 .home-faq-item[open] {
-  background: var(--surface);
+  background: rgba(255, 255, 255, 0.02);
 }
 
 .home-faq-item summary {
@@ -665,10 +555,10 @@ const scenarioIcons: Component[] = [UsersRound, Server, ShieldCheck];
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 20px;
   align-items: center;
-  padding: 20px 16px;
+  padding: 22px 18px;
   color: var(--ink);
   font-size: 17px;
-  font-weight: 740;
+  font-weight: 700;
   cursor: pointer;
   list-style: none;
   transition:
@@ -681,24 +571,26 @@ const scenarioIcons: Component[] = [UsersRound, Server, ShieldCheck];
 }
 
 .home-faq-item summary:hover {
-  background: var(--surface-emphasis);
-  color: var(--amber-dark);
+  background: rgba(255, 255, 255, 0.04);
+  color: #fbbf24;
 }
 
 .home-faq-item summary svg {
   color: var(--ink-faint);
-  transition: transform 200ms var(--ease-out);
+  transition: transform var(--motion-fast) var(--ease-out);
 }
 
 .home-faq-item[open] summary svg {
   transform: rotate(180deg);
+  color: #fbbf24;
 }
 
 .home-faq-answer {
   max-width: 880px;
-  padding: 0 52px 22px 16px;
+  padding: 0 52px 24px 18px;
   color: var(--ink-soft);
-  font-size: 14px;
+  font-size: 15px;
+  line-height: 1.65;
 }
 
 .home-faq-answer p:last-child {
@@ -706,70 +598,73 @@ const scenarioIcons: Component[] = [UsersRound, Server, ShieldCheck];
 }
 
 .faq-more {
-  margin-top: 28px;
+  margin-top: 32px;
 }
 
+/* Bottom CTA */
 .home-cta {
-  background: #232724;
-  color: #d5d9d4;
+  position: relative;
+  overflow: hidden;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  background:
+    radial-gradient(circle at 75% 50%, rgba(245, 158, 11, 0.12) 0%, transparent 60%),
+    #070a0f;
+  color: var(--ink);
 }
 
 .cta-layout {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 48px;
+  gap: 32px;
 }
 
 .home-cta .eyebrow {
-  color: #e7a07c;
+  color: #fbbf24;
 }
 
 .home-cta h2 {
   max-width: 720px;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
   color: #fff;
+  font-size: 36px;
+  letter-spacing: -0.02em;
 }
 
 .home-cta p:last-child {
   margin-bottom: 0;
-  color: #b9c0bb;
+  color: var(--ink-soft);
 }
 
 .cta-actions {
   display: flex;
   flex: 0 0 auto;
   flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
-  gap: 9px;
-}
-
-.cta-secondary {
-  border-color: #59605b;
-  background: transparent;
-  color: #fff;
-}
-
-.cta-secondary:hover {
-  border-color: #858d87;
-  background: #343936;
-  color: #fff;
+  gap: 12px;
 }
 
 .cta-github {
   display: inline-flex;
-  min-height: 44px;
+  min-height: 46px;
   align-items: center;
-  gap: 7px;
-  padding-inline: 10px;
-  color: #d5d9d4;
-  font-size: 13px;
+  gap: 8px;
+  padding-inline: 14px;
+  color: var(--ink-soft);
+  font-size: 14px;
   font-weight: 700;
   text-decoration: none;
+  border-radius: var(--radius-control);
+  transition:
+    color var(--motion-fast) ease,
+    background-color var(--motion-fast) ease;
 }
 
 .cta-github:hover {
   color: #fff;
+  background: rgba(255, 255, 255, 0.05);
 }
 
 @media (max-width: 900px) {
@@ -785,64 +680,13 @@ const scenarioIcons: Component[] = [UsersRound, Server, ShieldCheck];
     font-size: 24px;
   }
 
-  .capability-grid,
-  .scenario-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .capability-grid > :last-child,
-  .scenario-grid > :last-child {
-    grid-column: 1 / -1;
-  }
-
-  .workflow-list {
+  .capability-grid {
     grid-template-columns: 1fr;
-  }
-
-  .workflow-list > li,
-  .workflow-list > li:first-child,
-  .workflow-list > li:last-child {
-    grid-template-columns: 42px minmax(180px, 0.65fr) minmax(220px, 1fr);
-    align-items: center;
-    padding: 22px 0;
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .workflow-list > li:last-child {
-    border-bottom: 0;
-  }
-
-  .workflow-copy p {
-    margin-bottom: 0;
-  }
-
-  .workflow-image {
-    grid-column: 3;
-    aspect-ratio: 16 / 6;
-  }
-
-  .feature-layout,
-  .feature-layout-reverse {
-    grid-template-columns: 1fr;
-    gap: 42px;
-  }
-
-  .feature-layout-reverse .feature-media {
-    order: 2;
-  }
-
-  .feature-layout-reverse .feature-copy {
-    order: 1;
   }
 
   .cta-layout {
-    align-items: flex-start;
     flex-direction: column;
-  }
-
-  .cta-actions {
-    justify-content: flex-start;
+    align-items: flex-start;
   }
 }
 
@@ -897,83 +741,28 @@ const scenarioIcons: Component[] = [UsersRound, Server, ShieldCheck];
     margin-top: 13px;
   }
 
-  .hero-product :deep(img) {
-    object-position: center;
+  .hero-media-wrapper {
+    border-radius: 12px;
   }
 
-  .trust-list {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    padding-block: 9px;
+  .border-beam::after {
+    offset-path: rect(0 100% 100% 0 round 12px);
   }
 
-  .trust-list span,
-  .trust-list span:last-child {
-    min-height: 30px;
-    padding: 5px 10px;
-    border: 0;
-    font-size: 11px;
-  }
-
-  .trust-list span + span::before {
-    margin-right: 10px;
-    color: var(--border-strong);
-    content: "·";
-  }
-
-  .capability-grid,
-  .scenario-grid {
+  .capability-grid {
     grid-template-columns: 1fr;
   }
 
-  .capability-grid > :last-child,
-  .scenario-grid > :last-child {
-    grid-column: auto;
+  .capability-card {
+    padding: 24px;
   }
 
-  .capability-card,
-  .scenario-card {
-    min-height: 0;
-    padding: 23px;
-  }
-
-  .workflow-list > li,
-  .workflow-list > li:first-child,
-  .workflow-list > li:last-child {
-    grid-template-columns: 36px minmax(0, 1fr);
-    padding-block: 20px;
-  }
-
-  .workflow-image {
-    grid-column: 1 / -1;
-    aspect-ratio: 16 / 7;
-  }
-
-  .feature-copy > p:not(.eyebrow) {
-    font-size: 15px;
-  }
-
-  .request-path {
-    gap: 6px;
-  }
-
-  .home-faq-item summary {
-    padding-inline: 8px;
-    font-size: 15px;
-  }
-
-  .home-faq-answer {
-    padding-inline: 8px 34px;
-  }
-
-  .cta-actions,
-  .cta-actions .button {
+  .cta-actions {
     width: 100%;
   }
 
-  .cta-github {
-    justify-content: center;
+  .cta-actions .button {
+    width: 100%;
   }
 }
 
@@ -1022,10 +811,6 @@ const scenarioIcons: Component[] = [UsersRound, Server, ShieldCheck];
 
   .hero-actions .button {
     padding-inline: 9px;
-  }
-
-  .hero-actions .button svg {
-    width: 16px;
   }
 }
 

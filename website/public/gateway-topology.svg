@@ -1,0 +1,289 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 520" width="1200" height="520" fill="none">
+  <defs>
+    <!-- Background Canvas -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#070a12" />
+      <stop offset="50%" stop-color="#0b101c" />
+      <stop offset="100%" stop-color="#05080e" />
+    </linearGradient>
+
+    <!-- Core Amber Gradients -->
+    <radialGradient id="reactorBloom" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#f59e0b" stop-opacity="0.32" />
+      <stop offset="50%" stop-color="#f59e0b" stop-opacity="0.06" />
+      <stop offset="100%" stop-color="#f59e0b" stop-opacity="0" />
+    </radialGradient>
+
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fffbeb" />
+      <stop offset="35%" stop-color="#fbbf24" />
+      <stop offset="100%" stop-color="#b45309" />
+    </linearGradient>
+
+    <linearGradient id="streamCyan" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.2" />
+      <stop offset="100%" stop-color="#f59e0b" stop-opacity="0.9" />
+    </linearGradient>
+
+    <linearGradient id="streamAmber" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#f59e0b" stop-opacity="0.3" />
+      <stop offset="100%" stop-color="#fbbf24" stop-opacity="1" />
+    </linearGradient>
+
+    <linearGradient id="streamPurple" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#c084fc" stop-opacity="0.2" />
+      <stop offset="100%" stop-color="#f59e0b" stop-opacity="0.9" />
+    </linearGradient>
+
+    <linearGradient id="outputLaser" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#fbbf24" />
+      <stop offset="50%" stop-color="#10b981" />
+      <stop offset="100%" stop-color="#34d399" />
+    </linearGradient>
+
+    <!-- Node Card Fill -->
+    <linearGradient id="nodeBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#121927" stop-opacity="0.95" />
+      <stop offset="100%" stop-color="#0c121e" stop-opacity="0.95" />
+    </linearGradient>
+
+    <!-- Shadows -->
+    <filter id="nodeShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="14" flood-color="#000000" flood-opacity="0.75" />
+      <feDropShadow dx="0" dy="0" stdDeviation="1" flood-color="#ffffff" flood-opacity="0.06" />
+    </filter>
+
+    <filter id="coreGlowFilter" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="0" stdDeviation="14" flood-color="#f59e0b" flood-opacity="0.65" />
+      <feDropShadow dx="0" dy="0" stdDeviation="28" flood-color="#f59e0b" flood-opacity="0.25" />
+    </filter>
+
+    <!-- Micro Dot Grid -->
+    <pattern id="dotPattern" x="0" y="0" width="28" height="28" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="#ffffff" fill-opacity="0.035" />
+    </pattern>
+  </defs>
+
+  <style>
+    .mono { font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace; }
+    .sans { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+
+    @keyframes rotateClockwise {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    @keyframes rotateCounter {
+      from { transform: rotate(360deg); }
+      to { transform: rotate(0deg); }
+    }
+    @keyframes rippleWave {
+      0% { r: 44px; opacity: 0.9; stroke-width: 1.5px; }
+      100% { r: 96px; opacity: 0; stroke-width: 0.5px; }
+    }
+    @keyframes pulseAperture {
+      0%, 100% { transform: scale(1); opacity: 0.85; }
+      50% { transform: scale(1.12); opacity: 1; }
+    }
+    @keyframes flowSpeedy {
+      0% { stroke-dashoffset: 48; }
+      100% { stroke-dashoffset: 0; }
+    }
+    @keyframes eqJump {
+      0%, 100% { height: 4px; y: 14px; }
+      50% { height: 16px; y: 2px; }
+    }
+
+    .rot-cw { transform-origin: 600px 260px; animation: rotateClockwise 22s linear infinite; }
+    .rot-ccw { transform-origin: 600px 260px; animation: rotateCounter 15s linear infinite; }
+    .ripple { transform-origin: 600px 260px; animation: rippleWave 2.6s cubic-bezier(0.16, 1, 0.3, 1) infinite; }
+    .aperture-pulse { transform-origin: 600px 260px; animation: pulseAperture 2.4s ease-in-out infinite; }
+    .flow-1 { animation: flowSpeedy 1.6s linear infinite; }
+    .flow-2 { animation: flowSpeedy 1.2s linear infinite; }
+    .flow-3 { animation: flowSpeedy 1.8s linear infinite; }
+    .laser-beam { animation: flowSpeedy 0.9s linear infinite; }
+
+    .bar-1 { animation: eqJump 1.1s ease-in-out infinite; }
+    .bar-2 { animation: eqJump 0.8s ease-in-out infinite 0.2s; }
+    .bar-3 { animation: eqJump 1.3s ease-in-out infinite 0.4s; }
+    .bar-4 { animation: eqJump 1.0s ease-in-out infinite 0.15s; }
+  </style>
+
+  <!-- Canvas Surface (Zero Outer Stroke - Border is handled seamlessly by CSS wrapper) -->
+  <rect width="1200" height="520" fill="url(#bgGrad)" />
+  <rect width="1200" height="520" fill="url(#dotPattern)" />
+
+  <!-- Ambient Light Fields -->
+  <circle cx="600" cy="260" r="250" fill="url(#reactorBloom)" />
+  <circle cx="180" cy="260" r="160" fill="#38bdf8" fill-opacity="0.025" filter="blur(35px)" />
+  <circle cx="1020" cy="260" r="160" fill="#10b981" fill-opacity="0.025" filter="blur(35px)" />
+
+  <!-- ================= CONNECTING STREAM CABLES ================= -->
+  <!-- Cable 1: Node 1 -> Core -->
+  <path d="M 285 130 C 400 130, 480 230, 530 260" stroke="rgba(56, 189, 248, 0.18)" stroke-width="1.5" fill="none" stroke-dasharray="3 5" />
+  <path d="M 285 130 C 400 130, 480 230, 530 260" stroke="url(#streamCyan)" stroke-width="2" fill="none" stroke-dasharray="6 20" class="flow-1" />
+
+  <!-- Cable 2: Node 2 -> Core (Main Horizontal Trunk) -->
+  <path d="M 285 260 C 380 260, 460 260, 530 260" stroke="rgba(245, 158, 11, 0.25)" stroke-width="2" fill="none" stroke-dasharray="3 5" />
+  <path d="M 285 260 C 380 260, 460 260, 530 260" stroke="url(#streamAmber)" stroke-width="2.5" fill="none" stroke-dasharray="10 18" class="flow-2" />
+
+  <!-- Cable 3: Node 3 -> Core -->
+  <path d="M 285 390 C 400 390, 480 290, 530 260" stroke="rgba(192, 132, 252, 0.18)" stroke-width="1.5" fill="none" stroke-dasharray="3 5" />
+  <path d="M 285 390 C 400 390, 480 290, 530 260" stroke="url(#streamPurple)" stroke-width="2" fill="none" stroke-dasharray="6 20" class="flow-3" />
+
+  <!-- Core -> Codex Laser Stream (High-Power Injection Highway) -->
+  <path d="M 670 260 C 740 260, 800 260, 875 260" stroke="rgba(16, 185, 129, 0.25)" stroke-width="3" fill="none" />
+  <path d="M 670 260 C 740 260, 800 260, 875 260" stroke="url(#outputLaser)" stroke-width="2.5" fill="none" stroke-dasharray="12 14" class="laser-beam" filter="drop-shadow(0 0 6px #10b981)" />
+
+  <!-- ================= LEFT: GRAPHICAL ACCOUNT NODES ================= -->
+  <!-- Node 1: OpenAI -->
+  <g filter="url(#nodeShadow)">
+    <rect x="75" y="92" width="210" height="76" rx="12" fill="url(#nodeBg)" stroke="rgba(255, 255, 255, 0.09)" />
+    <!-- Glyph -->
+    <circle cx="106" cy="130" r="16" fill="rgba(16, 185, 129, 0.12)" stroke="rgba(16, 185, 129, 0.3)" />
+    <path d="M 106 122 C 102 122 100 125 101 128 L 103 128 C 102 126 103 124 106 124 C 108 124 110 126 109 128 L 110 129 C 112 126 110 122 106 122 Z" fill="#34d399" />
+    <circle cx="106" cy="130" r="3" fill="#34d399" />
+    <!-- Info -->
+    <text x="134" y="125" fill="#ffffff" class="sans" font-size="14" font-weight="700">GPT-4o</text>
+    <rect x="134" y="134" width="46" height="17" rx="4" fill="rgba(16, 185, 129, 0.1)" />
+    <text x="157" y="146" text-anchor="middle" fill="#34d399" class="mono" font-size="10" font-weight="700">32ms</text>
+    <!-- Visual Equalizer -->
+    <g transform="translate(236, 121)">
+      <rect x="0" y="8" width="2.5" height="8" rx="1" fill="#34d399" class="bar-1" />
+      <rect x="5" y="4" width="2.5" height="12" rx="1" fill="#34d399" class="bar-2" />
+      <rect x="10" y="2" width="2.5" height="14" rx="1" fill="#34d399" class="bar-3" />
+      <rect x="15" y="6" width="2.5" height="10" rx="1" fill="#34d399" class="bar-4" />
+    </g>
+  </g>
+
+  <!-- Node 2: Claude 3.5 -->
+  <g filter="url(#nodeShadow)">
+    <rect x="75" y="222" width="210" height="76" rx="12" fill="url(#nodeBg)" stroke="rgba(245, 158, 11, 0.3)" />
+    <!-- Sunburst Glyph -->
+    <circle cx="106" cy="260" r="16" fill="rgba(245, 158, 11, 0.14)" stroke="rgba(245, 158, 11, 0.35)" />
+    <line x1="106" y1="251" x2="106" y2="269" stroke="#fbbf24" stroke-width="2" stroke-linecap="round" />
+    <line x1="97" y1="260" x2="115" y2="260" stroke="#fbbf24" stroke-width="2" stroke-linecap="round" />
+    <line x1="100" y1="254" x2="112" y2="266" stroke="#fbbf24" stroke-width="2" stroke-linecap="round" />
+    <line x1="112" y1="254" x2="100" y2="266" stroke="#fbbf24" stroke-width="2" stroke-linecap="round" />
+    <circle cx="106" cy="260" r="3.5" fill="#fbbf24" />
+    <!-- Info -->
+    <text x="134" y="255" fill="#ffffff" class="sans" font-size="14" font-weight="700">Claude 3.5</text>
+    <rect x="134" y="264" width="46" height="17" rx="4" fill="rgba(245, 158, 11, 0.12)" />
+    <text x="157" y="276" text-anchor="middle" fill="#fbbf24" class="mono" font-size="10" font-weight="700">98%</text>
+    <!-- Visual Equalizer -->
+    <g transform="translate(236, 251)">
+      <rect x="0" y="4" width="2.5" height="12" rx="1" fill="#fbbf24" class="bar-3" />
+      <rect x="5" y="8" width="2.5" height="8" rx="1" fill="#fbbf24" class="bar-1" />
+      <rect x="10" y="2" width="2.5" height="14" rx="1" fill="#fbbf24" class="bar-4" />
+      <rect x="15" y="5" width="2.5" height="11" rx="1" fill="#fbbf24" class="bar-2" />
+    </g>
+  </g>
+
+  <!-- Node 3: DeepSeek V3 -->
+  <g filter="url(#nodeShadow)">
+    <rect x="75" y="352" width="210" height="76" rx="12" fill="url(#nodeBg)" stroke="rgba(255, 255, 255, 0.09)" />
+    <!-- Neural Cluster Glyph -->
+    <circle cx="106" cy="390" r="16" fill="rgba(168, 85, 247, 0.12)" stroke="rgba(168, 85, 247, 0.3)" />
+    <circle cx="101" cy="385" r="2.5" fill="#c084fc" />
+    <circle cx="111" cy="386" r="2.5" fill="#c084fc" />
+    <circle cx="106" cy="395" r="3" fill="#c084fc" />
+    <line x1="101" y1="385" x2="111" y2="386" stroke="#c084fc" stroke-width="1.2" />
+    <line x1="101" y1="385" x2="106" y2="395" stroke="#c084fc" stroke-width="1.2" />
+    <line x1="111" y1="386" x2="106" y2="395" stroke="#c084fc" stroke-width="1.2" />
+    <!-- Info -->
+    <text x="134" y="385" fill="#ffffff" class="sans" font-size="14" font-weight="700">DeepSeek V3</text>
+    <rect x="134" y="394" width="46" height="17" rx="4" fill="rgba(168, 85, 247, 0.1)" />
+    <text x="157" y="406" text-anchor="middle" fill="#c084fc" class="mono" font-size="10" font-weight="700">24ms</text>
+    <!-- Visual Equalizer -->
+    <g transform="translate(236, 381)">
+      <rect x="0" y="6" width="2.5" height="10" rx="1" fill="#c084fc" class="bar-2" />
+      <rect x="5" y="2" width="2.5" height="14" rx="1" fill="#c084fc" class="bar-3" />
+      <rect x="10" y="7" width="2.5" height="9" rx="1" fill="#c084fc" class="bar-1" />
+      <rect x="15" y="4" width="2.5" height="12" rx="1" fill="#c084fc" class="bar-4" />
+    </g>
+  </g>
+
+  <!-- ================= CENTER: HIGH-TECH CYBERNETIC OPTICAL REACTOR ================= -->
+  <!-- Expanding Radar Wave Rings -->
+  <circle cx="600" cy="260" r="46" fill="none" stroke="#f59e0b" class="ripple" />
+  <circle cx="600" cy="260" r="46" fill="none" stroke="#fbbf24" class="ripple" style="animation-delay: 1.3s;" />
+
+  <!-- Precision Calibration Track -->
+  <circle cx="600" cy="260" r="88" fill="none" stroke="rgba(255, 255, 255, 0.05)" stroke-width="1" />
+  <circle cx="600" cy="260" r="88" fill="none" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="14 260" class="rot-cw" />
+  <!-- Orbital Micro-Nodes -->
+  <g class="rot-cw">
+    <circle cx="688" cy="260" r="3" fill="#ffffff" filter="drop-shadow(0 0 5px #fbbf24)" />
+    <circle cx="512" cy="260" r="2" fill="#38bdf8" />
+  </g>
+
+  <!-- Inner High-Precision Stepper Ring -->
+  <g class="rot-ccw">
+    <circle cx="600" cy="260" r="70" fill="none" stroke="rgba(245, 158, 11, 0.2)" stroke-width="1" stroke-dasharray="4 8" />
+    <circle cx="600" cy="260" r="70" fill="none" stroke="url(#goldGrad)" stroke-width="2" stroke-dasharray="16 70" />
+  </g>
+
+  <!-- Chamber Housing (Deep Obsidian Shield) -->
+  <circle cx="600" cy="260" r="54" fill="#0d1422" stroke="rgba(255, 255, 255, 0.12)" stroke-width="1.5" />
+  <!-- Optical Aperture Hexagon -->
+  <polygon points="600,214 640,237 640,283 600,306 560,283 560,237"
+           fill="none" stroke="rgba(245, 158, 11, 0.45)" stroke-width="1.5" class="aperture-pulse" />
+
+  <!-- Brilliant Core Reactor -->
+  <g filter="url(#coreGlowFilter)">
+    <circle cx="600" cy="260" r="34" fill="url(#goldGrad)" />
+    <polygon points="600,238 619,249 619,271 600,282 581,271 581,249" fill="#090d14" />
+    <circle cx="600" cy="260" r="7" fill="#ffffff" />
+  </g>
+
+  <!-- Minimalist Host Pill -->
+  <g filter="url(#nodeShadow)">
+    <rect x="528" y="380" width="144" height="28" rx="14" fill="#0d1422" stroke="rgba(245, 158, 11, 0.3)" stroke-width="1" />
+    <circle cx="544" cy="394" r="3.5" fill="#10b981" />
+    <text x="600" y="398" text-anchor="middle" fill="#f8fafc" class="mono" font-size="11" font-weight="700">127.0.0.1:12000</text>
+  </g>
+
+  <!-- ================= RIGHT: GRAPHICAL CODEX IDE WINDOW ================= -->
+  <g filter="url(#nodeShadow)">
+    <!-- Window Frame -->
+    <rect x="875" y="145" width="245" height="230" rx="14" fill="url(#nodeBg)" stroke="rgba(16, 185, 129, 0.3)" stroke-width="1.2" />
+
+    <!-- Window Titlebar -->
+    <rect x="875" y="145" width="245" height="38" rx="14" fill="rgba(255, 255, 255, 0.02)" />
+    <line x1="875" y1="183" x2="1120" y2="183" stroke="rgba(255, 255, 255, 0.06)" stroke-width="1" />
+
+    <!-- 3 Minimalist Dots -->
+    <circle cx="897" cy="164" r="3.5" fill="#ef4444" fill-opacity="0.8" />
+    <circle cx="908" cy="164" r="3.5" fill="#f59e0b" fill-opacity="0.8" />
+    <circle cx="919" cy="164" r="3.5" fill="#10b981" fill-opacity="0.8" />
+
+    <!-- Title & Status -->
+    <text x="936" y="168" fill="#e2e8f0" class="sans" font-size="12" font-weight="700">Codex</text>
+    <rect x="1034" y="154" width="74" height="19" rx="9" fill="rgba(16, 185, 129, 0.14)" stroke="rgba(16, 185, 129, 0.25)" />
+    <circle cx="1045" cy="163" r="2.5" fill="#10b981" />
+    <text x="1076" y="167" text-anchor="middle" fill="#34d399" class="mono" font-size="9" font-weight="700">INJECTED</text>
+
+    <!-- Magnetic Connection Node on Left Border -->
+    <rect x="871" y="250" width="8" height="20" rx="3" fill="#10b981" filter="drop-shadow(0 0 5px #10b981)" />
+
+    <!-- Code Content -->
+    <text x="896" y="214" fill="#475569" class="mono" font-size="11">01</text>
+    <text x="920" y="214" fill="#c084fc" class="mono" font-size="11">import</text>
+    <text x="968" y="214" fill="#93c5fd" class="mono" font-size="11">{ codex }</text>
+
+    <text x="896" y="238" fill="#475569" class="mono" font-size="11">02</text>
+    <text x="920" y="238" fill="#fbbf24" class="mono" font-size="11">gateway.connect()</text>
+
+    <text x="896" y="262" fill="#475569" class="mono" font-size="11">03</text>
+    <rect x="920" y="251" width="130" height="17" rx="3" fill="rgba(16, 185, 129, 0.1)" />
+    <text x="926" y="263" fill="#34d399" class="mono" font-size="10">pipe://amber-core</text>
+
+    <text x="896" y="286" fill="#475569" class="mono" font-size="11">04</text>
+    <text x="920" y="286" fill="#38bdf8" class="mono" font-size="11">stream: <tspan fill="#34d399">READY</tspan></text>
+
+    <!-- Latency Footer Pill -->
+    <rect x="896" y="316" width="195" height="24" rx="6" fill="#080c14" stroke="rgba(255, 255, 255, 0.05)" />
+    <circle cx="910" cy="328" r="3" fill="#34d399" />
+    <text x="922" y="332" fill="#94a3b8" class="mono" font-size="10">0.4ms · Zero Latency</text>
+    <polygon points="1072,324 1077,328 1072,332 1074,328" fill="#fbbf24" />
+  </g>
+</svg>
