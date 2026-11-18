@@ -309,7 +309,7 @@ func ValidateConfig(config string) error {
 	if effortValue, exists := value["model_reasoning_effort"]; exists {
 		effort, ok := effortValue.(string)
 		if !ok || !validReasoningEffort(effort) {
-			return fmt.Errorf("model_reasoning_effort must be one of none, minimal, low, medium, high, xhigh")
+			return fmt.Errorf("model_reasoning_effort must be one of none, minimal, low, medium, high, xhigh, max, ultra")
 		}
 	}
 	providers, ok := value["model_providers"].(map[string]any)
@@ -342,7 +342,7 @@ func NormalizeConfig(config string) (string, error) {
 		}
 		normalized := openai.NormalizeReasoningEffort(raw)
 		if normalized == "" {
-			return "", fmt.Errorf("model_reasoning_effort must be one of none, minimal, low, medium, high, xhigh")
+			return "", fmt.Errorf("model_reasoning_effort must be one of none, minimal, low, medium, high, xhigh, max, ultra")
 		}
 		if normalized != raw {
 			location := reasoningEffortAssignment.FindStringSubmatchIndex(config)
@@ -360,7 +360,7 @@ func NormalizeConfig(config string) (string, error) {
 
 func validReasoningEffort(raw string) bool {
 	switch raw {
-	case "none", "minimal", "low", "medium", "high", "xhigh":
+	case "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra":
 		return true
 	default:
 		return false
@@ -446,7 +446,14 @@ func mergeConfig(existing, baseURL, model, catalogPath string) string {
 
 	content = setTopLevelKey(content, "model_provider", fmt.Sprintf("%q", providerID))
 	content = setTopLevelKey(content, "model", fmt.Sprintf("%q", model))
-	content = setTopLevelKey(content, "model_reasoning_effort", `"high"`)
+	reasoningEffort := `"high"`
+	var existingValues map[string]any
+	if err := toml.Unmarshal([]byte(existing), &existingValues); err == nil {
+		if raw, ok := existingValues["model_reasoning_effort"].(string); ok && validReasoningEffort(raw) {
+			reasoningEffort = fmt.Sprintf("%q", raw)
+		}
+	}
+	content = setTopLevelKey(content, "model_reasoning_effort", reasoningEffort)
 	content = setTopLevelKey(content, "disable_response_storage", "true")
 	if catalogPath != "" {
 		content = setTopLevelKey(content, "model_catalog_json", fmt.Sprintf("%q", filepath.ToSlash(catalogPath)))
@@ -479,8 +486,8 @@ requires_openai_auth = true
 
 // CodexCatalogReasoningOption defines reasoning depth levels accepted by Codex.
 type CodexCatalogReasoningOption struct {
-	ReasoningLevel string `json:"reasoning_level"`
-	Description    string `json:"description"`
+	Effort      string `json:"effort"`
+	Description string `json:"description"`
 }
 
 // CodexCatalogServiceTier defines speed/service tiers for Codex.
@@ -527,15 +534,19 @@ type CodexCatalogModel struct {
 	ExperimentalSupportedTools        []string                      `json:"experimental_supported_tools"`
 	InputModalities                   []string                      `json:"input_modalities"`
 	SupportsSearchTool                bool                          `json:"supports_search_tool"`
+	BaseInstructions                  string                        `json:"base_instructions"`
 	IsDefault                         bool                          `json:"is_default,omitempty"`
 	Hidden                            bool                          `json:"hidden,omitempty"`
 }
 
 func defaultReasoningOptions() []CodexCatalogReasoningOption {
 	return []CodexCatalogReasoningOption{
-		{ReasoningLevel: "low", Description: "Fast responses with lighter reasoning"},
-		{ReasoningLevel: "medium", Description: "Balances speed and reasoning depth for everyday tasks"},
-		{ReasoningLevel: "high", Description: "Greater reasoning depth for complex problems"},
+		{Effort: "low", Description: "Fast responses with lighter reasoning"},
+		{Effort: "medium", Description: "Balances speed and reasoning depth for everyday tasks"},
+		{Effort: "high", Description: "Greater reasoning depth for complex problems"},
+		{Effort: "xhigh", Description: "Maximum reasoning depth"},
+		{Effort: "max", Description: "Highest available reasoning depth"},
+		{Effort: "ultra", Description: "Ultra reasoning depth"},
 	}
 }
 
@@ -552,8 +563,8 @@ func newCatalogEntry(slug, displayName, desc string) CodexCatalogModel {
 		Description:                       desc,
 		DefaultReasoningLevel:             "medium",
 		SupportedReasoningLevels:          defaultReasoningOptions(),
-		ShellType:                         "powershell",
-		Visibility:                        "public",
+		ShellType:                         "unified_exec",
+		Visibility:                        "list",
 		SupportedInAPI:                    true,
 		Priority:                          0,
 		AdditionalSpeedTiers:              []string{"fast"},
@@ -576,6 +587,7 @@ func newCatalogEntry(slug, displayName, desc string) CodexCatalogModel {
 		ExperimentalSupportedTools:        []string{},
 		InputModalities:                   []string{"text", "image"},
 		SupportsSearchTool:                true,
+		BaseInstructions:                  openai.CodexBaseInstructionsForModel(slug),
 	}
 }
 

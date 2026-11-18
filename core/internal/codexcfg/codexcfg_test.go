@@ -148,7 +148,7 @@ func TestBackupPreservesTrueOriginalAcrossReapply(t *testing.T) {
 	}
 }
 
-func TestWriteFilesNormalizesMaxReasoningEffort(t *testing.T) {
+func TestWriteFilesPreservesMaxReasoningEffort(t *testing.T) {
 	dir := t.TempDir()
 	m, err := New(dir)
 	if err != nil {
@@ -160,22 +160,92 @@ func TestWriteFilesNormalizesMaxReasoningEffort(t *testing.T) {
 		t.Fatal(err)
 	}
 	written := readFile(t, filepath.Join(dir, configName))
-	if !strings.Contains(written, `model_reasoning_effort = "xhigh" # preserve`) {
-		t.Fatalf("reasoning effort was not normalized: %s", written)
+	if !strings.Contains(written, `model_reasoning_effort = "max" # preserve`) {
+		t.Fatalf("reasoning effort was not preserved: %s", written)
 	}
 	if err := ValidateConfig(written); err != nil {
-		t.Fatalf("normalized config is invalid: %v", err)
+		t.Fatalf("preserved config is invalid: %v", err)
 	}
 }
 
 func TestValidateConfigRejectsUnsupportedReasoningEffort(t *testing.T) {
 	config := strings.Replace(RenderConfig("http://127.0.0.1:8080/v1", "gpt-5.6-sol"),
-		`model_reasoning_effort = "high"`, `model_reasoning_effort = "ultra"`, 1)
+		`model_reasoning_effort = "high"`, `model_reasoning_effort = "super-ultra"`, 1)
 	if err := ValidateConfig(config); err == nil {
 		t.Fatal("unsupported reasoning effort was accepted")
 	}
 	if _, err := NormalizeConfig(config); err == nil {
 		t.Fatal("unsupported reasoning effort was normalized")
+	}
+}
+
+func TestValidateConfigAcceptsAllCatalogReasoningEfforts(t *testing.T) {
+	for _, effort := range []string{"low", "medium", "high", "xhigh", "max", "ultra"} {
+		t.Run(effort, func(t *testing.T) {
+			config := strings.Replace(RenderConfig("http://127.0.0.1:8080/v1", "gpt-5.6-sol"),
+				`model_reasoning_effort = "high"`,
+				`model_reasoning_effort = "`+effort+`"`, 1)
+			if err := ValidateConfig(config); err != nil {
+				t.Fatalf("reasoning effort %q rejected: %v", effort, err)
+			}
+			normalized, err := NormalizeConfig(config)
+			if err != nil {
+				t.Fatalf("reasoning effort %q failed normalization: %v", effort, err)
+			}
+			if !strings.Contains(normalized, `model_reasoning_effort = "`+effort+`"`) {
+				t.Fatalf("reasoning effort %q changed unexpectedly: %s", effort, normalized)
+			}
+		})
+	}
+}
+
+func TestMergeConfigPreservesExistingReasoningEffort(t *testing.T) {
+	existing := `model_provider = "other"
+model = "old-model"
+model_reasoning_effort = "ultra"
+
+[model_providers.other]
+base_url = "http://old.example/v1"
+wire_api = "responses"
+`
+	merged := mergeConfig(existing, "http://127.0.0.1:8080/v1", "gpt-6.2-sol", "")
+	if !strings.Contains(merged, `model_reasoning_effort = "ultra"`) {
+		t.Fatalf("existing reasoning effort was overwritten: %s", merged)
+	}
+}
+
+func TestBuildCodexCatalogIncludesSixReasoningEfforts(t *testing.T) {
+	var target *CodexCatalogModel
+	for _, model := range BuildCodexCatalog([]string{"gpt-6.2-sol"}) {
+		if model.Slug == "gpt-6.2-sol" {
+			modelCopy := model
+			target = &modelCopy
+			break
+		}
+	}
+	if target == nil {
+		t.Fatal("dynamic model was not added to Codex catalog")
+	}
+	got := make([]string, 0, len(target.SupportedReasoningLevels))
+	for _, option := range target.SupportedReasoningLevels {
+		got = append(got, option.Effort)
+	}
+	want := []string{"low", "medium", "high", "xhigh", "max", "ultra"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("reasoning levels = %v, want %v", got, want)
+	}
+	encoded, err := json.Marshal(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"reasoning_level"`) {
+		t.Fatalf("catalog still contains the obsolete reasoning_level field: %s", encoded)
+	}
+	if !strings.Contains(string(encoded), `"effort"`) {
+		t.Fatalf("catalog is missing the current effort field: %s", encoded)
+	}
+	if !strings.Contains(string(encoded), `"base_instructions"`) {
+		t.Fatalf("catalog is missing base_instructions: %s", encoded)
 	}
 }
 

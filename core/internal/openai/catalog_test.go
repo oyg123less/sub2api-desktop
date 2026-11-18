@@ -89,6 +89,21 @@ func TestGPT6CatalogAndInstructions(t *testing.T) {
 	}
 }
 
+func TestReasoningEffortLevels(t *testing.T) {
+	for _, effort := range []string{"low", "medium", "high", "xhigh", "max", "ultra"} {
+		if got := NormalizeReasoningEffort(effort); got != effort {
+			t.Fatalf("NormalizeReasoningEffort(%q) = %q, want %q", effort, got, effort)
+		}
+		mapped, gotEffort := MapCodexModel("gpt-6-" + effort)
+		if mapped != "gpt-6" || gotEffort != effort {
+			t.Fatalf("MapCodexModel(gpt-6-%s) = (%q, %q), want (gpt-6, %s)", effort, mapped, gotEffort, effort)
+		}
+	}
+	if got := NormalizeReasoningEffort("extrahigh"); got != "xhigh" {
+		t.Fatalf("NormalizeReasoningEffort(extrahigh) = %q, want xhigh", got)
+	}
+}
+
 func TestActiveGatewayModelsDynamicFiltering(t *testing.T) {
 	// When empty, returns default catalog
 	defaults := ActiveGatewayModels(nil)

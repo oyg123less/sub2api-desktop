@@ -71,15 +71,19 @@ var codexVersionModelPrefixes = []struct {
 }
 
 // NormalizeReasoningEffort maps a raw effort token to the canonical set
-// ("low" | "medium" | "high" | "xhigh"); anything else yields "".
+// ("low" | "medium" | "high" | "xhigh" | "max" | "ultra"); anything else yields "".
 func NormalizeReasoningEffort(raw string) string {
 	value := strings.ToLower(strings.TrimSpace(raw))
 	value = strings.NewReplacer("-", "", "_", "", " ", "").Replace(value)
 	switch value {
 	case "none", "minimal", "low", "medium", "high":
 		return value
-	case "xhigh", "extrahigh", "max":
+	case "xhigh", "extrahigh":
 		return "xhigh"
+	case "max":
+		return "max"
+	case "ultra":
+		return "ultra"
 	default:
 		return ""
 	}
@@ -87,7 +91,7 @@ func NormalizeReasoningEffort(raw string) string {
 
 func isKnownEffortSuffix(suffix string) bool {
 	switch suffix {
-	case "none", "minimal", "low", "medium", "high", "xhigh":
+	case "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra":
 		return true
 	}
 	return false
